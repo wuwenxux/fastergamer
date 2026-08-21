@@ -29,15 +29,17 @@ subRoutes.get("/", async (c) => {
   }
 
   const nodes = (await getNodes(c.env)).filter((n) => !isBudgetExhausted(n));
-  const yaml = buildClashConfig({
-    uuid,
-    nodes,
-    fallbackHost: c.env.FALLBACK_NODE_HOST,
-    fallbackPort: Number(c.env.FALLBACK_NODE_PORT ?? 443),
-    fallbackTls: (c.env.FALLBACK_NODE_TLS ?? "true").toLowerCase() !== "false",
-    fallbackWsPath: c.env.FALLBACK_NODE_WS_PATH ?? "/vless-ws",
-  });
+  const yaml = buildClashConfig({ uuid, nodes });
 
+  // subscription-userinfo：Clash/Stash 客户端可直接显示已用流量与到期时间
+  // （不区分上下行，已用量统一计入 download）
+  const usedBytes = Math.round(token.traffic_used_gb * 1024 ** 3);
+  const totalBytes = Math.round(token.traffic_limit_gb * 1024 ** 3);
+  const expireSec = token.expires_at ? Math.floor(token.expires_at / 1000) : 0;
+  c.header(
+    "subscription-userinfo",
+    `upload=0; download=${usedBytes}; total=${totalBytes}; expire=${expireSec}`
+  );
   c.header("content-type", "text/yaml; charset=utf-8");
   c.header("content-disposition", 'attachment; filename="clash.yaml"');
   return c.body(yaml);

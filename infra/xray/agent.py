@@ -1,14 +1,17 @@
 #!/usr/bin/env python3
 """
 vpn-agent: 多节点 Xray 配置同步 + 流量上报 Agent
-每 30 秒向中心 API 拉取本节点配置，重写 Xray config，变化时 reload；
-同时通过 Xray API 抓取每个 token 的上下行流量并上报中心。
+每 30 秒向中心 API 拉取本节点配置；用户(uuid)增删通过 Xray HandlerService
+在线生效（xray api adu/rmu），只有配置结构变化时才整体重启 Xray，
+避免用户变动打断全节点连接。同时抓取每个 token 的上下行流量并上报中心。
 """
+import copy
 import json
 import os
 import re
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 from urllib.request import Request, urlopen
@@ -19,6 +22,7 @@ DEFAULT_API_URL = "https://fastergamer.cn/api/agent/config"
 DEFAULT_XRAY_CONFIG = "/usr/local/etc/xray/config.json"
 DEFAULT_XRAY_BIN = "/usr/local/bin/xray"
 DEFAULT_XRAY_API = "127.0.0.1:10085"
+INBOUND_TAG = "vless-in"
 INTERVAL = 30
 
 
@@ -56,7 +60,8 @@ def build_xray_config(uuids, listen_addr="127.0.0.1", api_addr="127.0.0.1", api_
         "api": {
             "tag": "api",
             "listen": f"{api_addr}:{api_port}",
-            "services": ["StatsService"],
+            # HandlerService 支持 xray api adu/rmu 在线增删用户，避免整重启
+            "services": ["StatsService", "HandlerService"],
         },
         "policy": {
             "levels": {
@@ -92,9 +97,103 @@ def restart_xray():
         print("[warn] xray restart failed", file=sys.stderr)
 
 
+def parse_config_uuids(text: str):
+    """从配置文件文本解析当前 uuid 集合；解析失败返回 None（视为结构未知）。"""
+    try:
+        cfg = json.loads(text)
+        clients = cfg["inbounds"][0]["settings"]["clients"]
+        return {c["id"] for c in clients}
+    except Exception:
+        return None
+
+
+def strip_clients(cfg: dict):
+    """去掉 inbound 用户列表后的配置副本，用于判断是否有结构性变化。"""
+    c = copy.deepcopy(cfg)
+    try:
+        c["inbounds"][0]["settings"]["clients"] = []
+    except Exception:
+        pass
+    return c
+
+
+def api_add_users(xray_bin: str, xray_api: str, new_config: dict, uuids: set) -> bool:
+    """
+    通过 xray api adu 在线添加用户，无需重启。
+    adu 接受完整配置 JSON（取其中 inbounds 的用户列表），
+    这里基于新配置生成仅含待加用户的临时文件。
+    """
+    inbound = copy.deepcopy(new_config["inbounds"][0])
+    inbound["settings"]["clients"] = [
+        {"id": u, "email": u, "flow": ""} for u in sorted(uuids)
+    ]
+    tmp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            "w", suffix=".json", delete=False, encoding="utf-8"
+        ) as f:
+            json.dump({"inbounds": [inbound]}, f)
+            tmp_path = f.name
+        result = subprocess.run(
+            [xray_bin, "api", "adu", f"--server={xray_api}", tmp_path],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        m = re.search(r"Added (\d+) user", result.stdout)
+        ok = result.returncode == 0 and m and int(m.group(1)) == len(uuids)
+        if ok:
+            print(f"[info] added {len(uuids)} user(s) online")
+        else:
+            print(
+                f"[warn] adu incomplete: rc={result.returncode} out={result.stdout.strip()}",
+                file=sys.stderr,
+            )
+        return bool(ok)
+    except Exception as e:
+        print(f"[warn] adu failed: {e}", file=sys.stderr)
+        return False
+    finally:
+        if tmp_path:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+
+
+def api_remove_users(xray_bin: str, xray_api: str, uuids: set) -> bool:
+    """
+    通过 xray api rmu 在线移除用户，无需重启。
+    注意：rmu 会丢弃该用户的流量计数器，效果等同重启清零，
+    中心侧按「上报值变小则按新基准累加」处理，不会丢量。
+    """
+    try:
+        result = subprocess.run(
+            [xray_bin, "api", "rmu", f"--server={xray_api}", "-tag", INBOUND_TAG]
+            + sorted(uuids),
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        m = re.search(r"Removed (\d+) user", result.stdout)
+        ok = result.returncode == 0 and m and int(m.group(1)) == len(uuids)
+        if ok:
+            print(f"[info] removed {len(uuids)} user(s) online")
+        else:
+            print(
+                f"[warn] rmu incomplete: rc={result.returncode} out={result.stdout.strip()}",
+                file=sys.stderr,
+            )
+        return bool(ok)
+    except Exception as e:
+        print(f"[warn] rmu failed: {e}", file=sys.stderr)
+        return False
+
+
 def collect_user_stats(xray_bin: str, xray_api: str) -> tuple[dict[str, int], dict[str, bool]]:
     """
-    通过 xray api statsquery 抓取每个 email(uuid) 的上下行流量（bytes）及在线状态。
+    通过 xray api statsquery 抓取每个 email(uuid) 的下行流量（bytes）及在线状态。
+    只计下行（VPS 商家按出站计费，上行不计入配额）。
     返回 (traffic_stats, online_map)。
     """
     stats: dict[str, int] = {}
@@ -112,7 +211,7 @@ def collect_user_stats(xray_bin: str, xray_api: str) -> tuple[dict[str, int], di
         if not result.stdout.strip():
             return stats, online
         data = json.loads(result.stdout)
-        traffic_pattern = re.compile(r"^user>>>([^>]+)>>>traffic>>>(uplink|downlink)$")
+        traffic_pattern = re.compile(r"^user>>>([^>]+)>>>traffic>>>downlink$")
         online_pattern = re.compile(r"^user>>>([^>]+)>>>online$")
         for item in data.get("stat", []):
             name = item.get("name", "")
@@ -140,7 +239,7 @@ def collect_user_stats(xray_bin: str, xray_api: str) -> tuple[dict[str, int], di
 def collect_node_stats(xray_bin: str, xray_api: str) -> tuple[int, int]:
     """
     抓取节点级统计：返回 (总流量 bytes, 在线用户数)。
-    总流量来自 inbound>>>vless-in>>>traffic 的上下行之和；
+    总流量只计 inbound>>>vless-in 的 downlink（= VPS 出站，与商家计费口径一致）；
     在线用户数来自 user>>>email>>>online 计数。
     """
     total_bytes = 0
@@ -155,7 +254,7 @@ def collect_node_stats(xray_bin: str, xray_api: str) -> tuple[int, int]:
         if result.returncode != 0 or not result.stdout.strip():
             return total_bytes, online_count
         data = json.loads(result.stdout)
-        inbound_pattern = re.compile(r"^inbound>>>vless-in>>>traffic>>>(uplink|downlink)$")
+        inbound_pattern = re.compile(r"^inbound>>>vless-in>>>traffic>>>downlink$")
         online_pattern = re.compile(r"^user>>>([^>]+)>>>online$")
         for item in data.get("stat", []):
             name = item.get("name", "")
@@ -187,6 +286,8 @@ def report_traffic(
         "online": online,
         "node_total_bytes": node_total_bytes,
         "online_count": online_count,
+        # 计费口径：只计下行。中心检测到口径变化时会重置基线，避免重复计费
+        "billing": "downlink",
     }).encode("utf-8")
     req = Request(
         traffic_url,
@@ -246,9 +347,39 @@ def main():
                 old_text = Path(config_path).read_text(encoding="utf-8")
 
             if new_text != old_text:
-                Path(config_path).write_text(new_text, encoding="utf-8")
-                print(f"[info] config updated, {len(uuids)} active uuids, reloading xray...")
-                restart_xray()
+                old_uuids = parse_config_uuids(old_text)
+                # 结构变化（除用户列表外的内容不同，如 agent 升级）必须整体重启；
+                # 仅用户增删走 Xray API 在线生效，不打断现有连接。
+                structural = (
+                    old_uuids is None
+                    or strip_clients(json.loads(old_text)) != strip_clients(new_config)
+                )
+                if structural:
+                    Path(config_path).write_text(new_text, encoding="utf-8")
+                    print(
+                        f"[info] config structure changed, {len(uuids)} active uuids, "
+                        "restarting xray..."
+                    )
+                    restart_xray()
+                else:
+                    new_uuids = set(uuids)
+                    to_add = new_uuids - old_uuids
+                    to_remove = old_uuids - new_uuids
+                    ok = True
+                    if to_add:
+                        ok = api_add_users(xray_bin, xray_api, new_config, to_add) and ok
+                    if to_remove:
+                        ok = api_remove_users(xray_bin, xray_api, to_remove) and ok
+                    Path(config_path).write_text(new_text, encoding="utf-8")
+                    if not ok:
+                        # 在线增删失败时回退整重启，保证配置与运行态一致
+                        print("[warn] falling back to xray restart", file=sys.stderr)
+                        restart_xray()
+                    else:
+                        print(
+                            f"[info] users updated online: +{len(to_add)} -{len(to_remove)}, "
+                            f"total {len(uuids)}"
+                        )
             else:
                 print(f"[info] no config change, {len(uuids)} active uuids")
 

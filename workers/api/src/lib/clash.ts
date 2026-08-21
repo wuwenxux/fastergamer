@@ -1,8 +1,6 @@
 /**
- * Clash 订阅配置生成
- * 支持两种模式：
- * 1. 多节点模式：传入 nodes，每个节点生成一个代理；
- * 2. 兜底模式：nodes 为空时回退到 FALLBACK_NODE_* 环境变量指定的单节点。
+ * Clash 订阅配置生成：每个 active 节点生成一个代理，
+ * 「自动选择」url-test 分组做故障切换，「选择节点」select 分组供手动指定。
  */
 
 import type { Node } from "../../../../shared/types";
@@ -31,49 +29,24 @@ export const parseRegions = (raw: string | undefined): ClashRegion[] => {
 
 export interface BuildConfigInput {
   uuid: string;
-  /** 多节点模式：每个 active 节点生成一个代理 */
+  /** 每个 active 节点生成一个代理 */
   nodes?: Node[];
-  /** 兜底单节点参数（nodes 为空时使用） */
-  fallbackHost?: string;
-  fallbackPort?: number;
-  fallbackTls?: boolean;
-  fallbackWsPath?: string;
 }
 
-export const buildClashConfig = ({
-  uuid,
-  nodes,
-  fallbackHost,
-  fallbackPort,
-  fallbackTls,
-  fallbackWsPath,
-}: BuildConfigInput): string => {
+export const buildClashConfig = ({ uuid, nodes }: BuildConfigInput): string => {
   const lines: string[] = [];
   lines.push("mixed-port: 7890", "allow-lan: false", "mode: rule", "log-level: info", "");
 
   const proxies: { name: string; server: string; port: number; tls: boolean; wsPath: string }[] = [];
 
-  if (nodes && nodes.length > 0) {
-    for (const node of nodes) {
-      if (!node.active) continue;
-      proxies.push({
-        name: `${node.region} ${node.name}`,
-        server: node.host,
-        port: node.port,
-        tls: node.tls,
-        wsPath: node.ws_path,
-      });
-    }
-  }
-
-  // 兜底：nodes 注册表为空时回退到 FALLBACK_NODE_* 环境变量指定的单节点
-  if (proxies.length === 0 && fallbackHost) {
+  for (const node of nodes ?? []) {
+    if (!node.active) continue;
     proxies.push({
-      name: "自动",
-      server: fallbackHost,
-      port: fallbackPort ?? 443,
-      tls: fallbackTls ?? true,
-      wsPath: fallbackWsPath ?? "/vless-ws",
+      name: `${node.region} ${node.name}`,
+      server: node.host,
+      port: node.port,
+      tls: node.tls,
+      wsPath: node.ws_path,
     });
   }
 
@@ -94,7 +67,21 @@ export const buildClashConfig = ({
   }
 
   lines.push("", "proxy-groups:");
+  // url-test 分组：客户端按延迟自动切换可用节点，单节点故障时无需手动干预
+  lines.push(
+    `  - name: "🚀 自动选择"`,
+    "    type: url-test",
+    "    proxies:"
+  );
+  for (const p of proxies) lines.push(`      - "${p.name}"`);
+  lines.push(
+    "    url: http://www.gstatic.com/generate_204",
+    "    interval: 300",
+    "    tolerance: 50"
+  );
+  // select 分组默认选中「自动选择」，用户也可手动指定节点
   lines.push(`  - name: "🚀 选择节点"`, "    type: select", "    proxies:");
+  lines.push(`      - "🚀 自动选择"`);
   for (const p of proxies) lines.push(`      - "${p.name}"`);
 
   lines.push("", "rules:");
