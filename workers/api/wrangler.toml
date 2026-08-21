@@ -1,6 +1,5 @@
-# API Worker 配置
-# 本地开发：npx wrangler dev --local（KV 用占位 ID 即可）
-# 生产部署前：npm run cf:kv 创建真实 namespace，并填入下方 ID
+# API Worker 配置（本机 workerd 生产模式）
+# 部署：npm run deploy:api（dry-run 打包 + gen-workerd-config.mjs 生成 config.capnp）
 
 name = "vpn-api"
 main = "src/index.ts"
@@ -8,7 +7,7 @@ compatibility_date = "2025-01-01"
 compatibility_flags = ["nodejs_compat"]
 
 # --- KV Namespaces ---
-# 占位 ID 仅用于本地开发；生产部署请运行 scripts/create-kv.mjs 替换
+# 本机 workerd 模式下这些 id 只是占位，实际数据落盘到 /home/wafer/fastergamer/kv/<binding>/
 [[kv_namespaces]]
 binding = "TOKENS"
 id = "918fba7374f24612bbc47c4ec62fb1c1"
@@ -23,8 +22,7 @@ id = "e1d1d6a60bb24b38a366955e3c32587b"
 
 [[kv_namespaces]]
 binding = "NODES"
-# 注意：本机 wrangler dev 是生产环境，此 id 对应本地已存数据的 KV 文件，勿改；
-# 云端真实 namespace id 为 35943d67380f4cf4a362ea12b323cc1c（见 scripts/create-kv.mjs 输出）
+# 此 id 对应本地已存数据的 KV 文件，勿改
 id = "b5d4e8c33a9f421d8e7b0f1234567890"
 
 [[kv_namespaces]]
@@ -37,28 +35,11 @@ id = "c6e5f9d44b0a5320e9f8c1a234567890"
 # 真实值放在 .dev.vars（不入库），这里只是占位
 ADMIN_KEY = "change-me-in-.dev.vars"
 
-# Clash 订阅的兜底节点（nodes 注册表为空时使用；TLS 入口域名）
-FALLBACK_NODE_HOST = "node.fastergamer.cn"
-
 # 套餐列表从这里读取（也可用 /api/admin/seed 写入 KV）
 DEFAULT_PLANS = "[]"
 
-# Clash 订阅展示的地区列表（兜底单节点时可保留作为节点别名）
+# Clash 订阅展示的地区列表
 CLASH_REGIONS = '[{"code":"HK","flag":"🇭🇰","name":"香港"},{"code":"JP","flag":"🇯🇵","name":"日本"},{"code":"MY","flag":"🇲🇾","name":"马来西亚"},{"code":"SG","flag":"🇸🇬","name":"新加坡"},{"code":"US","flag":"🇺🇸","name":"美国"}]'
 
-# 兜底节点 TLS 模式：443、开启 TLS、path 为 /vless-ws
-FALLBACK_NODE_PORT = "443"
-FALLBACK_NODE_TLS = "true"
-FALLBACK_NODE_WS_PATH = "/vless-ws"
-
-# 邮件发送配置（RESEND_API_KEY 请通过 wrangler secret 或 .dev.vars 设置，不要写在这里）
-EMAIL_FROM = "GameBoost <service@fastergamer.cn>"
+# 邮件走阿里云 DirectMail（ALIYUN_ACCESS_KEY_ID/SECRET 在 .dev.vars）
 SITE_URL = "https://fastergamer.cn"
-
-# --- 本地模式（无需 Cloudflare 认证即可在本机跑通全链路）---
-# 用法：wrangler dev --env local --port 8787 --persist-to <KV目录>
-# Clash 节点指向本机 Nginx(80 明文 WS)，由 Nginx 反代 /vless-ws 到本机 Xray
-[env.local.vars]
-FALLBACK_NODE_HOST = "186.244.238.139"
-FALLBACK_NODE_PORT = "80"
-FALLBACK_NODE_TLS = "false"
