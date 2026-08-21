@@ -53,6 +53,10 @@ export interface Token {
   traffic_used_gb: number;
   /** 各节点上报的累计流量（bytes），用于多节点求和与 Xray 重启清零检测 */
   traffic_by_node?: Record<string, number>;
+  /** 各节点累计真实消耗（bytes，按 delta 累加，重启/rmu 不清零）；traffic_used_gb 由此求和 */
+  traffic_total_by_node?: Record<string, number>;
+  /** 各节点基线的计费口径（"sum"=双向，"downlink"=只计下行）；口径切换时重置该节点基线 */
+  billing_by_node?: Record<string, string>;
   /** 流量记账基准偏移（bytes）：惩罚性重置后从该值起算，总量 = sum(traffic_by_node) - offset */
   traffic_offset_bytes?: number;
   /** 当月已用流量（bytes，自然月重置）；仅套餐设了 monthly_quota_gb 时参与限额 */
@@ -147,6 +151,8 @@ export interface Node {
   total_bytes?: number;
   /** 上一次 Agent 上报的节点原始总流量（用于检测 Xray 重启/清零） */
   last_node_total_bytes?: number;
+  /** 节点基线的计费口径（"sum"=双向，"downlink"=只计下行）；口径切换时重置基线 */
+  billing_mode?: string;
   /** 当月已用流量（bytes，按月自然月重置） */
   month_bytes?: number;
   /** 当前月度账期标识，如 "2026-08"；与当前月份不符时 month_bytes 归零重计 */

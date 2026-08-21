@@ -3,7 +3,7 @@ import { KV } from "../../../../shared/types";
 import type { Plan, Token } from "../../../../shared/types";
 import { adminAuth } from "../middleware/admin";
 import { deleteDeviceIndex, deleteTokenByUuid, getOrder, getPlans, getTicket, getTokenById, listKeys, listOrders, listTickets, listTokensByContact, saveOrder, savePlans, saveTicket, saveToken } from "../lib/kv";
-import { checkExpiringToken, checkNodeHealth } from "../lib/risk-notify";
+import { checkExpiringToken, checkNodeHealth, notifyAdmin } from "../lib/risk-notify";
 import { getNodes, saveNodes } from "../lib/nodes";
 import { sendMail, shouldSendEmail } from "../lib/email-aliyun";
 import { issueTokenForOrder } from "../lib/issue-token";
@@ -273,6 +273,22 @@ adminRoutes.post("/notify-scan", async (c) => {
     }
 
     scanned++;
+
+    // 在线状态清扫：Xray 只在用户在线时才有 online 计数器，离线即消失，
+    // 所以离线靠这里的窗口过期来判定（online_by_node 内无 90s 内记录则下线）
+    const ONLINE_WINDOW_MS = 90_000;
+    if (token.online || Object.keys(token.online_by_node ?? {}).length > 0) {
+      const activeNodes = Object.entries(token.online_by_node ?? {}).filter(
+        ([, ts]) => ts > now - ONLINE_WINDOW_MS
+      );
+      const stillOnline = activeNodes.length > 0;
+      if (!stillOnline || activeNodes.length !== Object.keys(token.online_by_node ?? {}).length) {
+        token.online_by_node = Object.fromEntries(activeNodes);
+        if (token.online && !stillOnline) token.online = false;
+        await saveToken(c.env, token);
+      }
+    }
+
     const before = token.notify_log?.expire_24h;
     await checkExpiringToken(c.env, token);
     if (token.notify_log?.expire_24h && token.notify_log.expire_24h !== before) {
@@ -299,6 +315,23 @@ adminRoutes.post("/notify-scan", async (c) => {
     ok: true,
     data: { scanned, notified, nodes_checked: nodes.length, purged_tokens: purgedTokens, purged_tickets: purgedTickets },
   });
+});
+
+/**
+ * POST /api/admin/alert —— 通用管理员告警入口
+ * 供本机运维脚本（如节点可达性探测）触发邮件告警
+ * body: { title: string, text: string }
+ */
+adminRoutes.post("/alert", async (c) => {
+  const body = (await c.req.json().catch(() => null)) as { title?: string; text?: string } | null;
+  const title = body?.title?.trim();
+  const text = body?.text?.trim();
+  if (!title || !text) return c.json({ ok: false, error: "title and text are required" }, 400);
+  if (title.length > 200 || text.length > 2000) {
+    return c.json({ ok: false, error: "title/text too long" }, 400);
+  }
+  await notifyAdmin(c.env, title, `<p>${text.replace(/</g, "&lt;")}</p>`, text);
+  return c.json({ ok: true });
 });
 
 /**
