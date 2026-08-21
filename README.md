@@ -66,7 +66,7 @@ bash scripts/deploy-api-local.sh   # 打包 → 生成 config.capnp → 重启 f
 ```
 
 生产目录 `/home/wafer/fastergamer/`：`index.js`（打包产物）+ `config.capnp` + `kv/`（磁盘 KV 数据）。
-systemd 单元模板见 `infra/vps/cloudvpn-api.service`（线上名 `fastergamer-api.service`）。
+线上 systemd 单元为 `fastergamer-api.service`（workerd 跑 127.0.0.1:8787，nginx 反代）。
 
 ### 3. 初始化套餐
 
