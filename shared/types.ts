@@ -1,0 +1,212 @@
+/**
+ * 共享类型定义 —— 供 API Worker 与前端共同使用
+ */
+
+/** 套餐定义（购买项） */
+export interface Plan {
+  id: string;
+  name: string;
+  /** 购买后持续时长（天） */
+  duration_days: number;
+  /** 售价（人民币元） */
+  price_cny: number;
+  /** 套餐描述，展示在卡片上 */
+  description: string;
+  /** 可选：流量上限 GB（当前版本按总流量计费） */
+  traffic_limit_gb?: number;
+  /** 可绑定的设备数上限（含主设备），缺省按 2 处理 */
+  max_devices?: number;
+  /** 每月流量限额（GB）。当月用超自动预支下月额度，有效期永久提前一个月 */
+  monthly_quota_gb?: number;
+}
+
+/** 设备槽位 —— token 下每台设备一个独立 UUID，用于 per-device 流量审计 */
+export interface Device {
+  /** 短 ID，如 dv_a1b2c3 */
+  id: string;
+  /** 该设备专用的 VLESS UUID */
+  uuid: string;
+  /** 用户命名，如“我的 iPhone” */
+  name: string;
+  /** 该设备累计流量（GB，计入 token 总量） */
+  traffic_used_gb: number;
+  created_at: number;
+  last_active_at?: number;
+}
+
+/** Token 状态机 */
+export type TokenStatus = "paid" | "active" | "expired" | "revoked";
+
+/** Token —— 即用户的 VLESS UUID + 有效时间 + 流量 */
+export interface Token {
+  /** 短 ID，用于网页查询/激活，例如 tk_a1b2c3 */
+  id: string;
+  /** VLESS UUID，即 Clash 配置里的 uuid，也是节点 Xray 校验的凭证 */
+  uuid: string;
+  plan_id: string;
+  status: TokenStatus;
+  /** 购买时留下的联系方式（邮箱/Telegram/微信等），方便售后 */
+  contact?: string;
+  /** 总流量上限（GB） */
+  traffic_limit_gb: number;
+  /** 已用流量（GB） */
+  traffic_used_gb: number;
+  /** 各节点上报的累计流量（bytes），用于多节点求和与 Xray 重启清零检测 */
+  traffic_by_node?: Record<string, number>;
+  /** 流量记账基准偏移（bytes）：惩罚性重置后从该值起算，总量 = sum(traffic_by_node) - offset */
+  traffic_offset_bytes?: number;
+  /** 当月已用流量（bytes，自然月重置）；仅套餐设了 monthly_quota_gb 时参与限额 */
+  month_used_bytes?: number;
+  /** 当前月度账期标识，如 "2026-08" */
+  month_key?: string;
+  /** 已锁定的预支月数（跨月不归还；当月新预支 = floor(month_used/quota)） */
+  months_borrowed?: number;
+  /** 原始到期时间（激活时设定）；实际 expires_at = base - 预支月数*30天 */
+  base_expires_at?: number;
+  /** 流量耗尽时间 */
+  traffic_exhausted_at?: number;
+  /** 当前是否在线（由 Agent 根据 Xray online 统计更新） */
+  online?: boolean;
+  /** 在线状态最后一次更新时间（unix 毫秒） */
+  online_updated_at?: number;
+  /** 各节点最近一次报告该 token 在线的时间（node.id → unix 毫秒），用于多节点同时在线检测 */
+  online_by_node?: Record<string, number>;
+  /** 最近一次检测到多节点同时在线（疑似多设备/分享使用）的时间（unix 毫秒） */
+  multi_device_detected_at?: number;
+  /** 已发送过的风险提醒（类型 → 发送时间戳），防止重复打扰 */
+  notify_log?: Record<string, number>;
+  /** 流量速率窗口起点（unix 毫秒），用于暴增检测 */
+  rate_window_start?: number;
+  /** 当前速率窗口内新增流量（bytes） */
+  rate_window_bytes?: number;
+  /** 绑定的设备槽位（不含主设备 uuid），每个设备独立 uuid 做流量审计 */
+  devices?: Device[];
+  /** 最后一次产生流量的时间（unix 毫秒） */
+  last_active_at?: number;
+  /** unix 毫秒时间戳 */
+  purchased_at: number;
+  activated_at?: number;
+  expires_at?: number;
+}
+
+/** 订单 —— 一次购买行为 */
+export interface Order {
+  id: string;
+  plan_id: string;
+  /** 支付流水号；个人收款码过渡期间仅为内部参考号 */
+  payment_ref: string;
+  status: "pending" | "paid" | "failed";
+  /** 买家联系方式 */
+  contact?: string;
+  /** 确认收款后发放的 token 短 ID */
+  token_id?: string;
+  /** 确认收款时间（unix 毫秒） */
+  paid_at?: number;
+  created_at: number;
+}
+
+/** 创建订单请求体 */
+export interface CreateOrderRequest {
+  plan_id: string;
+  /** 买家联系方式，用于售后和续费提醒 */
+  contact?: string;
+}
+
+/** 创建订单响应（人工收款模式：订单为 pending，确认收款后才发放 token） */
+export interface CreateOrderResponse {
+  order: Order;
+  /** 已确认收款并发放 token 时才有值 */
+  token?: Token;
+  /** 当前固定为 false，由管理员确认收款后置 true */
+  paid: boolean;
+}
+
+/** 节点 —— 一台 VPS 加速落地 */
+export interface Node {
+  /** 节点唯一标识，如 node-hk-01 */
+  id: string;
+  /** Agent 预共享密钥，用于拉取配置 */
+  key: string;
+  /** 显示名，如 香港 CN2 */
+  name: string;
+  /** 地区代码，如 HK / JP / SG */
+  region: string;
+  /** 客户端连接目标（域名或 IP） */
+  host: string;
+  /** 端口，如 443 / 8443 */
+  port: number;
+  /** 是否启用 TLS（wss） */
+  tls: boolean;
+  /** WebSocket 路径，如 /vless-ws */
+  ws_path: string;
+  /** 是否上线 */
+  active: boolean;
+  /** 最后一次心跳时间（unix 毫秒） */
+  last_seen_at?: number;
+  /** 节点累计总流量（bytes，部署以来） */
+  total_bytes?: number;
+  /** 上一次 Agent 上报的节点原始总流量（用于检测 Xray 重启/清零） */
+  last_node_total_bytes?: number;
+  /** 当月已用流量（bytes，按月自然月重置） */
+  month_bytes?: number;
+  /** 当前月度账期标识，如 "2026-08"；与当前月份不符时 month_bytes 归零重计 */
+  month_key?: string;
+  /** 月流量配额（GB，对应 VPS 带宽上限）；达到 100% 自动从订阅/同步摘除 */
+  monthly_budget_gb?: number;
+  /** 配额告警水位（0=未告警 80/100），账期重置时归零 */
+  budget_alert_level?: number;
+  /** 最近一次失联告警时间（节点恢复后清零） */
+  offline_alerted_at?: number;
+  /** 当前在线连接数（由 Agent 上报） */
+  online_count?: number;
+  /** 节点统计最近一次上报时间（unix 毫秒） */
+  stats_updated_at?: number;
+}
+
+/** 用户反馈工单 —— 安装/使用问题反馈与邮件解答 */
+export interface Ticket {
+  /** 短 ID，如 fb_a1b2c3 */
+  id: string;
+  /** 用户邮箱（回复邮件发送到这里） */
+  contact: string;
+  /** 问题分类：install / connect / speed / other */
+  category?: string;
+  /** 问题描述 */
+  message: string;
+  /** 相关 token 短 ID（可选，便于管理员排查） */
+  token_id?: string;
+  status: "open" | "replied" | "closed";
+  /** 管理员回复内容 */
+  reply?: string;
+  /** 是否沉淀到公开 FAQ（需已回复） */
+  publish_faq?: boolean;
+  created_at: number;
+  replied_at?: number;
+}
+
+/** 公开 FAQ 条目（由 publish_faq 的工单生成） */
+export interface FaqItem {
+  question: string;
+  answer: string;
+  category?: string;
+}
+
+/** KV 键前缀常量 */
+export const KV = {
+  TOKEN: "token:", // token:{uuid} → Token JSON
+  TOKEN_BY_ID: "tokenid:", // tokenid:{id} → { uuid }
+  PLAN: "plan:", // plan:{id} → Plan JSON
+  ORDER: "order:", // order:{id} → Order JSON
+  TICKET: "ticket:", // ticket:{id} → Ticket JSON（存 TICKETS namespace）
+  DEVICE: "device:", // device:{uuid} → { token_id }（设备 uuid 反查索引，存 TOKENS namespace）
+  ROUTING: "routing", // routing → 区域名列表 JSON
+  NODES: "nodes", // nodes → Node[] JSON
+  QR: "qr:", // qr:{alipay|wechat} → 收款码图片二进制（存 PLANS namespace）
+} as const;
+
+/** API 统一响应格式 */
+export interface ApiResponse<T = unknown> {
+  ok: boolean;
+  data?: T;
+  error?: string;
+}

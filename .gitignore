@@ -1,0 +1,12 @@
+node_modules/
+dist/
+.wrangler/
+.dev.vars
+*.log
+.DS_Store
+
+# 构建/迁移产物与本地备份
+*.tar.gz
+*.zip
+backups/
+prod/
