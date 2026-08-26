@@ -1,16 +1,23 @@
 /**
  * 确认收款后发放 token（个人收款码过渡期间由管理员手动触发，
- * 将来接真实支付网关时在回调里调用同一个函数）
+ * 接入支付宝当面付后由回调触发；两者共用 fulfillOrder）
  */
 import type { Order, Plan, Token } from "../../../../shared/types";
 import { sendTokenEmail, shouldSendEmail } from "./email-aliyun";
-import { saveToken } from "./kv";
+import { createMagicTicket } from "./accounts";
+import { getPlans, getTokenById, saveOrder, saveToken } from "./kv";
 import { newTokenId } from "./ids";
+import { rewardReferrerOnPayment } from "./referral";
 import type { Env } from "../types";
+
+/** 只需要 waitUntil，用最小结构类型兼容 Hono 与 workers-types 的 ExecutionContext 差异 */
+export interface WaitUntilCtx {
+  waitUntil(promise: Promise<unknown>): void;
+}
 
 export const issueTokenForOrder = async (
   env: Env,
-  ctx: ExecutionContext,
+  ctx: WaitUntilCtx,
   order: Order,
   plan: Plan
 ): Promise<Token> => {
@@ -26,18 +33,53 @@ export const issueTokenForOrder = async (
   };
   await saveToken(env, token);
 
-  // 如果联系方式是邮箱，自动发送凭证邮件
+  // 如果联系方式是邮箱，自动发送凭证邮件（附带一次性免登录管理链接，免去手动登录）
   if (shouldSendEmail(order.contact)) {
     ctx.waitUntil(
-      sendTokenEmail(env, {
-        tokenId: token.id,
-        uuid: token.uuid,
-        planName: plan.name,
-        status: token.status,
-        contact: order.contact!,
-      })
+      (async () => {
+        const site = (env.SITE_URL ?? "https://fastergamer.cn").replace(/\/$/, "");
+        const ticket = await createMagicTicket(env, order.contact!, token.id);
+        await sendTokenEmail(env, {
+          tokenId: token.id,
+          uuid: token.uuid,
+          planName: plan.name,
+          status: token.status,
+          contact: order.contact!,
+          magicUrl: `${site}/auth/magic?ticket=${ticket}`,
+        });
+      })()
     );
   }
 
   return token;
+};
+
+/**
+ * 订单发货：确认收款后置 paid 并发放 token（幂等——已 paid 直接返回已有 token）。
+ * 管理后台手动确认与支付宝回调共用此入口；plan 缺失时抛错，由调用方兜底。
+ */
+export const fulfillOrder = async (
+  env: Env,
+  ctx: WaitUntilCtx,
+  order: Order
+): Promise<{ token: Token | null; already: boolean }> => {
+  if (order.status === "paid") {
+    const token = order.token_id ? await getTokenById(env, order.token_id) : null;
+    return { token, already: true };
+  }
+
+  const plans = await getPlans(env);
+  const plan = plans.find((p) => p.id === order.plan_id);
+  if (!plan) throw new Error(`plan '${order.plan_id}' not found`);
+
+  const token = await issueTokenForOrder(env, ctx, order, plan);
+  order.status = "paid";
+  order.token_id = token.id;
+  order.paid_at = Date.now();
+  await saveOrder(env, order);
+
+  // 推广结算：被邀请人首次付费成功，给邀请人结算余额（可能触发自动续期）
+  if (order.contact) ctx.waitUntil(rewardReferrerOnPayment(env, order.contact.trim().toLowerCase()));
+
+  return { token, already: false };
 };

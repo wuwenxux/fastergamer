@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import type { Token } from "../../../shared/types";
 import { api } from "../services/api";
 import DeviceManager from "./DeviceManager";
@@ -33,6 +34,8 @@ export default function TokenStatus({ token }: { token: Token }) {
   const [showPreview, setShowPreview] = useState(false);
   const [previewLoading, setPreviewLoading] = useState(false);
   const [monthlyQuotaGb, setMonthlyQuotaGb] = useState<number | null>(null);
+  // 非本人激活时后端只返回概要（无 uuid），置此标记展示登录引导
+  const [activatedRestricted, setActivatedRestricted] = useState(false);
 
   // 套餐带月度配额时拉取配额值用于展示
   useEffect(() => {
@@ -70,10 +73,51 @@ export default function TokenStatus({ token }: { token: Token }) {
     current.online === true &&
     (current.online_updated_at ?? 0) > now - 90_000;
 
+  // 接入 IP 统计（按估算流量降序，最多展示 10 条）
+  const ipStats = Object.entries(current.traffic_by_ip ?? {})
+    .sort((a, b) => b[1].bytes - a[1].bytes)
+    .slice(0, 10);
+
+  const formatBytes = (bytes: number) =>
+    bytes >= 1024 ** 3
+      ? `${(bytes / 1024 ** 3).toFixed(2)} GB`
+      : `${(bytes / 1024 ** 2).toFixed(1)} MB`;
+
+  const blockedIpSet = new Set(current.blocked_ips ?? []);
+  const [ipActionLoading, setIpActionLoading] = useState<string | null>(null);
+
+  const toggleBlockIp = async (ip: string, blocked: boolean) => {
+    if (!blocked && !window.confirm(`确认封禁 ${ip}？\n该 IP 将在 30 秒内被所有节点拒绝连接（若它是多人共享的出口网络，同网络的其他设备也会无法使用）。`)) {
+      return;
+    }
+    setIpActionLoading(ip);
+    try {
+      const res = blocked
+        ? await api.unblockIp(current.id, ip)
+        : await api.blockIp(current.id, ip);
+      setCurrent({ ...current, blocked_ips: res.blocked_ips });
+    } catch (e) {
+      alert((e as Error).message);
+    } finally {
+      setIpActionLoading(null);
+    }
+  };
+
   const onActivate = async () => {
     try {
       const updated = await api.activateToken(current.id);
-      setCurrent(updated);
+      if (updated.restricted) {
+        // 非本人激活：响应不含 uuid，只合并概要字段，保留本地已有数据
+        setActivatedRestricted(true);
+        setCurrent({
+          ...current,
+          status: updated.status,
+          activated_at: updated.activated_at ?? current.activated_at,
+          expires_at: updated.expires_at ?? current.expires_at,
+        });
+      } else {
+        setCurrent(updated);
+      }
     } catch (e) {
       alert((e as Error).message);
     }
@@ -220,8 +264,10 @@ export default function TokenStatus({ token }: { token: Token }) {
             </div>
           )}
           {trafficExhausted && (
-            <p className="text-xs text-rose-400">
-              流量已用完，token 已自动失效。请购买新 token 继续使用。
+            <p className="text-xs text-amber-400">
+              流量已用完。不会立即断线：48 小时宽限期内服务照常，请尽快
+              <Link to="/" className="text-sky-400 hover:underline"> 续费 </Link>
+              ；宽限期结束后服务才会暂停。
             </p>
           )}
         </div>
@@ -234,6 +280,15 @@ export default function TokenStatus({ token }: { token: Token }) {
         >
           ⚡ 立即激活（开始计时）
         </button>
+      )}
+
+      {activatedRestricted && (
+        <div className="rounded-xl border border-emerald-500/40 bg-emerald-500/10 p-4 space-y-2">
+          <p className="text-sm text-emerald-300">✅ 激活成功</p>
+          <p className="text-xs text-slate-400">
+            在上方输入购买时填写的邮箱并发送登录链接，点邮件里的链接即可查看订阅信息。
+          </p>
+        </div>
       )}
 
       <button
@@ -287,17 +342,30 @@ export default function TokenStatus({ token }: { token: Token }) {
             disabled={verifying}
             className="w-full rounded-lg border border-emerald-500/50 bg-emerald-500/10 py-2 font-medium text-emerald-400 hover:bg-emerald-500/20 transition-colors disabled:opacity-60"
           >
-            {verifying ? "验证中…" : "验证订阅是否可用"}
+            {verifying ? "诊断中…" : "Clash 导入失败？一键诊断"}
           </button>
 
           {verify?.valid ? (
-            <p className="text-xs text-emerald-400">
-              ✅ 验证通过，订阅包含 {verify.nodeCount} 个节点，可复制到 Clash 使用。
-            </p>
+            <div className="rounded-lg border border-emerald-500/40 bg-emerald-500/5 p-3 space-y-2">
+              <p className="text-xs text-emerald-400">
+                ✅ 订阅链接可以正常访问（含 {verify.nodeCount} 个节点），服务端没有问题。
+              </p>
+              <p className="text-xs text-slate-300 font-medium">Clash 仍导入失败的话，按顺序排查：</p>
+              <ol className="text-xs text-slate-400 list-decimal pl-4 space-y-1">
+                <li>彻底退出其他 VPN / 加速器（右键状态栏图标选「退出」，只关窗口不够）</li>
+                <li>Clash Verge：设置 → 订阅 → 关闭「使用系统代理」后重新导入</li>
+                <li>确认复制的是完整链接（https:// 开头，没有多余空格或换行）</li>
+                <li>换手机热点网络重试一次（排除宽带 DNS 污染）</li>
+                <li>仍然失败 → 到「问题反馈」页提交，注明 Token ID，客服会邮件回复</li>
+              </ol>
+            </div>
           ) : verify ? (
-            <p className="text-xs text-rose-400">
-              ❌ 验证失败：{verify.error}
-            </p>
+            <div className="rounded-lg border border-rose-500/40 bg-rose-500/5 p-3 space-y-2">
+              <p className="text-xs text-rose-400">❌ 订阅链接无法访问：{verify.error}</p>
+              <p className="text-xs text-slate-400">
+                说明问题在链接或服务端：确认 token 未过期；等 1 分钟后再试一次；仍失败请到「问题反馈」页提交（注明 Token ID：{current.id}）。
+              </p>
+            </div>
           ) : null}
 
           {showPreview && (
@@ -311,6 +379,51 @@ export default function TokenStatus({ token }: { token: Token }) {
 
           <p className="text-xs text-amber-400">
             💡 建议：点击上方「复制全部信息」，粘贴到微信收藏、备忘录或邮箱保存。遗失后可凭 Token ID 或联系方式找回。
+          </p>
+        </div>
+      )}
+
+      {ipStats.length > 0 && (
+        <div className="rounded-lg bg-slate-800/60 p-3 space-y-2">
+          <div className="flex justify-between text-xs">
+            <span className="text-slate-400">接入 IP 统计</span>
+            <span className="text-slate-500">按连接数比例估算，仅供参考</span>
+          </div>
+          <div className="space-y-1 text-xs">
+            {ipStats.map(([ip, stat]) => {
+              const blocked = blockedIpSet.has(ip);
+              return (
+                <div key={ip} className="flex items-center justify-between gap-2">
+                  <span className={`font-mono ${blocked ? "text-rose-400 line-through" : "text-slate-300"}`}>
+                    {ip}
+                  </span>
+                  <span className="text-slate-500 shrink-0">
+                    {formatBytes(stat.bytes)} · {stat.conns} 次连接 ·{" "}
+                    {new Date(stat.last_seen_at).toLocaleString("zh-CN", {
+                      month: "numeric",
+                      day: "numeric",
+                      hour: "2-digit",
+                      minute: "2-digit",
+                    })}
+                  </span>
+                  <button
+                    onClick={() => toggleBlockIp(ip, blocked)}
+                    disabled={ipActionLoading === ip}
+                    className={`shrink-0 rounded px-2 py-0.5 border text-[11px] transition-colors disabled:opacity-50 ${
+                      blocked
+                        ? "border-emerald-500/50 text-emerald-400 hover:bg-emerald-500/10"
+                        : "border-rose-500/50 text-rose-400 hover:bg-rose-500/10"
+                    }`}
+                  >
+                    {ipActionLoading === ip ? "…" : blocked ? "解封" : "封禁"}
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+          <p className="text-[11px] text-slate-500">
+            出现陌生 IP 说明订阅可能泄露：点「封禁」后该 IP 30 秒内无法连接任何节点，误封可随时解封。
+            如需彻底重置凭证请联系售后。
           </p>
         </div>
       )}
