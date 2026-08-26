@@ -10,3 +10,6 @@ dist/
 *.zip
 backups/
 prod/
+
+# Python 缓存
+__pycache__/

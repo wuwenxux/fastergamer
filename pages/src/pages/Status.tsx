@@ -19,6 +19,7 @@ const REGION_LABELS: Record<string, string> = {
   MY: "🇲🇾 马来西亚",
   SG: "🇸🇬 新加坡",
   US: "🇺🇸 美国",
+  DE: "🇩🇪 德国",
 };
 
 interface RegionStatus {
@@ -34,15 +35,12 @@ interface RegionStatus {
   measured: boolean;
 }
 
-async function measureLatency(
-  host: string,
-  port: number,
-  tls: boolean,
-  timeoutMs = 5000,
+/** 单次探测：返回耗时 ms，失败/超时返回 null */
+async function probeOnce(
+  url: string,
+  timeoutMs: number,
   externalSignal?: AbortSignal
 ): Promise<number | null> {
-  const protocol = tls ? "https" : "http";
-  const url = `${protocol}://${host}:${port}/ping`;
   const start = performance.now();
   try {
     const controller = new AbortController();
@@ -64,29 +62,82 @@ async function measureLatency(
   }
 }
 
+/**
+ * 测客户端到节点的延迟。
+ * 首个请求包含 DNS + TCP + TLS 握手（2-3 个 RTT），会严重高估延迟，
+ * 所以先预热一次把连接建好（不计时），再测 2 次取最小值（排除偶发抖动），
+ * 与 Clash url-test 的测量口径一致。
+ */
+async function measureLatency(
+  host: string,
+  port: number,
+  tls: boolean,
+  timeoutMs = 4000,
+  externalSignal?: AbortSignal
+): Promise<number | null> {
+  const protocol = tls ? "https" : "http";
+  const url = `${protocol}://${host}:${port}/ping`;
+  // 预热：失败也没关系，后面两次实测仍会尝试
+  await probeOnce(url, timeoutMs, externalSignal);
+  const results = [
+    await probeOnce(url, timeoutMs, externalSignal),
+    await probeOnce(url, timeoutMs, externalSignal),
+  ].filter((ms): ms is number => ms !== null);
+  if (results.length === 0) return null;
+  return Math.min(...results);
+}
+
 export default function Status() {
   const [nodes, setNodes] = useState<NodeStatus[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [latency, setLatency] = useState<LatencyMap>({});
+  const [updatedAt, setUpdatedAt] = useState<number | null>(null);
 
   useEffect(() => {
-    api
-      .nodesStatus()
-      .then((data) => setNodes(data))
-      .catch((e: Error) => setError(e.message))
-      .finally(() => setLoading(false));
+    let cancelled = false;
+    const load = () =>
+      api
+        .nodesStatus()
+        .then((data) => {
+          if (cancelled) return;
+          setNodes(data);
+          setUpdatedAt(Date.now());
+        })
+        .catch((e: Error) => {
+          if (!cancelled) setError(e.message);
+        });
 
-    const fetchTimer = setInterval(() => {
-      api.nodesStatus().then(setNodes).catch(() => {});
-    }, 30_000);
-    return () => clearInterval(fetchTimer);
+    setLoading(true);
+    load().finally(() => {
+      if (!cancelled) setLoading(false);
+    });
+
+    // 30 秒定时刷新；浏览器在后台标签页会节流定时器，
+    // 所以回到前台（标签页可见 / 窗口聚焦）时立即补一次刷新
+    const fetchTimer = setInterval(load, 30_000);
+    const onForeground = () => {
+      if (document.visibilityState === "visible") load();
+    };
+    document.addEventListener("visibilitychange", onForeground);
+    window.addEventListener("focus", onForeground);
+    return () => {
+      cancelled = true;
+      clearInterval(fetchTimer);
+      document.removeEventListener("visibilitychange", onForeground);
+      window.removeEventListener("focus", onForeground);
+    };
   }, []);
 
-  // 节点列表变化时，并行测一次客户端到各节点的延迟（展示时按地区取最优）
+  // 节点列表变化时，并行测一次客户端到各节点的延迟（展示时按地区取最优）。
+  // 每轮测速先清空旧值：界面要么显示刚测出的延迟，要么显示"测速中"，
+  // 绝不把几分钟前的旧值当成当前值展示
+  const [measuring, setMeasuring] = useState(false);
   useEffect(() => {
     if (nodes.length === 0) return;
     const abortController = new AbortController();
+    setLatency({});
+    setMeasuring(true);
     Promise.all(
       nodes.map(async (node) => {
         if (abortController.signal.aborted) return [node.id, null] as const;
@@ -100,6 +151,7 @@ export default function Status() {
         map[id] = ms;
       });
       setLatency(map);
+      setMeasuring(false);
     });
     return () => abortController.abort();
   }, [nodes]);
@@ -144,6 +196,11 @@ export default function Status() {
       <h2 className="text-2xl font-bold">节点状态</h2>
       <p className="text-sm text-slate-400">
         按接入地域展示，延迟为你的设备到该地域的实测最优值，页面每 30 秒自动刷新。
+        {updatedAt !== null && (
+          <span className="text-slate-500">
+            最后更新 {new Date(updatedAt).toLocaleTimeString("zh-CN", { hour12: false })}
+          </span>
+        )}
       </p>
 
       {error && <p className="text-rose-400 text-sm">{error}</p>}
@@ -176,7 +233,12 @@ export default function Status() {
               >
                 {r.online ? "可用" : "离线"}
               </div>
-              {r.online && r.measured && <LatencyBadge ms={r.latencyMs} />}
+              {r.online &&
+                (r.measured ? (
+                  <LatencyBadge ms={r.latencyMs} />
+                ) : (
+                  measuring && <span className="text-xs text-slate-500">测速中…</span>
+                ))}
             </div>
           </div>
         ))}

@@ -2,10 +2,64 @@ import { Hono } from "hono";
 import { KV, type Token } from "../../../../shared/types";
 import { getNodeByKey, getNodes, saveNodes, currentMonthKey, isBudgetExhausted } from "../lib/nodes";
 import { getTokenByAnyUuid, getPlans, listKeys, saveToken } from "../lib/kv";
-import { checkNodeBudget, checkTokenRisks, checkTrafficSpike, notifyBorrow } from "../lib/risk-notify";
+import { checkNodeBudget, checkTokenRisks, checkTrafficSpike, notifyBorrow, notifyMonth80, notifyIpChange } from "../lib/risk-notify";
 import type { Env } from "../types";
 
 export const agentRoutes = new Hono<{ Bindings: Env }>();
+
+/** 单 token 最多保留的接入 IP 条数（防分享滥用导致 KV 记录膨胀），超出按估算流量截断 */
+const MAX_IP_ENTRIES = 20;
+
+/**
+ * 把本周期流量增量按连接数比例分摊到各接入 IP（access log 无逐连接字节数，属估算口径）。
+ * delta 为 0 时只更新连接数与最近接入时间。
+ */
+function attributeIpTraffic(token: Token, conns: Record<string, number>, delta: number, now: number) {
+  const total = Object.values(conns).reduce((s, v) => s + v, 0);
+  if (total <= 0) return;
+  token.traffic_by_ip = token.traffic_by_ip ?? {};
+  const table = token.traffic_by_ip;
+  for (const [ip, n] of Object.entries(conns)) {
+    if (n <= 0) continue;
+    const rec = (table[ip] = table[ip] ?? { bytes: 0, conns: 0, last_seen_at: 0 });
+    rec.bytes += Math.round((delta * n) / total);
+    rec.conns += n;
+    rec.last_seen_at = now;
+  }
+  const keys = Object.keys(table);
+  if (keys.length > MAX_IP_ENTRIES) {
+    const kept = keys.sort((a, b) => table[b].bytes - table[a].bytes).slice(0, MAX_IP_ENTRIES);
+    token.traffic_by_ip = Object.fromEntries(kept.map((k) => [k, table[k]]));
+  }
+}
+
+/**
+ * 接入地址变更检测：比较本周期活跃 IP 与上一周期（按 节点:凭证 记录）。
+ * 返回变更后新出现的 IP；首次使用（无基线）不视为变更。本周期无连接时不更新基线。
+ */
+function detectIpChange(token: Token, key: string, conns: Record<string, number>): string[] {
+  const curr = Object.entries(conns)
+    .filter(([, n]) => n > 0)
+    .map(([ip]) => ip);
+  if (curr.length === 0) return [];
+  token.active_ips = token.active_ips ?? {};
+  const prev = token.active_ips[key] ?? [];
+  token.active_ips[key] = curr;
+  if (prev.length === 0) return [];
+  return curr.filter((ip) => !prev.includes(ip));
+}
+
+/**
+ * 流量耗尽后的宽限期：不立即断连，先邮件引导续费，宽限期内可正常接入，
+ * 超过宽限期仍未处理（续费/重置）才切断。
+ */
+export const TRAFFIC_GRACE_MS = 48 * 3_600_000;
+
+/** 流量准入：未超限，或超限但仍在宽限期内 */
+export const withinTrafficAllowance = (token: Token, now: number): boolean => {
+  if (token.traffic_used_gb < token.traffic_limit_gb) return true;
+  return !!token.traffic_exhausted_at && now - token.traffic_exhausted_at < TRAFFIC_GRACE_MS;
+};
 
 /**
  * GET /api/agent/config —— 节点 Agent 拉取本节点配置
@@ -23,9 +77,11 @@ agentRoutes.get("/config", async (c) => {
     return c.json({ ok: false, error: "invalid or inactive node" }, 403);
   }
 
-  // 拉取所有 active、未过期且流量未用完的 token UUID（主 uuid + 各设备槽位 uuid）
+  // 拉取所有 active、未过期且流量在可用额度内（含耗尽宽限期）的 token UUID（主 uuid + 各设备槽位 uuid）
   // 月流量超配额的节点返回空列表，agent 会清空 Xray clients，已连接设备随连接断开被切断
   const uuids: string[] = [];
+  // 用户自助封禁的 IP 合集：agent 同步到节点防火墙，被封 IP 无法连接本节点
+  const blockedIps = new Set<string>();
   if (!isBudgetExhausted(node)) {
     const keys = await listKeys(c.env.TOKENS, KV.TOKEN);
     const now = Date.now();
@@ -33,10 +89,11 @@ agentRoutes.get("/config", async (c) => {
       const raw = await c.env.TOKENS.get(k.name);
       if (!raw) continue;
       const token = JSON.parse(raw) as Token;
+      for (const ip of token.blocked_ips ?? []) blockedIps.add(ip);
       if (
         token.status === "active" &&
         (token.expires_at ?? 0) > now &&
-        token.traffic_used_gb < token.traffic_limit_gb
+        withinTrafficAllowance(token, now)
       ) {
         uuids.push(token.uuid);
         for (const d of token.devices ?? []) uuids.push(d.uuid);
@@ -57,6 +114,7 @@ agentRoutes.get("/config", async (c) => {
         ws_path: node.ws_path,
       },
       uuids,
+      blocked_ips: [...blockedIps],
     },
   });
 });
@@ -103,9 +161,11 @@ agentRoutes.post("/traffic", async (c) => {
     node_total_bytes?: number;
     online_count?: number;
     billing?: string;
+    ip_conns?: Record<string, Record<string, number>>;
   } | null;
   const stats = body?.stats ?? {};
   const online = body?.online ?? {};
+  const ipConns = body?.ip_conns ?? {};
   // 计费口径：默认历史双向计费；agent 上报 downlink 表示只计下行
   const billing = body?.billing === "downlink" ? "downlink" : "sum";
   const now = Date.now();
@@ -139,6 +199,15 @@ agentRoutes.post("/traffic", async (c) => {
 
     // 流量暴增检测：1h 窗口内新增超阈值告警客户与管理员
     await checkTrafficSpike(c.env, token, delta);
+
+    // 接入 IP 统计：把本周期增量按连接数比例分摊到各来源 IP（估算）
+    // 活跃 IP 与上周期不一致 = 接入地址变更，提醒本人自查（本人换网络属正常）
+    attributeIpTraffic(token, ipConns[uuid] ?? {}, delta, now);
+    const changedIps = detectIpChange(token, nodeKey, ipConns[uuid] ?? {});
+    delete ipConns[uuid];
+    if (changedIps.length > 0) {
+      await notifyIpChange(c.env, token, changedIps);
+    }
 
     // 设备级流量审计：该设备 uuid 在各节点的累计消耗之和
     if (device) {
@@ -180,17 +249,37 @@ agentRoutes.post("/traffic", async (c) => {
           token.status = "expired";
         }
       }
+      // 80% 提前预警（每月一次）→ 用超时自动预支（每档一次）
+      await notifyMonth80(c.env, token, quotaGb);
       await notifyBorrow(c.env, token, borrowed, quotaGb);
     }
 
-    if (token.traffic_used_gb >= token.traffic_limit_gb && !token.traffic_exhausted_at) {
-      token.status = "expired";
-      token.traffic_exhausted_at = now;
+    if (token.traffic_used_gb >= token.traffic_limit_gb) {
+      if (!token.traffic_exhausted_at) {
+        // 刚耗尽：进入宽限期，不断连，由 checkTokenRisks 发续费引导邮件
+        token.traffic_exhausted_at = now;
+      } else if (now - token.traffic_exhausted_at > TRAFFIC_GRACE_MS) {
+        // 宽限期结束仍未续费/重置：才置过期并切断
+        token.status = "expired";
+      }
     }
 
     // 风险检测：流量 80% / 耗尽时提醒客户（幂等，每类只发一次）
     await checkTokenRisks(c.env, token);
     await saveToken(c.env, token);
+  }
+
+  // 本周期有连接但无流量增量的 uuid（stats 循环未覆盖）：只记连接数与最近接入时间
+  for (const [uuid, conns] of Object.entries(ipConns)) {
+    const found = await getTokenByAnyUuid(c.env, uuid);
+    if (!found || found.token.status !== "active") continue;
+    attributeIpTraffic(found.token, conns, 0, now);
+    const ipKey = found.device ? `${node.id}:${uuid}` : node.id;
+    const changedIps = detectIpChange(found.token, ipKey, conns);
+    if (changedIps.length > 0) {
+      await notifyIpChange(c.env, found.token, changedIps);
+    }
+    await saveToken(c.env, found.token);
   }
 
   // 更新用户在线状态与设备数（只有 active token 才更新）

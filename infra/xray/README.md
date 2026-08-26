@@ -37,6 +37,7 @@ Claude 区域封锁会 302 到 `app-unavailable-in-region`，按 Location 判定
 用户 → Clash → **直连本机**（VLESS + WS + TLS，域名:443）→ 本机 Xray → 目标网站
 
 - 本机的 `vpn-agent` 每 30 秒向中心 API 拉取所有 active 用户的 UUID；用户增删通过 Xray HandlerService 在线生效（`xray api adu/rmu`，不重启），仅配置结构变化时整体重启 Xray；同时上报每用户流量、在线数与心跳
+- **接入 IP 统计**：Caddy 以 PROXY protocol v1 把真实客户端 IP 透传给 Xray（Xray inbound 开 `acceptProxyProtocol`），access log 记录 `来源IP + email(uuid)`；agent 增量解析日志，把每个上报周期内「uuid → 来源IP → 连接次数」上报中心，中心按连接数比例把流量增量分摊到各 IP（估算口径，Xray 不提供逐连接字节数）。用户在 Token 页可见自己的接入 IP 统计
 - token 校验在 Xray 层完成：UUID 不在 clients 列表里的连接会被直接拒绝
 - 客户端通过订阅里的节点域名直连本机，**不经过 Cloudflare Worker**
 
@@ -61,7 +62,7 @@ sudo bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-re
 ### 2. TLS 反代（二选一）
 
 ```bash
-# 方式 A：Caddy（自动 HTTPS，最省事）
+# 方式 A：Caddy（自动 HTTPS，最省事；以 PROXY protocol 透传真实客户端 IP）
 sudo bash install-caddy.sh my1.example.com
 
 # 方式 B：已有 Nginx 的机器
@@ -69,6 +70,13 @@ sudo bash install-nginx-node.sh my1.example.com
 ```
 
 两者都会把 `https://域名/vless-ws` 反代到 `127.0.0.1:8443`，并提供一个 `/ping` 测速端点。
+
+> ⚠️ 开源 Nginx 的 http proxy 模块**不支持向上游发送 PROXY protocol**
+> （`proxy_protocol on;` 仅存在于 stream 模块），方式 B 下 Xray 拿不到真实客户端
+> IP，接入 IP 统计不可用，且 Xray 开了 `acceptProxyProtocol` 会导致全部连接失败。
+> 已有 Nginx 的机器参照 nx1 的做法：Caddy 监听替代端口（如 2087）复用
+> Certbot 证书（`/etc/letsencrypt/renewal-hooks/deploy/` 钩子同步证书 + reload caddy），
+> 节点端口在中心改为该端口。
 
 ### 3. 注册节点并安装 Agent
 

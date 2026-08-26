@@ -6,16 +6,18 @@ import { deleteDeviceIndex, deleteTokenByUuid, getOrder, getPlans, getTicket, ge
 import { checkExpiringToken, checkNodeHealth, notifyAdmin } from "../lib/risk-notify";
 import { getNodes, saveNodes } from "../lib/nodes";
 import { sendMail, shouldSendEmail } from "../lib/email-aliyun";
-import { issueTokenForOrder } from "../lib/issue-token";
+import { fulfillOrder } from "../lib/issue-token";
+import { restoreCredit } from "../lib/referral";
+import { withinTrafficAllowance } from "./agent";
 import type { Env } from "../types";
 
 export const adminRoutes = new Hono<{ Bindings: Env }>();
 adminRoutes.use("*", adminAuth);
 
-export const QR_NAMES = new Set(["alipay", "wechat"]);
+export const QR_NAMES = new Set(["alipay"]);
 
 /**
- * PUT /api/admin/qr/:name —— 上传收款码图片（name = alipay | wechat）
+ * PUT /api/admin/qr/:name —— 上传收款码图片（仅 alipay）
  * body 为图片二进制（png/jpeg，≤2MB），存 KV，由 GET /api/qr/:name 对外供图
  */
 adminRoutes.put("/qr/:name", async (c) => {
@@ -44,12 +46,12 @@ adminRoutes.put("/qr/:name", async (c) => {
 const DEFAULT_PLANS: Plan[] = [
   {
     id: "plan_3days",
-    name: "3 天体验",
-    duration_days: 3,
-    price_cny: 3,
-    traffic_limit_gb: 3,
+    name: "30 天免费体验",
+    duration_days: 30,
+    price_cny: 0,
+    traffic_limit_gb: 20,
     max_devices: 1,
-    description: "3 天体验，3 GB 总流量，1 台设备",
+    description: "30 天免费体验，20 GB 总流量，1 台设备（首页免费领取，不出售）",
   },
   {
     id: "plan_monthly",
@@ -111,7 +113,7 @@ adminRoutes.post("/seed", async (c) => {
 });
 
 /**
- * GET /api/admin/xray-clients —— 返回当前 active 且未过期的 token UUID 列表
+ * GET /api/admin/xray-clients —— 返回当前允许接入的 token UUID 列表（active、未过期、流量在额度或宽限期内）
  * 供 VPS 上的 Xray 同步脚本拉取使用
  * query raw=1 时只返回每行一个 UUID 的纯文本，方便 shell 处理
  */
@@ -126,7 +128,7 @@ adminRoutes.get("/xray-clients", async (c) => {
     if (
       token.status === "active" &&
       (token.expires_at ?? 0) > now &&
-      token.traffic_used_gb < token.traffic_limit_gb
+      withinTrafficAllowance(token, now)
     ) {
       uuids.push(token.uuid);
       for (const d of token.devices ?? []) uuids.push(d.uuid);
@@ -215,6 +217,30 @@ adminRoutes.delete("/tokens/:id", async (c) => {
   if (!token) return c.json({ ok: false, error: "token not found" }, 404);
   await c.env.TOKENS.delete(KV.TOKEN + token.uuid);
   await c.env.TOKENS.delete(KV.TOKEN_BY_ID + token.id);
+  return c.json({ ok: true });
+});
+
+/**
+ * POST /api/admin/alert —— 中心巡检脚本上报可用性告警，转发到管理员邮箱
+ * body: { title: string, message: string }（message 按纯文本转义展示）
+ */
+adminRoutes.post("/alert", async (c) => {
+  const body = (await c.req.json().catch(() => null)) as
+    | { title?: string; message?: string }
+    | null;
+  if (!body?.title?.trim() || !body?.message?.trim()) {
+    return c.json({ ok: false, error: "title and message are required" }, 400);
+  }
+  const esc = (s: string) =>
+    s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  const title = body.title.trim().slice(0, 80);
+  const message = body.message.trim().slice(0, 4000);
+  await notifyAdmin(
+    c.env,
+    title,
+    `<pre style="white-space: pre-wrap; font-size: 13px;">${esc(message)}</pre>`,
+    message
+  );
   return c.json({ ok: true });
 });
 
@@ -362,25 +388,16 @@ adminRoutes.post("/orders/:id/confirm", async (c) => {
     return c.json({ ok: false, error: "order has been cancelled" }, 409);
   }
 
-  if (order.status === "paid") {
-    const token = order.token_id ? await getTokenById(c.env, order.token_id) : null;
-    return c.json({ ok: true, data: { order, token, already: true } });
+  let result: { token: Token | null; already: boolean };
+  try {
+    result = await fulfillOrder(c.env, c.executionCtx, order);
+  } catch (e) {
+    return c.json({ ok: false, error: (e as Error).message }, 500);
   }
-
-  const plans = await getPlans(c.env);
-  const plan = plans.find((p) => p.id === order.plan_id);
-  if (!plan) return c.json({ ok: false, error: `plan '${order.plan_id}' not found` }, 500);
-
-  const token = await issueTokenForOrder(c.env, c.executionCtx, order, plan);
-  order.status = "paid";
-  order.token_id = token.id;
-  order.paid_at = Date.now();
-  await saveOrder(c.env, order);
-
-  return c.json({ ok: true, data: { order, token } });
+  return c.json({ ok: true, data: { order, token: result.token, already: result.already || undefined } });
 });
 
-/** POST /api/admin/orders/:id/cancel —— 取消未支付的订单（无效/刷单订单清理） */
+/** POST /api/admin/orders/:id/cancel —— 取消未支付的订单（无效/刷单订单清理），已用的推广额度归还 */
 adminRoutes.post("/orders/:id/cancel", async (c) => {
   const order = await getOrder(c.env, c.req.param("id"));
   if (!order) return c.json({ ok: false, error: "order not found" }, 404);
@@ -389,6 +406,9 @@ adminRoutes.post("/orders/:id/cancel", async (c) => {
   }
   order.status = "failed";
   await saveOrder(c.env, order);
+  if (order.discount_cny && order.contact) {
+    await restoreCredit(c.env, order.contact.trim().toLowerCase(), order.discount_cny);
+  }
   return c.json({ ok: true, data: order });
 });
 

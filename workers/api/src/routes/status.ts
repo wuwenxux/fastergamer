@@ -11,6 +11,7 @@ const ONLINE_THRESHOLD_MS = 90_000;
  * 返回节点列表及最近心跳时间，供前端状态页展示
  */
 statusRoutes.get("/", async (c) => {
+  c.header("Cache-Control", "no-store");
   const nodes = await getNodes(c.env);
   const now = Date.now();
   const data = nodes

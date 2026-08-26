@@ -24,7 +24,13 @@ fi
 
 sudo tee /etc/caddy/Caddyfile <<EOF
 ${DOMAIN} {
-    reverse_proxy /vless-ws 127.0.0.1:8443
+    # PROXY protocol v1：把真实客户端 IP 带给 Xray（access log 按接入 IP 统计依赖它）
+    # 注意：Xray 侧必须同步开启 acceptProxyProtocol，否则连接无法建立
+    reverse_proxy /vless-ws 127.0.0.1:8443 {
+        transport http {
+            proxy_protocol v1
+        }
+    }
 
     # 客户端测速用端点
     respond /ping "pong" 200

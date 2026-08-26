@@ -29,14 +29,14 @@ UUID=$(node -e "
   process.exit(1);
 ") || { echo "✗ 没有可用的 active token"; exit 1; }
 
-# 从 NODES 注册表取 active 节点（可选过滤），输出 name|host 行
+# 从 NODES 注册表取 active 节点（可选过滤），输出 name|host|port|ws_path 行
 mapfile -t NODES < <(node -e "
   const fs = require('fs');
   const nodes = JSON.parse(fs.readFileSync('$NODES_KV', 'utf8'));
   for (const n of nodes) {
     if (!n.active) continue;
     if ('$FILTER' && !(n.name.includes('$FILTER') || n.host.includes('$FILTER'))) continue;
-    console.log(n.name + '|' + n.host);
+    console.log(n.name + '|' + n.host + '|' + (n.port || 443) + '|' + (n.ws_path || '/vless-ws'));
   }
 ")
 [ ${#NODES[@]} -gt 0 ] || { echo "✗ 没有匹配的 active 节点"; exit 1; }
@@ -61,7 +61,7 @@ check_code() { # 名称 期望码 "实得码 耗时"
 
 IDX=0
 for entry in "${NODES[@]}"; do
-  NAME="${entry%%|*}"; HOST="${entry##*|}"
+  IFS='|' read -r NAME HOST RPORT WSPATH <<< "$entry"
   PORT=$((12808 + IDX)); IDX=$((IDX + 1))
   CFG="/tmp/xray-test-$PORT.json"
   cat > "$CFG" <<EOF
@@ -70,8 +70,8 @@ for entry in "${NODES[@]}"; do
   "inbounds": [{"listen": "127.0.0.1", "port": $PORT, "protocol": "socks", "settings": {"udp": false}}],
   "outbounds": [{
     "protocol": "vless",
-    "settings": {"vnext": [{"address": "$HOST", "port": 443, "users": [{"id": "$UUID", "encryption": "none"}]}]},
-    "streamSettings": {"network": "ws", "security": "tls", "tlsSettings": {"serverName": "$HOST"}, "wsSettings": {"path": "/vless-ws"}}
+    "settings": {"vnext": [{"address": "$HOST", "port": $RPORT, "users": [{"id": "$UUID", "encryption": "none"}]}]},
+    "streamSettings": {"network": "ws", "security": "tls", "tlsSettings": {"serverName": "$HOST"}, "wsSettings": {"path": "$WSPATH"}}
   }]
 }
 EOF
@@ -91,6 +91,12 @@ EOF
   OUT=$(curl -s -o /dev/null -w "%{http_code} %{time_total}" --max-time 15 \
         --socks5-hostname "127.0.0.1:$PORT" https://chatgpt.com/cdn-cgi/trace 2>/dev/null)
   check_code "ChatGPT" "200" "$OUT"
+  # Claude 对机房 IP/地区普遍封锁（302 区域受限 / 403），不代表服务不可用；
+  # 巡检（watch-nodes.sh）以 SKIP_CLAUDE=1 跳过，人工排查时才看它
+  if [ "${SKIP_CLAUDE:-}" = "1" ]; then
+    kill "${PIDS[-1]}" 2>/dev/null; unset 'PIDS[-1]'
+    continue
+  fi
   HDR=$(curl -s -I --max-time 15 --socks5-hostname "127.0.0.1:$PORT" https://claude.ai/ 2>/dev/null)
   # 可能有 103 Early Hints 等多行状态，取最后一行
   CODE=$(echo "$HDR" | grep -oE "^HTTP/[0-9.]+ [0-9]{3}" | tail -1 | grep -oE "[0-9]{3}")

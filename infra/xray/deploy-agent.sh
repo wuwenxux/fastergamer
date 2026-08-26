@@ -35,6 +35,7 @@ DEFAULT_API_URL = "https://fastergamer.cn/api/agent/config"
 DEFAULT_XRAY_CONFIG = "/usr/local/etc/xray/config.json"
 DEFAULT_XRAY_BIN = "/usr/local/bin/xray"
 DEFAULT_XRAY_API = "127.0.0.1:10085"
+DEFAULT_ACCESS_LOG = "/var/log/xray/access.log"
 INBOUND_TAG = "vless-in"
 INTERVAL = 30
 
@@ -45,6 +46,7 @@ def load_env():
         "XRAY_CONFIG": DEFAULT_XRAY_CONFIG,
         "XRAY_BIN": DEFAULT_XRAY_BIN,
         "XRAY_API": DEFAULT_XRAY_API,
+        "ACCESS_LOG": DEFAULT_ACCESS_LOG,
     }
     if ENV_FILE.exists():
         for line in ENV_FILE.read_text(encoding="utf-8").splitlines():
@@ -63,11 +65,13 @@ def fetch_config(api_url: str, node_key: str):
         return json.loads(resp.read().decode("utf-8"))
 
 
-def build_xray_config(uuids, listen_addr="127.0.0.1", api_addr="127.0.0.1", api_port=10085):
+def build_xray_config(uuids, listen_addr="127.0.0.1", api_addr="127.0.0.1", api_port=10085,
+                      access_log=DEFAULT_ACCESS_LOG):
     # email 用于 StatsService 按用户统计流量，这里用 uuid 本身作为 email
     clients = [{"id": u, "email": u, "flow": ""} for u in uuids]
     return {
-        "log": {"loglevel": "warning"},
+        # access log 记录每条连接的 来源IP + email(uuid)，agent 增量解析做接入 IP 统计
+        "log": {"loglevel": "warning", "access": access_log},
         "stats": {},
         # Xray >= v1.8.11 支持 api.listen 直接绑定 gRPC，无需 dokodemo-door inbound
         "api": {
@@ -96,7 +100,12 @@ def build_xray_config(uuids, listen_addr="127.0.0.1", api_addr="127.0.0.1", api_
                 "port": 8443,
                 "protocol": "vless",
                 "settings": {"clients": clients, "decryption": "none"},
-                "streamSettings": {"network": "ws", "wsSettings": {"path": "/vless-ws"}},
+                "streamSettings": {
+                    "network": "ws",
+                    "wsSettings": {"path": "/vless-ws"},
+                    # 前置 Caddy 以 PROXY protocol v1 转发，Xray 日志可见真实客户端 IP
+                    "sockopt": {"acceptProxyProtocol": True},
+                },
             }
         ],
         "outbounds": [{"protocol": "freedom"}],
@@ -283,6 +292,57 @@ def collect_node_stats(xray_bin: str, xray_api: str) -> tuple[int, int]:
     return total_bytes, online_count
 
 
+class AccessLogTracker:
+    """
+    增量解析 Xray access log，统计每个上报周期内 (uuid → 来源IP → 连接次数)。
+    Xray 按连接记一行：`... from 1.2.3.4:5678 accepted tcp:dest:443 [vless-in >> direct] email: uuid`
+    （开启 PROXY protocol 后 from 为真实客户端 IP）。字节数无法按连接获得，
+    中心侧按连接数比例把 uuid 的流量增量分摊到各 IP，属估算口径。
+    """
+
+    LINE_RE = re.compile(r"from ([0-9a-fA-F.:]+):\d+ accepted .* email: (\S+)")
+
+    def __init__(self, path: str):
+        self.path = path
+        self.offset = None  # int | None；None 表示尚未定位（首次跳到文件尾，跳过历史）
+
+    def collect(self) -> dict[str, dict[str, int]]:
+        """读取新增日志并返回本周期计数；文件不存在/未变化时返回空。"""
+        try:
+            size = os.path.getsize(self.path)
+        except OSError:
+            return {}
+        if self.offset is None:
+            self.offset = size
+            return {}
+        if size < self.offset:
+            # 日志被轮转/截断（copytruncate），从头重读
+            self.offset = 0
+        try:
+            with open(self.path, "r", encoding="utf-8", errors="replace") as f:
+                f.seek(self.offset)
+                chunk = f.read()
+                # 只处理到最后一行完整换行，残余部分留到下周期
+                last_nl = chunk.rfind("\n")
+                if last_nl == -1:
+                    return {}
+                self.offset += last_nl + 1
+                chunk = chunk[: last_nl + 1]
+        except OSError:
+            return {}
+        counts: dict[str, dict[str, int]] = {}
+        for line in chunk.splitlines():
+            m = self.LINE_RE.search(line)
+            if not m:
+                continue
+            ip, uuid = m.group(1), m.group(2)
+            if ip.startswith("127.") or ip == "::1":
+                continue  # 本地探测不计
+            per_ip = counts.setdefault(uuid, {})
+            per_ip[ip] = per_ip.get(ip, 0) + 1
+        return counts
+
+
 def report_traffic(
     api_url: str,
     node_key: str,
@@ -290,6 +350,7 @@ def report_traffic(
     online: dict[str, bool],
     node_total_bytes: int,
     online_count: int,
+    ip_conns=None,
 ):
     """把流量统计、用户在线状态、节点统计 POST 到 /api/agent/traffic。"""
     # api_url 形如 .../agent/config，改成 .../agent/traffic
@@ -299,6 +360,8 @@ def report_traffic(
         "online": online,
         "node_total_bytes": node_total_bytes,
         "online_count": online_count,
+        # 接入 IP 连接计数（本周期增量），中心按比例估算各 IP 流量
+        "ip_conns": ip_conns or {},
         # 计费口径：只计下行。中心检测到口径变化时会重置基线，避免重复计费
         "billing": "downlink",
     }).encode("utf-8")
@@ -325,6 +388,53 @@ def post_heartbeat(api_url: str, node_key: str):
         return json.loads(resp.read().decode("utf-8"))
 
 
+BLOCK_CHAIN = "FG-BLOCK"
+
+
+def sync_blocked_ips(blocked_ips) -> None:
+    """
+    把中心下发的封禁 IP 列表同步到 iptables（FG-BLOCK 链，INPUT 跳转）。
+    幂等：每个周期 diff 增删；节点重启后规则丢失，agent 会在下个周期重建。
+    只处理 IPv4；防火墙按 IP 整节点阻断（无法按 uuid 区分），共享出口 IP 有误伤风险，
+    由用户在管理页自行权衡。任何失败只告警不影响主循环。
+    """
+    try:
+        desired = {ip for ip in blocked_ips if re.fullmatch(r"\d{1,3}(\.\d{1,3}){3}", ip)}
+        rules = subprocess.run(
+            ["iptables", "-S", BLOCK_CHAIN], capture_output=True, text=True, timeout=10
+        )
+        if rules.returncode != 0:
+            subprocess.run(["iptables", "-N", BLOCK_CHAIN], capture_output=True, timeout=10)
+        check = subprocess.run(
+            ["iptables", "-C", "INPUT", "-j", BLOCK_CHAIN], capture_output=True, timeout=10
+        )
+        if check.returncode != 0:
+            subprocess.run(
+                ["iptables", "-I", "INPUT", "-j", BLOCK_CHAIN],
+                capture_output=True, timeout=10,
+            )
+        current = set()
+        if rules.returncode == 0:
+            for line in rules.stdout.splitlines():
+                m = re.match(rf"-A {BLOCK_CHAIN} -s (\d+\.\d+\.\d+\.\d+)/32 -j DROP", line)
+                if m:
+                    current.add(m.group(1))
+        for ip in desired - current:
+            subprocess.run(
+                ["iptables", "-A", BLOCK_CHAIN, "-s", f"{ip}/32", "-j", "DROP"],
+                capture_output=True, timeout=10,
+            )
+            print(f"[info] blocked ip {ip}")
+        for ip in current - desired:
+            subprocess.run(
+                ["iptables", "-D", BLOCK_CHAIN, "-s", f"{ip}/32", "-j", "DROP"],
+                capture_output=True, timeout=10,
+            )
+            print(f"[info] unblocked ip {ip}")
+    except Exception as e:
+        print(f"[warn] sync blocked ips failed: {e}", file=sys.stderr)
+
+
 def main():
     env = load_env()
     api_url = env.get("API_URL", DEFAULT_API_URL)
@@ -333,6 +443,8 @@ def main():
     listen_addr = env.get("XRAY_LISTEN", "127.0.0.1")
     xray_bin = env.get("XRAY_BIN", DEFAULT_XRAY_BIN)
     xray_api = env.get("XRAY_API", DEFAULT_XRAY_API)
+    access_log = env.get("ACCESS_LOG", DEFAULT_ACCESS_LOG)
+    tracker = AccessLogTracker(access_log)
 
     if not node_key:
         print("[error] NODE_KEY not set in /etc/vpn-agent/env", file=sys.stderr)
@@ -352,7 +464,9 @@ def main():
                 continue
 
             uuids = resp["data"]["uuids"]
-            new_config = build_xray_config(uuids, listen_addr)
+            new_config = build_xray_config(uuids, listen_addr, access_log=access_log)
+            # 同步用户自助封禁的 IP 到防火墙（与 Xray 配置变更无关，每周期执行）
+            sync_blocked_ips(resp["data"].get("blocked_ips", []))
             new_text = json.dumps(new_config, indent=2, ensure_ascii=False)
 
             old_text = ""
@@ -399,8 +513,9 @@ def main():
             # 上报流量、用户在线状态与节点统计（无论配置是否变化）
             traffic, user_online = collect_user_stats(xray_bin, xray_api)
             node_total_bytes, online_count = collect_node_stats(xray_bin, xray_api)
+            ip_conns = tracker.collect()
             report_resp = report_traffic(
-                api_url, node_key, traffic, user_online, node_total_bytes, online_count
+                api_url, node_key, traffic, user_online, node_total_bytes, online_count, ip_conns
             )
             if report_resp.get("ok"):
                 online_users = sum(1 for v in user_online.values() if v)
@@ -427,6 +542,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 PYEOF
 
 mkdir -p /etc/vpn-agent
@@ -440,6 +556,21 @@ XRAY_BIN=/usr/local/bin/xray
 XRAY_API=127.0.0.1:10085
 EOF
 chmod 600 /etc/vpn-agent/env
+
+# access log 轮转：Xray 持有 fd，用 copytruncate 方式，避免撑爆磁盘
+mkdir -p /var/log/xray
+chown wafer:wafer /var/log/xray 2>/dev/null || true
+cat > /etc/logrotate.d/xray-access <<'EOF'
+/var/log/xray/access.log {
+    daily
+    rotate 3
+    size 50M
+    copytruncate
+    compress
+    missingok
+    notifempty
+}
+EOF
 
 cat > /etc/systemd/system/vpn-agent.service <<'EOF'
 [Unit]
