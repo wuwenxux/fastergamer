@@ -1,5 +1,6 @@
 import { Hono } from "hono";
 import { getTokenByAnyUuid } from "../lib/kv";
+import { activatePaidToken } from "../lib/activate";
 import { buildClashConfig } from "../lib/clash";
 import { getNodes, isBudgetExhausted } from "../lib/nodes";
 import type { Env } from "../types";
@@ -9,7 +10,7 @@ export const subRoutes = new Hono<{ Bindings: Env }>();
 /**
  * GET /api/sub?uuid={uuid} —— 生成 Clash 订阅配置
  * uuid 可以是 token 主 uuid 或某个设备槽位的 uuid（每台设备独立订阅）
- * 校验 token 处于 active 且未过期，返回 text/yaml
+ * 待激活（paid）的 token 首次拉取时自动激活并开始计时；过期/撤销返回 403
  */
 subRoutes.get("/", async (c) => {
   const uuid = c.req.query("uuid");
@@ -21,11 +22,16 @@ subRoutes.get("/", async (c) => {
   if (!found) {
     return c.text("token not found", 404);
   }
-  const { token } = found;
+  let { token } = found;
 
   const now = Date.now();
+  // 导入即激活：待激活（paid）的 token 首次被 Clash 拉取订阅时自动激活并开始计时，
+  // 避免"复制订阅链接→导入→403"的新手卡点
+  if (token.status === "paid") {
+    token = await activatePaidToken(c.env, token);
+  }
   if (token.status !== "active" || (token.expires_at && token.expires_at <= now)) {
-    return c.text("token 未激活或已过期，请先在网站激活", 403);
+    return c.text("token 已过期或被撤销，请登录网站查看", 403);
   }
 
   const nodes = (await getNodes(c.env)).filter((n) => !isBudgetExhausted(n));

@@ -12,11 +12,11 @@ const [base = "http://localhost:8787", adminKey = "change-me-in-production"] =
 const plans = [
   {
     id: "plan_3days",
-    name: "3 天体验",
-    duration_days: 3,
-    price_cny: 3,
-    traffic_limit_gb: 3,
-    description: "3 天体验，3 GB 总流量",
+    name: "30 天免费体验",
+    duration_days: 30,
+    price_cny: 0,
+    traffic_limit_gb: 20,
+    description: "30 天免费体验，20 GB 总流量（首页免费领取，不出售）",
   },
   {
     id: "plan_monthly",

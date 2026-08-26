@@ -9,6 +9,7 @@ import type { Env } from "./types";
 
 import { agentRoutes } from "./routes/agent";
 import { nodesRoutes } from "./routes/nodes";
+import { referralRoutes } from "./routes/referral";
 import { statusRoutes } from "./routes/status";
 import { ticketsRoutes } from "./routes/tickets";
 import { rateLimit } from "./middleware/rateLimit";
@@ -36,10 +37,15 @@ app.use(
 
 app.get("/health", (c) => c.json({ ok: true, service: "vpn-api" }));
 
-/** GET /api/qr/:name —— 公开的收款码图片输出（alipay | wechat） */
+/** GET /api/payment-info —— 公开的收款信息（静态转账模式下展示的支付宝账号） */
+app.get("/api/payment-info", (c) =>
+  c.json({ ok: true, data: { alipay_account: c.env.ALIPAY_ACCOUNT ?? null } })
+);
+
+/** GET /api/qr/:name —— 公开的收款码图片输出（仅 alipay） */
 app.get("/api/qr/:name", async (c) => {
   const name = c.req.param("name");
-  if (name !== "alipay" && name !== "wechat") {
+  if (name !== "alipay") {
     return c.json({ ok: false, error: "not found" }, 404);
   }
   const { value, metadata } = await c.env.PLANS.getWithMetadata<ArrayBuffer>(
@@ -54,9 +60,11 @@ app.get("/api/qr/:name", async (c) => {
   });
 });
 
-// 敏感接口限流：找回、下单、反馈、登录链接
+// 敏感接口限流：找回、下单、反馈、登录链接、magic 核销
 app.use("/api/tokens/recover", rateLimit(10, 60_000));
+app.use("/api/tokens/trial", rateLimit(3, 60_000));
 app.use("/api/tokens/login-link", rateLimit(5, 60_000));
+app.use("/api/tokens/magic/consume", rateLimit(10, 60_000));
 app.use("/api/orders", rateLimit(20, 60_000));
 app.use("/api/feedback", rateLimit(5, 60_000));
 
@@ -68,6 +76,7 @@ app.route("/api/admin", adminRoutes);
 app.route("/api/admin/nodes", nodesRoutes);
 app.route("/api/agent", agentRoutes);
 app.route("/api/nodes/status", statusRoutes);
+app.route("/api/referral", referralRoutes);
 app.route("/api", ticketsRoutes);
 
 app.all("*", (c) => c.json({ ok: false, error: "not found" }, 404));

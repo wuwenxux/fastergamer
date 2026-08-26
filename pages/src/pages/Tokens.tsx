@@ -1,10 +1,25 @@
 import { useEffect, useState } from "react";
 import { Link, useLocation } from "react-router-dom";
-import type { Token } from "../../../shared/types";
+import type { TokenStatus as TokenStatusType } from "../../../shared/types";
 import TokenStatus from "../components/TokenStatus";
-import { api } from "../services/api";
+import ReferralCard from "../components/ReferralCard";
+import { api, type TokenView } from "../services/api";
 
 const STORAGE_KEY = "my_tokens";
+
+const STATUS_LABEL: Record<TokenStatusType, string> = {
+  paid: "待激活",
+  active: "使用中",
+  expired: "已过期",
+  revoked: "已撤销",
+};
+
+const STATUS_COLOR: Record<TokenStatusType, string> = {
+  paid: "bg-amber-500/20 text-amber-300 border-amber-500/40",
+  active: "bg-emerald-500/20 text-emerald-300 border-emerald-500/40",
+  expired: "bg-rose-500/20 text-rose-300 border-rose-500/40",
+  revoked: "bg-slate-600/30 text-slate-400 border-slate-500/40",
+};
 
 function readSavedIds(): string[] {
   try {
@@ -25,11 +40,11 @@ function saveIds(ids: string[]) {
 export default function Tokens() {
   const location = useLocation();
   const [input, setInput] = useState("");
-  const [token, setToken] = useState<Token | null>(null);
+  const [token, setToken] = useState<TokenView | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [savedIds, setSavedIds] = useState<string[]>([]);
-  const [savedTokens, setSavedTokens] = useState<Token[]>([]);
+  const [savedTokens, setSavedTokens] = useState<TokenView[]>([]);
   const [loadingSaved, setLoadingSaved] = useState(false);
 
   // 从其他页面跳转（state）或邮件登录链接（?id=）过来时自动查询 token
@@ -66,7 +81,7 @@ export default function Tokens() {
       )
     )
       .then((results) => {
-        const valid = results.filter((t): t is Token => t !== null);
+        const valid = results.filter((t): t is TokenView => t !== null);
         setSavedTokens(valid);
         // 清理已失效（如被删除）的本地记录
         const foundIds = new Set(valid.map((t) => t.id));
@@ -170,17 +185,15 @@ export default function Tokens() {
       {error && <p className="text-rose-400 text-sm">{error}</p>}
 
       <p className="text-xs text-slate-500">
-        忘记 Token？
-        <Link to="/recover" className="text-sky-400 hover:underline">
-          通过购买时留的邮箱找回 →
-        </Link>
+        忘记 Token ID？直接输入购买时留的邮箱，登录链接邮件里会列出名下所有 Token。
       </p>
 
-      {token && (
-        <>
+      {token &&
+        (token.restricted ? (
+          <RestrictedTokenCard token={token} />
+        ) : (
           <TokenStatus token={token} />
-        </>
-      )}
+        ))}
 
       <p className="text-sm text-slate-400">
         还不知道怎么导入订阅？
@@ -188,6 +201,8 @@ export default function Tokens() {
           查看完整使用教程 →
         </Link>
       </p>
+
+      <ReferralCard />
 
       {savedTokens.length > 0 && (
         <div className="space-y-3">
@@ -234,6 +249,85 @@ export default function Tokens() {
       {loadingSaved && savedTokens.length === 0 && (
         <p className="text-sm text-slate-500">正在加载历史 Token…</p>
       )}
+    </div>
+  );
+}
+
+/**
+ * 受限概要卡片 —— 未登录或非本人查询时后端不返回 uuid / 订阅链接 / 设备列表，
+ * 只展示状态、套餐、有效期和流量用量，引导登录后查看完整信息
+ */
+function RestrictedTokenCard({ token }: { token: TokenView }) {
+  const limitGb = token.traffic_limit_gb ?? 0;
+  const usedGb = token.traffic_used_gb ?? 0;
+  const percent = limitGb > 0 ? Math.min(100, (usedGb / limitGb) * 100) : 0;
+  const exhausted = limitGb > 0 && usedGb >= limitGb;
+
+  return (
+    <div className="rounded-2xl border border-slate-700 bg-slate-900 p-6 space-y-4">
+      <div className="flex items-center justify-between flex-wrap gap-2">
+        <div>
+          <div className="text-xs text-slate-400">Token</div>
+          <div className="font-mono text-sm">{token.id}</div>
+        </div>
+        <div className="flex items-center gap-2">
+          {token.online && (
+            <span className="rounded-full bg-sky-500/20 text-sky-300 border border-sky-500/40 px-3 py-1 text-xs font-medium">
+              当前在线
+            </span>
+          )}
+          <span
+            className={`rounded-full border px-3 py-1 text-xs font-medium ${STATUS_COLOR[token.status]}`}
+          >
+            {STATUS_LABEL[token.status]}
+          </span>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
+        <div className="rounded-lg bg-slate-800/60 p-3">
+          <div className="text-slate-400 text-xs mb-1">套餐</div>
+          <div>{token.plan_id}</div>
+        </div>
+        <div className="rounded-lg bg-slate-800/60 p-3">
+          <div className="text-slate-400 text-xs mb-1">有效期</div>
+          <div>
+            {token.expires_at
+              ? new Date(token.expires_at).toLocaleString()
+              : token.status === "paid"
+              ? "尚未激活，激活后开始计时"
+              : "无有效期信息"}
+          </div>
+        </div>
+      </div>
+
+      {limitGb > 0 && (
+        <div className="rounded-lg bg-slate-800/60 p-3 space-y-2">
+          <div className="flex justify-between text-xs">
+            <span className="text-slate-400">流量用量</span>
+            <span className={exhausted ? "text-rose-400 font-medium" : "text-slate-200"}>
+              {usedGb.toFixed(2)} / {limitGb} GB
+            </span>
+          </div>
+          <div className="h-2 w-full rounded-full bg-slate-700 overflow-hidden">
+            <div
+              className={`h-full rounded-full ${
+                exhausted ? "bg-rose-500" : percent > 80 ? "bg-amber-500" : "bg-emerald-500"
+              }`}
+              style={{ width: `${percent}%` }}
+            />
+          </div>
+        </div>
+      )}
+
+      <div className="rounded-xl border border-amber-500/40 bg-amber-500/10 p-4 space-y-3">
+        <p className="text-sm text-amber-300">
+          🔒 为保护账号安全，UUID / 订阅链接 / 设备管理需验证邮箱后查看
+        </p>
+        <p className="text-xs text-amber-200/70">
+          在上方输入购买时填写的邮箱并点击「发送登录链接」，点邮件里的一次性链接即可直接登录查看完整信息。
+        </p>
+      </div>
     </div>
   );
 }

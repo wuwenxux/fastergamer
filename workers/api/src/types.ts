@@ -21,4 +21,12 @@ export interface Env {
   SITE_URL?: string;
   /** 新反馈工单的管理员通知邮箱（可选，不配置则不通知） */
   ADMIN_NOTIFY_EMAIL?: string;
+  /** 支付宝当面付应用 appid（三项齐全才启用动态扫码，否则回退静态收款码人工确认） */
+  ALIPAY_APPID?: string;
+  /** 支付宝当面付应用私钥（PKCS8 PEM，可单行存放） */
+  ALIPAY_PRIVATE_KEY?: string;
+  /** 支付宝公钥（SPKI PEM，用于回调验签） */
+  ALIPAY_PUBLIC_KEY?: string;
+  /** 支付宝收款账号（静态转账模式展示给用户，手机号或邮箱） */
+  ALIPAY_ACCOUNT?: string;
 }

@@ -1,8 +1,8 @@
 import { Link, Route, Routes } from "react-router-dom";
+import AuthMagic from "./pages/AuthMagic";
 import Home from "./pages/Home";
 import Guide from "./pages/Guide";
 import Purchase from "./pages/Purchase";
-import Recover from "./pages/Recover";
 import Status from "./pages/Status";
 import Support from "./pages/Support";
 import Tokens from "./pages/Tokens";
@@ -39,7 +39,7 @@ export default function App() {
           <Route path="/buy" element={<Purchase />} />
           <Route path="/status" element={<Status />} />
           <Route path="/tokens" element={<Tokens />} />
-          <Route path="/recover" element={<Recover />} />
+          <Route path="/auth/magic" element={<AuthMagic />} />
           <Route path="/guide" element={<Guide />} />
           <Route path="/support" element={<Support />} />
         </Routes>

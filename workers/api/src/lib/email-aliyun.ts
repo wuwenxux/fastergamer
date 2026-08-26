@@ -21,6 +21,8 @@ interface TokenEmailContext {
   status: "paid" | "active";
   contact: string;
   expiresAt?: number;
+  /** 一键免登录管理链接（一次性 magic ticket，15 分钟有效） */
+  magicUrl?: string;
 }
 
 /**
@@ -134,9 +136,11 @@ export async function sendTokenEmail(
   ctx: TokenEmailContext
 ): Promise<{ ok: boolean; id?: string; error?: string }> {
   const site = siteUrl(env);
-  const tokenUrl = `${site}/tokens`;
+  const tokenUrl = ctx.magicUrl ?? `${site}/tokens`;
+  const tokensPage = `${site}/tokens`;
   const recoverUrl = `${site}/recover`;
   const subUrl = `${site}/api/sub?uuid=${encodeURIComponent(ctx.uuid)}`;
+  const mainBtnLabel = ctx.magicUrl ? "一键进入管理页（免登录）" : "查看 Token 与订阅链接";
 
   const subject = "【GameBoost】你的加速 Token 已生成";
   const html = `
@@ -175,10 +179,11 @@ export async function sendTokenEmail(
     </table>
 
     <div style="text-align: center; margin: 24px 0;">
-      <a href="${tokenUrl}" style="display: inline-block; background: #0ea5e9; color: #fff; padding: 12px 28px; border-radius: 8px; text-decoration: none; font-weight: 500;">查看 Token 与订阅链接</a>
+      <a href="${tokenUrl}" style="display: inline-block; background: #0ea5e9; color: #fff; padding: 12px 28px; border-radius: 8px; text-decoration: none; font-weight: 500;">${mainBtnLabel}</a>
     </div>
 
     <p style="font-size: 14px; color: #64748b;">
+      ${ctx.magicUrl ? `上方按钮 15 分钟内有效（一次性），过期后可在 <a href="${tokensPage}" style="color: #0ea5e9;">我的 Token</a> 页面输入邮箱重新获取管理链接。` : ""}
       如果忘记 Token ID，可凭此邮箱在 <a href="${recoverUrl}" style="color: #0ea5e9;">找回 Token</a> 页面查询。
     </p>
   </div>
@@ -186,15 +191,14 @@ export async function sendTokenEmail(
   <div style="margin-top: 24px; padding: 20px; background: #fff7ed; border-radius: 12px; border: 1px solid #fed7aa;">
     <p style="margin: 0; font-weight: 500; color: #9a3412;">使用步骤</p>
     <ol style="margin: 10px 0 0; padding-left: 20px; color: #7c2d12; font-size: 14px;">
-      <li>打开 <a href="${tokenUrl}" style="color: #0ea5e9;">${tokenUrl}</a></li>
-      <li>输入 Token ID 查询，如未激活请先点击「立即激活」</li>
-      <li>复制 Clash 订阅链接，粘贴到 Clash / Stash 客户端</li>
+      <li>复制下方订阅链接，粘贴到 Clash / Stash 客户端（首次导入自动激活并开始计时）</li>
       <li>选择节点并开启系统代理</li>
+      <li>点上方按钮可随时进入管理页查看用量与有效期</li>
     </ol>
   </div>
 
   <div style="margin-top: 24px; padding: 16px; background: #f1f5f9; border-radius: 12px; font-size: 13px; color: #64748b;">
-    <p style="margin: 0;"><strong>订阅链接（可直接复制到 Clash）：</strong></p>
+    <p style="margin: 0;"><strong>订阅链接（复制到 Clash，${ctx.status === "paid" ? "首次导入会自动激活并开始计时" : "可直接使用"}）：</strong></p>
     <code style="display: block; margin-top: 8px; padding: 10px; background: #0f172a; color: #e2e8f0; border-radius: 6px; word-break: break-all;">${subUrl}</code>
   </div>
 
@@ -213,15 +217,14 @@ GameBoost Token 凭证
 Token ID：${ctx.tokenId}
 状态：${ctx.status === "paid" ? "待激活" : "已激活"}
 ${ctx.expiresAt ? `有效期至：${new Date(ctx.expiresAt).toLocaleString("zh-CN")}\n` : ""}
-查看 Token：${tokenUrl}
+管理入口（${ctx.magicUrl ? "一键免登录，15 分钟内有效" : "网页"}）：${tokenUrl}
 找回 Token：${recoverUrl}
-订阅链接（粘贴到 Clash）：${subUrl}
+订阅链接（粘贴到 Clash${ctx.status === "paid" ? "，首次导入自动激活并开始计时" : ""}）：${subUrl}
 
 使用步骤：
-1. 打开 ${tokenUrl}
-2. 输入 Token ID 查询，未激活请先点击「立即激活」
-3. 复制 Clash 订阅链接，粘贴到 Clash / Stash 客户端
-4. 选择节点并开启系统代理
+1. 复制订阅链接，粘贴到 Clash / Stash 客户端（首次导入自动激活并开始计时）
+2. 选择节点并开启系统代理
+3. 点管理入口链接可随时查看用量与有效期
   `.trim();
 
   return sendMail(env, ctx.contact, subject, html, text);
