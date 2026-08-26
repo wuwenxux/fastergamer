@@ -37,6 +37,16 @@ export interface Device {
 /** Token 状态机 */
 export type TokenStatus = "paid" | "active" | "expired" | "revoked";
 
+/** 单个接入 IP 的统计（流量按连接数比例估算，非精确计量） */
+export interface IpStat {
+  /** 估算流量（bytes） */
+  bytes: number;
+  /** 连接次数 */
+  conns: number;
+  /** 最近一次接入时间（unix 毫秒） */
+  last_seen_at: number;
+}
+
 /** Token —— 即用户的 VLESS UUID + 有效时间 + 流量 */
 export interface Token {
   /** 短 ID，用于网页查询/激活，例如 tk_a1b2c3 */
@@ -77,6 +87,12 @@ export interface Token {
   online_by_node?: Record<string, number>;
   /** 最近一次检测到多节点同时在线（疑似多设备/分享使用）的时间（unix 毫秒） */
   multi_device_detected_at?: number;
+  /** 接入 IP 统计（IP → 估算流量/连接数/最近接入），由节点 access log 解析得出，仅供用户自查 */
+  traffic_by_ip?: Record<string, IpStat>;
+  /** 上一上报周期的活跃接入 IP（key：node.id 或 node.id:设备uuid），用于接入地址变更检测 */
+  active_ips?: Record<string, string[]>;
+  /** 用户自助封禁的接入 IP 列表；agent 同步到各节点防火墙，被封 IP 无法连接任何节点 */
+  blocked_ips?: string[];
   /** 已发送过的风险提醒（类型 → 发送时间戳），防止重复打扰 */
   notify_log?: Record<string, number>;
   /** 流量速率窗口起点（unix 毫秒），用于暴增检测 */
@@ -106,6 +122,14 @@ export interface Order {
   token_id?: string;
   /** 确认收款时间（unix 毫秒） */
   paid_at?: number;
+  /** 当面付动态二维码内容（配置了支付宝时由 precreate 生成；无则前端回退静态收款码） */
+  alipay_qr_code?: string;
+  /** 支付宝交易号（回调成功后记录，用于对账） */
+  trade_no?: string;
+  /** 推广减免金额（元）：邀请新用户注册获得，每个额度减 10 元 */
+  discount_cny?: number;
+  /** 实付金额（元）= 套餐价 - 减免；无减免时等于套餐价 */
+  payable_cny?: number;
   created_at: number;
 }
 
@@ -114,6 +138,8 @@ export interface CreateOrderRequest {
   plan_id: string;
   /** 买家联系方式，用于售后和续费提醒 */
   contact?: string;
+  /** 推广码（可选）：未领试用直接下单时也记录归因，首次付费成功后给邀请人结算 */
+  ref?: string;
 }
 
 /** 创建订单响应（人工收款模式：订单为 pending，确认收款后才发放 token） */
@@ -197,6 +223,13 @@ export interface FaqItem {
   category?: string;
 }
 
+/** 一次性 magic link 票据（登录用） */
+export interface MagicTicket {
+  email: string;
+  token_id: string;
+  created_at: number;
+}
+
 /** KV 键前缀常量 */
 export const KV = {
   TOKEN: "token:", // token:{uuid} → Token JSON
@@ -208,6 +241,12 @@ export const KV = {
   ROUTING: "routing", // routing → 区域名列表 JSON
   NODES: "nodes", // nodes → Node[] JSON
   QR: "qr:", // qr:{alipay|wechat} → 收款码图片二进制（存 PLANS namespace）
+  SESSION: "session:", // session:{token} → { email, created_at }（存 TOKENS namespace）
+  MAGIC: "magic:", // magic:{ticket} → MagicTicket JSON（一次性，用后即焚，存 TOKENS namespace）
+  TRIAL: "trial:", // trial:{email} → { token_id, created_at }（免费体验每邮箱限领一次，存 TOKENS namespace）
+  REFCODE: "refcode:", // refcode:{code} → { email }（推广码反查邀请人，存 TOKENS namespace）
+  REFCREDIT: "refcredit:", // refcredit:{email} → { earned, used }（推广减免额度，单位：个 ×10元，存 TOKENS namespace）
+  REFERRAL: "referral:", // referral:{被邀请人email} → { referrer_email, created_at }（存 TOKENS namespace）
 } as const;
 
 /** API 统一响应格式 */

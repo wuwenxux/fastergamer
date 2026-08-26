@@ -1,4 +1,4 @@
-import type { CreateOrderResponse, Device, FaqItem, Node, Plan, Token } from "../../../shared/types";
+import type { CreateOrderResponse, Device, FaqItem, Node, Order, Plan, Token } from "../../../shared/types";
 
 // 生产环境通过 VITE_API_BASE 指定 API Worker 域名，如 https://api.example.com
 // 开发环境留空，由 Vite 代理到本地 wrangler dev
@@ -15,10 +15,37 @@ interface Envelope<T = unknown> {
   error?: string;
 }
 
+/** Magic link 核销结果：会话凭证 + 邮箱 + 目标 token */
+export interface MagicSession {
+  session_token: string;
+  email: string;
+  token_id: string;
+}
+
+/**
+ * 非本人（未登录或账号邮箱 ≠ 购买邮箱）查询 token 时，后端只返回概要并带 restricted 标记，
+ * 不含 uuid / devices 等敏感字段
+ */
+export type TokenView = Token & { restricted?: true };
+
+/** 读取本地登录会话；有 fg_session 时返回 Authorization 头，否则空对象（不影响未登录场景） */
+function sessionHeaders(): Record<string, string> {
+  try {
+    const token = localStorage.getItem("fg_session");
+    return token ? { authorization: `Bearer ${token}` } : {};
+  } catch {
+    return {};
+  }
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${BASE}${path}`, {
-    headers: { "content-type": "application/json" },
+    cache: "no-store", // API 数据一律不缓存，避免拿到过期响应
     ...init,
+    headers: {
+      "content-type": "application/json",
+      ...(init?.headers as Record<string, string> | undefined),
+    },
   });
   const body = (await res.json().catch(() => null)) as Envelope<T> | null;
   if (!res.ok || !body?.ok) {
@@ -31,31 +58,70 @@ export const api = {
   /** 套餐列表 */
   plans: () => request<Plan[]>("/api/plans"),
 
-  /** 创建订单（人工收款模式：返回 pending 订单，确认到账后才发 token） */
-  createOrder: (plan_id: string, contact?: string) =>
+  /** 收款信息（静态转账模式下展示的支付宝账号；未配置时为 null） */
+  paymentInfo: () => request<{ alipay_account: string | null }>("/api/payment-info"),
+
+  /** 创建订单（返回 pending 订单；配置了当面付时 order.alipay_qr_code 为动态二维码；带登录会话时自动使用推广余额抵扣；ref 为推广码） */
+  createOrder: (plan_id: string, contact?: string, ref?: string) =>
     request<CreateOrderResponse>("/api/orders", {
       method: "POST",
-      body: JSON.stringify({ plan_id, contact }),
+      headers: sessionHeaders(),
+      body: JSON.stringify({ plan_id, contact, ref }),
     }),
 
-  /** 查询 token 详情 */
-  getToken: (id: string) => request<Token>(`/api/tokens/${id}`),
+  /** 我的推广信息（推广链接/已结算与待结算人数/推广余额）；未登录 401 */
+  referralMe: () =>
+    request<{
+      code: string;
+      link: string;
+      invited_count: number;
+      pending_count: number;
+      available_credits: number;
+      discount_per_credit: number;
+    }>("/api/referral/me", { headers: sessionHeaders() }),
 
-  /** 激活 token，开始计时 */
+  /** 查询订单支付状态（扫码页轮询用，只返回状态与 token 短 ID） */
+  orderStatus: (id: string) =>
+    request<{ status: Order["status"]; token_id?: string }>(`/api/orders/${id}`),
+
+  /** 查询 token 详情（带会话时本人返回完整数据，否则只返回概要并带 restricted 标记） */
+  getToken: (id: string) => request<TokenView>(`/api/tokens/${id}`, { headers: sessionHeaders() }),
+
+  /** 激活 token，开始计时（非本人响应同样只含概要） */
   activateToken: (id: string) =>
-    request<Token>(`/api/tokens/${id}/activate`, { method: "POST" }),
+    request<TokenView>(`/api/tokens/${id}/activate`, {
+      method: "POST",
+      headers: sessionHeaders(),
+    }),
 
-  /** 绑定新设备（生成设备专属 uuid 与订阅链接） */
+  /** 绑定新设备（生成设备专属 uuid 与订阅链接）；需本人登录，否则 401 */
   addDevice: (tokenId: string, name: string) =>
     request<Device>(`/api/tokens/${tokenId}/devices`, {
       method: "POST",
+      headers: sessionHeaders(),
       body: JSON.stringify({ name }),
     }),
 
-  /** 解绑设备（该设备 uuid 立即失效） */
+  /** 解绑设备（该设备 uuid 立即失效）；需本人登录，否则 401 */
   removeDevice: (tokenId: string, deviceId: string) =>
     request<{ id: string }>(`/api/tokens/${tokenId}/devices/${deviceId}`, {
       method: "DELETE",
+      headers: sessionHeaders(),
+    }),
+
+  /** 封禁接入 IP（30 秒内全节点生效）；需本人登录，否则 401 */
+  blockIp: (tokenId: string, ip: string) =>
+    request<{ blocked_ips: string[] }>(`/api/tokens/${tokenId}/blocked-ips`, {
+      method: "POST",
+      headers: sessionHeaders(),
+      body: JSON.stringify({ ip }),
+    }),
+
+  /** 解除封禁接入 IP；需本人登录，否则 401 */
+  unblockIp: (tokenId: string, ip: string) =>
+    request<{ blocked_ips: string[] }>(`/api/tokens/${tokenId}/blocked-ips/${encodeURIComponent(ip)}`, {
+      method: "DELETE",
+      headers: sessionHeaders(),
     }),
 
   /** 节点在线状态（公开接口） */
@@ -100,6 +166,10 @@ export const api = {
   /** 公开 FAQ 列表 */
   faq: () => request<FaqItem[]>("/api/faq"),
 
+  /** 账号体系已简化为邮箱免密登录：核销 magic ticket 换取 30 天会话 */
+  consumeMagic: (ticket: string) =>
+    request<MagicSession>(`/api/tokens/magic/consume?ticket=${encodeURIComponent(ticket)}`),
+
   /** 提交问题反馈（邮箱必填，回复发到邮箱） */
   feedback: (input: { contact: string; message: string; category?: string; token_id?: string }) =>
     request<{ id: string }>("/api/feedback", {
@@ -107,11 +177,18 @@ export const api = {
       body: JSON.stringify(input),
     }),
 
-  /** 发送免密登录链接到邮箱（链接带 token ID，点击进入管理页） */
+  /** 发送免密登录链接到邮箱（链接带一次性 ticket，点开即登录进入管理页） */
   loginLink: (contact: string) =>
     request<null>("/api/tokens/login-link", {
       method: "POST",
       body: JSON.stringify({ contact }),
+    }),
+
+  /** 领取免费体验（每邮箱一次，30 天 20GB，凭证发到邮箱）；ref 为推广码 */
+  claimTrial: (email: string, ref?: string) =>
+    request<{ token_id: string }>("/api/tokens/trial", {
+      method: "POST",
+      body: JSON.stringify({ email, ref: ref || undefined }),
     }),
 
   /** 验证订阅是否可用，返回节点数或错误信息 */
