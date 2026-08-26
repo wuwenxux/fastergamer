@@ -43,3 +43,6 @@ CLASH_REGIONS = '[{"code":"HK","flag":"🇭🇰","name":"香港"},{"code":"JP","
 
 # 邮件走阿里云 DirectMail（ALIYUN_ACCESS_KEY_ID/SECRET 在 .dev.vars）
 SITE_URL = "https://fastergamer.cn"
+
+# 支付宝收款账号（静态转账模式展示给用户；当面付动态码启用时不会用到）
+ALIPAY_ACCOUNT = "19115946187"
