@@ -14,7 +14,7 @@
  *   node scripts/test-plan.mjs 3 https://fastergamer.cn <ADMIN_KEY>
  */
 
-const [countRaw = "2", apiBase = "https://fastergamer.cn", adminKey = ""] =
+const [countRaw = "2", apiBase = "https://fastergamer.click", adminKey = ""] =
   process.argv.slice(2);
 const USER_COUNT = Math.max(1, parseInt(countRaw, 10) || 2);
 const CONTACT = "test-plan@auto";

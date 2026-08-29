@@ -2,7 +2,7 @@
   "name": "cloudflare-token-vpn",
   "version": "0.1.0",
   "private": true,
-  "description": "Token 制 VPN 服务：中心 API（workerd 自建）+ 售卖站点 + Xray 多节点直连",
+  "description": "Token 制 VPN 服务：Cloudflare Workers 中心 API + 售卖站点 + Xray 多节点直连",
   "workspaces": [
     "workers/api",
     "pages"
@@ -11,7 +11,6 @@
     "dev:api": "npm run dev --workspace workers/api",
     "dev:pages": "npm run dev --workspace pages",
     "build:pages": "npm run build --workspace pages",
-    "deploy:api": "bash scripts/deploy-api-local.sh",
     "deploy:site": "bash scripts/deploy-site-local.sh"
   }
 }

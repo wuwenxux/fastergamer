@@ -1,5 +1,7 @@
 /** API Worker 的绑定与环境变量类型 */
 export interface Env {
+  /** 前端静态站（Cloudflare 部署时绑定；workerd 本机模式无此绑定，静态站由 nginx 托管） */
+  ASSETS?: Fetcher;
   TOKENS: KVNamespace;
   PLANS: KVNamespace;
   ORDERS: KVNamespace;

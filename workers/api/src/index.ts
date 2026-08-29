@@ -16,12 +16,17 @@ import { rateLimit } from "./middleware/rateLimit";
 
 const app = new Hono<{ Bindings: Env }>();
 
-// CORS 只允许本站来源，本地开发允许 localhost
+// CORS 只允许本站来源（同源请求自动放行，兼容 workers.dev / 自定义域名），本地开发允许 localhost
 app.use(
   "*",
   cors({
-    origin: (origin) => {
+    origin: (origin, c) => {
       if (!origin) return "*";
+      try {
+        if (new URL(origin).host === new URL(c.req.url).host) return origin;
+      } catch {
+        // origin 非法时按不匹配处理
+      }
       if (origin === "https://fastergamer.cn" || origin === "https://www.fastergamer.cn") {
         return origin;
       }
@@ -66,11 +71,13 @@ app.use("/api/tokens/trial", rateLimit(3, 60_000));
 app.use("/api/tokens/login-link", rateLimit(5, 60_000));
 app.use("/api/tokens/magic/consume", rateLimit(10, 60_000));
 app.use("/api/orders", rateLimit(20, 60_000));
+app.use("/api/orders/:id/claim-paid", rateLimit(10, 60_000));
 app.use("/api/feedback", rateLimit(5, 60_000));
 
 app.route("/api/plans", plansRoutes);
 app.route("/api/orders", ordersRoutes);
 app.route("/api/tokens", tokensRoutes);
+// 生产中心已切换到 CF：/api/sub 与 /api/agent/* 直接由本 worker + CF KV 处理，不再反代回 cn
 app.route("/api/sub", subRoutes);
 app.route("/api/admin", adminRoutes);
 app.route("/api/admin/nodes", nodesRoutes);
@@ -81,4 +88,18 @@ app.route("/api", ticketsRoutes);
 
 app.all("*", (c) => c.json({ ok: false, error: "not found" }, 404));
 
-export default app;
+/** 非 /api 请求转给 Static Assets（pages 前端），404 时回退 index.html（SPA 路由） */
+async function serveStatic(request: Request, assets: Fetcher): Promise<Response> {
+  const res = await assets.fetch(request);
+  if (res.status !== 404) return res;
+  return assets.fetch(new URL("/index.html", request.url));
+}
+
+export default {
+  fetch(request: Request, env: Env, ctx: ExecutionContext) {
+    const { pathname } = new URL(request.url);
+    const isApi = pathname.startsWith("/api/") || pathname === "/health";
+    if (!isApi && env.ASSETS) return serveStatic(request, env.ASSETS);
+    return app.fetch(request, env, ctx);
+  },
+};

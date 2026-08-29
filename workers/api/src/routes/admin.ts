@@ -1,14 +1,15 @@
 import { Hono } from "hono";
 import { KV } from "../../../../shared/types";
-import type { Plan, Token } from "../../../../shared/types";
+import type { Order, Plan, Token } from "../../../../shared/types";
 import { adminAuth } from "../middleware/admin";
 import { deleteDeviceIndex, deleteTokenByUuid, getOrder, getPlans, getTicket, getTokenById, listKeys, listOrders, listTickets, listTokensByContact, saveOrder, savePlans, saveTicket, saveToken } from "../lib/kv";
-import { checkExpiringToken, checkNodeHealth, notifyAdmin } from "../lib/risk-notify";
-import { getNodes, saveNodes } from "../lib/nodes";
+import { checkExpiringToken, notifyAdmin } from "../lib/risk-notify";
+import { getNodes } from "../lib/nodes";
 import { sendMail, shouldSendEmail } from "../lib/email-aliyun";
-import { fulfillOrder } from "../lib/issue-token";
+import { fulfillOrder, type WaitUntilCtx } from "../lib/issue-token";
 import { restoreCredit } from "../lib/referral";
-import { withinTrafficAllowance } from "./agent";
+import { withinTrafficAllowance } from "../lib/authsnapshot";
+import { pushAuthRefresh } from "../lib/authpush";
 import type { Env } from "../types";
 
 export const adminRoutes = new Hono<{ Bindings: Env }>();
@@ -46,50 +47,119 @@ adminRoutes.put("/qr/:name", async (c) => {
 const DEFAULT_PLANS: Plan[] = [
   {
     id: "plan_3days",
+    pitch: "先试用，好用再买",
     name: "30 天免费体验",
     duration_days: 30,
     price_cny: 0,
     traffic_limit_gb: 20,
     max_devices: 1,
+    tag: "新用户体验",
     description: "30 天免费体验，20 GB 总流量，1 台设备（首页免费领取，不出售）",
+    features: [
+        "20 GB 流量",
+        "1 台设备",
+        "全部节点可用",
+      ],
   },
   {
     id: "plan_monthly",
+    pitch: "一个人的日常加速",
     name: "月付套餐",
     duration_days: 30,
     price_cny: 12,
     traffic_limit_gb: 20,
     max_devices: 2,
+    tag: "个人轻量",
     description: "30 天有效，20 GB 总流量，2 台设备",
+    features: [
+        "20 GB / 30 天",
+        "2 台设备",
+        "多地域自动切换",
+      ],
   },
   {
     id: "plan_quarterly",
+    pitch: "手机电脑同时在线",
     name: "季付套餐",
     duration_days: 90,
     price_cny: 30,
     traffic_limit_gb: 60,
     max_devices: 3,
+    tag: "个人常用",
     description: "90 天有效，60 GB 总流量，3 台设备",
+    features: [
+        "60 GB / 90 天",
+        "3 台设备",
+        "多地域自动切换",
+      ],
   },
   {
     id: "plan_yearly",
+    pitch: "全家用一年，最划算",
     name: "年付套餐",
     duration_days: 365,
     price_cny: 120,
     traffic_limit_gb: 240,
     max_devices: 5,
     monthly_quota_gb: 20,
+    tag: "家庭多设备",
     description: "一年有效，每月 20GB（用超预支下月，有效期提前），5 台设备",
+    features: [
+        "每月 20 GB",
+        "5 台设备",
+        "多地域自动切换",
+      ],
   },
   {
     id: "plan_yearly_renew",
+    pitch: "老用户续一年，省 20 元",
     name: "年付续费",
     duration_days: 365,
     price_cny: 100,
     traffic_limit_gb: 240,
     max_devices: 5,
     monthly_quota_gb: 20,
+    tag: "老用户优惠",
     description: "连续包年，每月 20GB（用超预支下月，有效期提前），5 台设备",
+    features: [
+        "每月 20 GB",
+        "5 台设备",
+        "年付到期续费专用",
+      ],
+  },
+  {
+    id: "plan_biz_yearly",
+    pitch: "10~20 人团队，流量不限量",
+    name: "企业年付",
+    duration_days: 365,
+    price_cny: 588,
+    traffic_limit_gb: 0,
+    max_devices: 20,
+    tag: "企业团队",
+    description: "不限量流量（公平使用），20 台设备，共享节点池",
+    features: [
+        "流量不限量",
+        "20 台设备",
+        "500 Mbps 共享节点",
+        "故障自动切换",
+      ],
+  },
+  {
+    id: "plan_biz_dedicated",
+    pitch: "独享节点，晚高峰也稳",
+    name: "企业专用节点",
+    duration_days: 365,
+    price_cny: 988,
+    traffic_limit_gb: 0,
+    max_devices: 30,
+    tag: "确定性首选",
+    description: "不限量流量（公平使用），30 台设备，独享一台专用节点",
+    features: [
+        "流量不限量",
+        "30 台设备",
+        "500 Mbps 独享节点",
+        "故障自动回落共享池",
+      ],
   },
 ];
 
@@ -193,6 +263,8 @@ adminRoutes.post("/tokens/:id/reset-penalty", async (c) => {
   }
 
   await saveToken(c.env, token);
+  // 用量清零/状态恢复属于授权变更：推送节点更新配额基数与名单
+  c.executionCtx.waitUntil(pushAuthRefresh(c.env));
 
   // 通知客户重置结果
   if (shouldSendEmail(token.contact)) {
@@ -264,12 +336,14 @@ adminRoutes.post("/tokens/:id/rotate-uuid", async (c) => {
 
   await deleteTokenByUuid(c.env, oldUuid);
   await saveToken(c.env, token);
+  c.executionCtx.waitUntil(pushAuthRefresh(c.env)); // 旧 uuid 立即失效、新 uuid 立即生效
   return c.json({ ok: true, data: { id: token.id, uuid: token.uuid } });
 });
 
 /**
  * POST /api/admin/notify-scan —— 定时风险扫描（cron 每 15 分钟调用）
- * 做三件事：24h 内到期提醒；节点失联/统计异常告警；清理过期 90 天的 token 与已结工单
+ * 做两件事：24h 内到期提醒；清理过期 90 天的 token 与已结工单
+ * （节点失联告警由 probe-nodes.sh 主动探测承担，agent 事件驱动后 last_seen 不再可靠）
  */
 adminRoutes.post("/notify-scan", async (c) => {
   const now = Date.now();
@@ -301,8 +375,8 @@ adminRoutes.post("/notify-scan", async (c) => {
     scanned++;
 
     // 在线状态清扫：Xray 只在用户在线时才有 online 计数器，离线即消失，
-    // 所以离线靠这里的窗口过期来判定（online_by_node 内无 90s 内记录则下线）
-    const ONLINE_WINDOW_MS = 90_000;
+    // 所以离线靠这里的窗口过期来判定。窗口与 agent 结算节奏对齐（30 分钟兜底上报 + 富余）。
+    const ONLINE_WINDOW_MS = 40 * 60_000;
     if (token.online || Object.keys(token.online_by_node ?? {}).length > 0) {
       const activeNodes = Object.entries(token.online_by_node ?? {}).filter(
         ([, ts]) => ts > now - ONLINE_WINDOW_MS
@@ -333,13 +407,9 @@ adminRoutes.post("/notify-scan", async (c) => {
     }
   }
 
-  const nodes = await getNodes(c.env);
-  const nodesChanged = await checkNodeHealth(c.env, nodes);
-  if (nodesChanged) await saveNodes(c.env, nodes);
-
   return c.json({
     ok: true,
-    data: { scanned, notified, nodes_checked: nodes.length, purged_tokens: purgedTokens, purged_tickets: purgedTickets },
+    data: { scanned, notified, purged_tokens: purgedTokens, purged_tickets: purgedTickets },
   });
 });
 
@@ -377,24 +447,53 @@ adminRoutes.get("/orders", async (c) => {
   return c.json({ ok: true, data: orders });
 });
 
+/** 确认收款并发货（POST 接口与邮件一键确认链接共用）；幂等：已 paid 直接返回已发放 token */
+async function confirmOrderPaid(
+  env: Env,
+  ctx: WaitUntilCtx,
+  id: string
+): Promise<{ http: 200; order: Order; token: Token | null; already?: boolean } | { http: 404 | 409 | 500; error: string }> {
+  const order = await getOrder(env, id);
+  if (!order) return { http: 404, error: "order not found" };
+  if (order.status === "failed") return { http: 409, error: "order has been cancelled" };
+  try {
+    const result = await fulfillOrder(env, ctx, order);
+    // 发货产生新 token（或续期），授权名单有变：推送节点立即刷新；幂等重放不重复推
+    if (!result.already) ctx.waitUntil(pushAuthRefresh(env));
+    return { http: 200, order, token: result.token, already: result.already || undefined };
+  } catch (e) {
+    return { http: 500, error: (e as Error).message };
+  }
+}
+
 /**
  * POST /api/admin/orders/:id/confirm —— 确认订单已收款，发放 token
  * 幂等：已 paid 的订单直接返回已发放的 token，不会重复发放
  */
 adminRoutes.post("/orders/:id/confirm", async (c) => {
-  const order = await getOrder(c.env, c.req.param("id"));
-  if (!order) return c.json({ ok: false, error: "order not found" }, 404);
-  if (order.status === "failed") {
-    return c.json({ ok: false, error: "order has been cancelled" }, 409);
-  }
+  const r = await confirmOrderPaid(c.env, c.executionCtx, c.req.param("id"));
+  if ("error" in r) return c.json({ ok: false, error: r.error }, r.http);
+  return c.json({ ok: true, data: { order: r.order, token: r.token, already: r.already } });
+});
 
-  let result: { token: Token | null; already: boolean };
-  try {
-    result = await fulfillOrder(c.env, c.executionCtx, order);
-  } catch (e) {
-    return c.json({ ok: false, error: (e as Error).message }, 500);
-  }
-  return c.json({ ok: true, data: { order, token: result.token, already: result.already || undefined } });
+/**
+ * GET /api/admin/orders/:id/confirm?key=... —— 邮件里的一键确认链接（浏览器直接打开）
+ * 与 POST 等效，返回简单结果页
+ */
+adminRoutes.get("/orders/:id/confirm", async (c) => {
+  const r = await confirmOrderPaid(c.env, c.executionCtx, c.req.param("id"));
+  const msg = "error" in r
+    ? `操作失败：${r.error}`
+    : r.already
+      ? `订单 ${r.order.id} 此前已确认过，token 已发放（未重复发货）`
+      : `订单 ${r.order.id} 已确认收款，token 已发放并邮件通知买家`;
+  const ok = !("error" in r);
+  return c.html(
+    `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">` +
+      `<body style="font-family:sans-serif;max-width:32rem;margin:4rem auto;padding:0 1rem;text-align:center">` +
+      `<h2>${ok ? "✅" : "❌"} ${msg}</h2><p style="color:#888">本页可关闭</p></body>`,
+    "error" in r ? r.http : 200
+  );
 });
 
 /** POST /api/admin/orders/:id/cancel —— 取消未支付的订单（无效/刷单订单清理），已用的推广额度归还 */

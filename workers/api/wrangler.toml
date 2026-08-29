@@ -1,5 +1,5 @@
-# API Worker 配置（本机 workerd 生产模式）
-# 部署：npm run deploy:api（dry-run 打包 + gen-workerd-config.mjs 生成 config.capnp）
+# API Worker 本地开发配置（wrangler dev，miniflare 模拟 KV）
+# 生产部署用 wrangler.cf.toml（Cloudflare 托管），见 README
 
 name = "vpn-api"
 main = "src/index.ts"
@@ -7,7 +7,7 @@ compatibility_date = "2025-01-01"
 compatibility_flags = ["nodejs_compat"]
 
 # --- KV Namespaces ---
-# 本机 workerd 模式下这些 id 只是占位，实际数据落盘到 /home/wafer/fastergamer/kv/<binding>/
+# 本地开发用占位 id；生产真实命名空间在 wrangler.cf.toml
 [[kv_namespaces]]
 binding = "TOKENS"
 id = "918fba7374f24612bbc47c4ec62fb1c1"
@@ -22,7 +22,6 @@ id = "e1d1d6a60bb24b38a366955e3c32587b"
 
 [[kv_namespaces]]
 binding = "NODES"
-# 此 id 对应本地已存数据的 KV 文件，勿改
 id = "b5d4e8c33a9f421d8e7b0f1234567890"
 
 [[kv_namespaces]]

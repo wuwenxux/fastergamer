@@ -3,7 +3,7 @@
  *
  * 账号体系已简化为「邮箱即身份」：没有密码/注册，用户点邮件里的一次性
  * magic 链接换取 30 天会话。会话与 ticket 都存 TOKENS namespace。
- * 注意：本机 workerd 磁盘 KV 不可靠执行 TTL，过期时间一律手动判断。
+ * 注意：KV TTL 不作为过期依据，过期时间一律手动判断。
  */
 import { KV, type MagicTicket } from "../../../../shared/types";
 import type { Env } from "../types";

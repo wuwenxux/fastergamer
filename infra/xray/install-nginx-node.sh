@@ -3,7 +3,7 @@ set -euo pipefail
 
 # 在已有 nginx 的 VPS 上配置一个子域名的 TLS + WS 反代
 # 用法：sudo bash install-nginx-node.sh <DOMAIN>
-# 示例：sudo bash install-nginx-node.sh my1.fastergamer.cn
+# 示例：sudo bash install-nginx-node.sh my01.fastergamer.click
 #
 # ⚠️ 限制：开源 nginx 的 http proxy 模块不能向上游发送 PROXY protocol，
 # 此方式下 Xray 拿不到真实客户端 IP，接入 IP 统计（traffic_by_ip）不可用。

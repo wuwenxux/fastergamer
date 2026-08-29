@@ -1,0 +1,60 @@
+# Cloudflare 托管部署配置（与 workerd 本机模式并存，本地/阿里云仍用 wrangler.toml）
+# 部署：cd workers/api && npx wrangler deploy --config wrangler.cf.toml
+# 前端与 API 同源：pages/dist 由 Static Assets 托管，/api/* 走 Hono
+
+name = "vpn-api"
+main = "src/index.ts"
+compatibility_date = "2025-01-01"
+compatibility_flags = ["nodejs_compat"]
+
+# 保留 workers.dev 备用入口（配置 routes 后默认会被关掉，需显式开启）
+workers_dev = true
+
+# 自定义域名（Workers Custom Domain，自动签发证书并创建 DNS 记录）
+routes = [
+  { pattern = "fastergamer.click", custom_domain = true },
+  { pattern = "www.fastergamer.click", custom_domain = true },
+]
+
+# 前端静态站（pages/dist，先 cd pages && npm run build）
+# 非 /api 路径由 index.ts 转给 ASSETS 绑定，SPA 回退在代码里处理
+[assets]
+directory = "../../pages/dist"
+binding = "ASSETS"
+
+# --- KV Namespaces（Cloudflare 真实命名空间，wrangler kv namespace create 生成） ---
+[[kv_namespaces]]
+binding = "TOKENS"
+id = "f7d871af19cb4de6ba496979541d7c1e"
+
+[[kv_namespaces]]
+binding = "PLANS"
+id = "10f74b3dfaad4c27a31b0efda2a4de21"
+
+[[kv_namespaces]]
+binding = "ORDERS"
+id = "664bc26dca8049a7903a4b059ca98455"
+
+[[kv_namespaces]]
+binding = "NODES"
+id = "67c4b5949d7144c095935bc1ea669eba"
+
+[[kv_namespaces]]
+binding = "TICKETS"
+id = "f52063f8c3bf4c538ce26030fa2411db"
+
+# --- 环境变量 ---
+# ADMIN_KEY / ALIYUN_* / ADMIN_NOTIFY_EMAIL / ALIPAY_PRIVATE_KEY 均为 secret，
+# 用 wrangler secret put --config wrangler.cf.toml 管理，不入库
+[vars]
+# 套餐列表从这里读取（也可用 /api/admin/seed 写入 KV）
+DEFAULT_PLANS = "[]"
+
+# Clash 订阅展示的地区列表
+CLASH_REGIONS = '[{"code":"HK","flag":"🇭🇰","name":"香港"},{"code":"JP","flag":"🇯🇵","name":"日本"},{"code":"MY","flag":"🇲🇾","name":"马来西亚"},{"code":"SG","flag":"🇸🇬","name":"新加坡"},{"code":"US","flag":"🇺🇸","name":"美国"}]'
+
+# 官网地址，用于邮件内链接
+SITE_URL = "https://fastergamer.click"
+
+# 支付宝收款账号（静态转账模式展示给用户；当面付动态码启用时不会用到）
+ALIPAY_ACCOUNT = "19115946187"

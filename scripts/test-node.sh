@@ -7,8 +7,8 @@ set -uo pipefail
 # 注意: 会产生极少量测试流量（每个目标一次 HTTPS 请求）。
 
 XRAY_BIN="/home/wafer/tools/xray"
-NODES_KV="/home/wafer/fastergamer/kv/NODES/nodes"
-TOKENS_DIR="/home/wafer/fastergamer/kv/TOKENS"
+API_BASE="https://fastergamer.click"
+ADMIN_KEY=$(grep '^ADMIN_KEY=' /home/wafer/cloudflare/workers/api/.dev.vars | cut -d= -f2)
 FILTER="${1:-}"
 
 if [ ! -x "$XRAY_BIN" ]; then
@@ -17,22 +17,17 @@ if [ ! -x "$XRAY_BIN" ]; then
   exit 1
 fi
 
-# 任选一个 active token 的 uuid 作为测试凭证
-UUID=$(node -e "
-  const fs = require('fs');
-  for (const f of fs.readdirSync('$TOKENS_DIR')) {
-    const t = JSON.parse(fs.readFileSync('$TOKENS_DIR/' + f, 'utf8'));
-    if (t.status === 'active' && (!t.expires_at || t.expires_at > Date.now())) {
-      process.stdout.write(t.uuid); process.exit(0);
-    }
-  }
+# 任选一个 active token 的 uuid 作为测试凭证（从 CF 中心 API 取）
+UUID=$(curl -s --max-time 15 -H "x-admin-key: $ADMIN_KEY" "$API_BASE/api/admin/tokens" | node -e "
+  const ts = JSON.parse(require('fs').readFileSync(0, 'utf8')).data ?? [];
+  const t = ts.find((t) => t.status === 'active' && (t.expires_at ?? 0) > Date.now());
+  if (t) { process.stdout.write(t.uuid); process.exit(0); }
   process.exit(1);
 ") || { echo "✗ 没有可用的 active token"; exit 1; }
 
-# 从 NODES 注册表取 active 节点（可选过滤），输出 name|host|port|ws_path 行
-mapfile -t NODES < <(node -e "
-  const fs = require('fs');
-  const nodes = JSON.parse(fs.readFileSync('$NODES_KV', 'utf8'));
+# 从中心注册表取 active 节点（可选过滤），输出 name|host|port|ws_path 行
+mapfile -t NODES < <(curl -s --max-time 15 -H "x-admin-key: $ADMIN_KEY" "$API_BASE/api/admin/nodes" | node -e "
+  const nodes = JSON.parse(require('fs').readFileSync(0, 'utf8')).data ?? [];
   for (const n of nodes) {
     if (!n.active) continue;
     if ('$FILTER' && !(n.name.includes('$FILTER') || n.host.includes('$FILTER'))) continue;
@@ -92,7 +87,7 @@ EOF
         --socks5-hostname "127.0.0.1:$PORT" https://chatgpt.com/cdn-cgi/trace 2>/dev/null)
   check_code "ChatGPT" "200" "$OUT"
   # Claude 对机房 IP/地区普遍封锁（302 区域受限 / 403），不代表服务不可用；
-  # 巡检（watch-nodes.sh）以 SKIP_CLAUDE=1 跳过，人工排查时才看它
+  # SKIP_CLAUDE=1 可跳过，人工排查时才看它
   if [ "${SKIP_CLAUDE:-}" = "1" ]; then
     kill "${PIDS[-1]}" 2>/dev/null; unset 'PIDS[-1]'
     continue

@@ -5,10 +5,10 @@ set -euo pipefail
 # 用法: bash infra/xray/onboard-node.sh <IP> <ROOT密码> <地区代码> <节点名>
 # 示例: bash infra/xray/onboard-node.sh 64.90.26.88 '***REMOVED***' HK "香港 05"
 #
-# 自动完成：wafer 用户 + SSH 互信 → DNS 记录 → Xray(wafer 运行) → Caddy TLS
-#         → 注册节点 → 部署 agent → ufw 防火墙 → 验证
+# 自动完成：wafer 用户 + SSH 互信 → DNS 记录（CF，地理命名 hk01/jp01…）→
+#           Xray(wafer 运行) → Caddy TLS → 注册节点 → 部署 agent → ufw 防火墙 → 验证
 # 前提：本机有 ~/.ssh/id_ed25519_cloudvpn(.pub)、workers/api/.dev.vars
-#      （ADMIN_KEY + 阿里云 RAM 密钥）、sshpass、node。
+#      （ADMIN_KEY + CLOUDFLARE_API_TOKEN）、sshpass、node。
 
 IP="${1:-}"
 ROOT_PASS="${2:-}"
@@ -24,9 +24,11 @@ fi
 ROOT_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
 SSH_KEY="$HOME/.ssh/id_ed25519_cloudvpn"
 WAFER_PASS="***REMOVED***"
-API_BASE="http://127.0.0.1:8787"
-DOMAIN_SUFFIX="fastergamer.cn"
-NODES_KV="/home/wafer/fastergamer/kv/NODES/nodes"
+API_BASE="https://fastergamer.click"
+DOMAIN_SUFFIX="fastergamer.click"
+DEV_VARS="$ROOT_DIR/workers/api/.dev.vars"
+export CLOUDFLARE_API_TOKEN=$(grep '^CLOUDFLARE_API_TOKEN=' "$DEV_VARS" | cut -d= -f2)
+ADMIN_KEY=$(grep '^ADMIN_KEY=' "$DEV_VARS" | cut -d= -f2)
 
 SSH_ROOT="sshpass -p $ROOT_PASS ssh -o StrictHostKeyChecking=no -o ConnectTimeout=15 root@$IP"
 SSH_WAFER="ssh -i $SSH_KEY -o StrictHostKeyChecking=no -o ConnectTimeout=15 wafer@$IP"
@@ -34,17 +36,13 @@ SUDO="echo $WAFER_PASS | sudo -S -p ''"
 
 step() { echo; echo "===== [$1] $2 ====="; }
 
-# ---------- 0. 派生参数：下一个 nx 子域名、节点 id ----------
+# ---------- 0. 派生参数：下一个地理子域名、节点 id ----------
 step 0 "计算子域名与节点 id"
-RR=$(node "$ROOT_DIR/scripts/alidns.mjs" list nx | grep -oE "^nx[0-9]+" | sed 's/nx//' | sort -n | tail -1)
-RR="nx$(( ${RR:-0} + 1 ))"
-NODE_SEQ=$(node -e "
-  const fs = require('fs');
-  const nodes = JSON.parse(fs.readFileSync('$NODES_KV', 'utf8'));
-  const nums = nodes.map(n => Number(n.id.match(/-(\d+)\$/)?.[1] ?? 0));
-  process.stdout.write(String(Math.max(0, ...nums) + 1).padStart(2, '0'));
-")
-NODE_ID="node-$(echo "$REGION" | tr 'A-Z' 'a-z')-$NODE_SEQ"
+PREFIX=$(echo "$REGION" | tr 'A-Z' 'a-z')
+SEQ=$(node "$ROOT_DIR/scripts/cf-dns.mjs" list "$PREFIX" | grep -oE "^${PREFIX}[0-9]+" | sed "s/${PREFIX}//" | sort -n | tail -1)
+SEQ=$(( ${SEQ:-0} + 1 ))
+RR=$(printf "%s%02d" "$PREFIX" "$SEQ")
+NODE_ID="node-${PREFIX}-$(printf '%02d' "$SEQ")"
 DOMAIN="$RR.$DOMAIN_SUFFIX"
 echo "RR=$RR  DOMAIN=$DOMAIN  NODE_ID=$NODE_ID"
 
@@ -72,7 +70,7 @@ echo "✓ wafer 密钥登录 + sudo 就绪"
 
 # ---------- 2. DNS ----------
 step 2 "添加 DNS 记录 $DOMAIN -> $IP"
-node "$ROOT_DIR/scripts/alidns.mjs" add "$RR" "$IP" "$NAME"
+node "$ROOT_DIR/scripts/cf-dns.mjs" add "$RR" "$IP" "$NAME"
 for i in $(seq 1 12); do
   RESOLVED=$(dig +short "$DOMAIN" @223.5.5.5 | head -1)
   [ "$RESOLVED" = "$IP" ] && break
@@ -110,7 +108,6 @@ echo "✓ https://$DOMAIN/ping -> pong"
 
 # ---------- 5. 注册节点 ----------
 step 5 "注册节点 $NODE_ID（$NAME）"
-ADMIN_KEY=$(grep '^ADMIN_KEY=' "$ROOT_DIR/workers/api/.dev.vars" | cut -d= -f2)
 RESP=$(curl -s -X POST "$API_BASE/api/admin/nodes" \
   -H "x-admin-key: $ADMIN_KEY" -H "content-type: application/json" \
   -d "{\"id\":\"$NODE_ID\",\"name\":\"$NAME\",\"region\":\"$REGION\",\"host\":\"$DOMAIN\",\"port\":443,\"tls\":true,\"ws_path\":\"/vless-ws\"}")
@@ -119,8 +116,9 @@ echo "✓ 已注册，NODE_KEY=$NODE_KEY"
 
 # ---------- 6. 部署 Agent ----------
 step 6 "部署 vpn-agent"
+scp -i "$SSH_KEY" -q "$ROOT_DIR/infra/xray/agent.py" "wafer@$IP:/tmp/vpn-agent.py"
 scp -i "$SSH_KEY" -q "$ROOT_DIR/infra/xray/deploy-agent.sh" "wafer@$IP:/tmp/"
-$SSH_WAFER "$SUDO bash /tmp/deploy-agent.sh $NODE_KEY >/dev/null && rm /tmp/deploy-agent.sh"
+$SSH_WAFER "$SUDO bash /tmp/deploy-agent.sh $NODE_KEY >/dev/null && rm /tmp/deploy-agent.sh /tmp/vpn-agent.py"
 echo "✓ agent 已部署"
 
 # ---------- 7. 防火墙 ----------
@@ -131,17 +129,16 @@ echo "✓ ufw 已启用"
 # ---------- 8. 验证 ----------
 step 8 "等待 agent 同步并验证"
 sleep 40
-$SSH_WAFER "$SUDO journalctl -u vpn-agent -n 30 --no-pager | grep -q 'heartbeat sent'" \
-  && echo "✓ agent 心跳正常" || echo "✗ 未检测到心跳，请 journalctl -u vpn-agent 排查"
+$SSH_WAFER "$SUDO journalctl -u vpn-agent -n 30 --no-pager | grep -q 'active uuids'" \
+  && echo "✓ agent 配置同步正常" || echo "✗ 未检测到配置同步，请 journalctl -u vpn-agent 排查"
 $SSH_WAFER "systemctl is-active xray vpn-agent caddy" | tr '\n' ' '; echo
-curl -s --max-time 10 "$API_BASE/api/sub?uuid=$(node -e "
-  const fs=require('fs');
-  const dir='/home/wafer/fastergamer/kv/TOKENS';
-  for (const f of fs.readdirSync(dir)) {
-    const t = JSON.parse(fs.readFileSync(dir + '/' + f, 'utf8'));
-    if (t.status === 'active') { process.stdout.write(t.uuid); break; }
-  }
-")" | grep -q "$NAME" && echo "✓ 订阅已包含 $NAME" || echo "✗ 订阅未包含 $NAME"
+UUID=$(curl -s -H "x-admin-key: $ADMIN_KEY" "$API_BASE/api/admin/tokens" | node -pe "
+  const ts = JSON.parse(require('fs').readFileSync(0, 'utf8')).data ?? [];
+  const t = ts.find((t) => t.status === 'active' && (t.expires_at ?? 0) > Date.now());
+  t ? t.uuid : '';
+")
+[ -n "$UUID" ] && curl -s --max-time 10 "$API_BASE/api/sub?uuid=$UUID" | grep -q "$NAME" \
+  && echo "✓ 订阅已包含 $NAME" || echo "✗ 订阅未包含 $NAME（或无 active token）"
 
 echo
 echo "===== 完成：$NODE_ID ($NAME, $DOMAIN, $IP) 已接入 ====="

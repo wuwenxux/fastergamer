@@ -14,7 +14,7 @@ if [ -z "$UUID" ]; then
   exit 1
 fi
 
-SUB_URL="https://fastergamer.cn/api/sub?uuid=$UUID"
+SUB_URL="https://fastergamer.click/api/sub?uuid=$UUID"
 WORK_DIR="$HOME/.cache/xray-client-test"
 mkdir -p "$WORK_DIR"
 

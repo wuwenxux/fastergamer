@@ -6,19 +6,14 @@ import { KV, type Device, type Order, type Plan, type Ticket, type Token } from 
 import type { Env } from "../types";
 
 /**
- * KV list 兼容层：workerd 磁盘 KV（生产）返回 keys 数组，
- * miniflare/云端返回 { keys } 包装对象，统一为数组
+ * KV list 封装：按前缀列出键名
  */
 export const listKeys = async (
   ns: KVNamespace,
   prefix: string
 ): Promise<{ name: string }[]> => {
-  const result = (await ns.list({ prefix })) as unknown;
-  const keys = Array.isArray(result)
-    ? (result as { name: string }[])
-    : (result as { keys: { name: string }[] }).keys;
-  // workerd 磁盘 KV 可能忽略 prefix 参数，统一在客户端再过滤一次
-  return keys.filter((k) => k.name.startsWith(prefix));
+  const result = await ns.list({ prefix });
+  return result.keys;
 };
 
 // ---------- Plans ----------
@@ -52,6 +47,14 @@ export const saveToken = async (env: Env, token: Token): Promise<void> => {
   await env.TOKENS.put(KV.TOKEN + token.uuid, JSON.stringify(token));
   await env.TOKENS.put(KV.TOKEN_BY_ID + token.id, JSON.stringify({ uuid: token.uuid }));
 };
+
+/**
+ * 只写 token 主键。反查索引（tokenid:）自创建后内容不变，
+ * 流量结算这类高频路径用它省掉一次冗余索引写（CF KV 免费版 1k 写/天）。
+ * 注意：token.id 变更（rotate）后必须走 saveToken 补索引。
+ */
+export const saveTokenValue = (env: Env, token: Token): Promise<void> =>
+  env.TOKENS.put(KV.TOKEN + token.uuid, JSON.stringify(token));
 
 /** 删除某个 uuid 的 token 主键（rotate-uuid 时清理旧凭证用） */
 export const deleteTokenByUuid = (env: Env, uuid: string): Promise<void> =>
