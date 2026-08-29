@@ -3,12 +3,12 @@ set -euo pipefail
 
 # 在 VPS 上一键安装 Caddy + 自动 HTTPS
 # 用法：sudo bash install-caddy.sh <DOMAIN>
-# 示例：sudo bash install-caddy.sh my1.fastergamer.cn
+# 示例：sudo bash install-caddy.sh my01.fastergamer.click
 
 DOMAIN="${1:-}"
 if [ -z "$DOMAIN" ]; then
   echo "Usage: sudo bash install-caddy.sh <DOMAIN>"
-  echo "Example: sudo bash install-caddy.sh my1.fastergamer.cn"
+  echo "Example: sudo bash install-caddy.sh my01.fastergamer.click"
   exit 1
 fi
 
@@ -29,6 +29,20 @@ ${DOMAIN} {
     reverse_proxy /vless-ws 127.0.0.1:8443 {
         transport http {
             proxy_protocol v1
+        }
+    }
+
+    # 本地应答（去中心化）：订阅由 agent 按本地缓存的授权快照渲染，中心不可达也照常；
+    # /api/metrics 暴露本节点监控指标（需 x-node-key 鉴权）
+    @localapi path /api/sub* /api/metrics* /api/agent/refresh*
+    handle @localapi {
+        reverse_proxy 127.0.0.1:8788
+    }
+
+    # 其余 /api 反代到 CF 中心（fastergamer.click 即生产端，节点侧不触碰 fastergamer.cn）
+    handle /api/* {
+        reverse_proxy https://fastergamer.click {
+            header_up Host fastergamer.click
         }
     }
 

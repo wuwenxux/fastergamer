@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import { KV, type Node } from "../../../../shared/types";
-import { getNodes, saveNodes } from "../lib/nodes";
+import { getNodes, saveNodes, saveNodeStat, deleteNodeStat, isNodeOnline } from "../lib/nodes";
+import { pushAuthRefresh } from "../lib/authpush";
 import { adminAuth } from "../middleware/admin";
 import type { Env } from "../types";
 
@@ -14,18 +15,42 @@ const generateKey = () => {
   return `nk_${hex}`;
 };
 
-const ONLINE_THRESHOLD_MS = 90_000;
-
 /** GET /api/admin/nodes —— 列出所有节点（含在线状态） */
 nodesRoutes.get("/", async (c) => {
   const nodes = await getNodes(c.env);
-  const now = Date.now();
-  // 返回时隐藏 key，需要 key 时通过创建/查看详情暴露
+  // 默认隐藏 key；运维脚本（node-metrics 等）可用 ?with_key=1 显式取回
+  if (c.req.query("with_key") === "1") {
+    return c.json({ ok: true, data: nodes.map((n) => ({ ...n, online: isNodeOnline(n) })) });
+  }
   const safe = nodes.map(({ key, ...rest }) => ({
     ...rest,
-    online: (rest.last_seen_at ?? 0) > now - ONLINE_THRESHOLD_MS,
+    online: isNodeOnline(rest),
   }));
   return c.json({ ok: true, data: safe });
+});
+
+/**
+ * POST /api/admin/nodes/probe-state —— probe-nodes.sh 上报节点可达性判定
+ * 请求体：{ host, port, online }。只在状态翻转或 30 分钟刷新时调用，正常每天每节点 ≤48 次写。
+ */
+nodesRoutes.post("/probe-state", async (c) => {
+  const body = (await c.req.json().catch(() => null)) as {
+    host?: string;
+    port?: number;
+    online?: boolean;
+  } | null;
+  if (!body?.host || typeof body.online !== "boolean") {
+    return c.json({ ok: false, error: "host, online are required" }, 400);
+  }
+  const nodes = await getNodes(c.env);
+  const node = nodes.find(
+    (n) => n.host === body.host && (n.port || 443) === (body.port || 443)
+  );
+  if (!node) return c.json({ ok: false, error: "node not found" }, 404);
+  node.probe_online = body.online;
+  node.probe_at = Date.now();
+  await saveNodeStat(c.env, node);
+  return c.json({ ok: true });
 });
 
 /** POST /api/admin/nodes —— 新增节点 */
@@ -54,6 +79,7 @@ nodesRoutes.post("/", async (c) => {
 
   nodes.push(node);
   await saveNodes(c.env, nodes);
+  c.executionCtx.waitUntil(pushAuthRefresh(c.env)); // 新节点进订阅/快照
   return c.json({ ok: true, data: { node: { ...node, key: node.key } } });
 });
 
@@ -71,6 +97,9 @@ nodesRoutes.put("/:id", async (c) => {
   const { id: _id, key: _key, ...rest } = body;
   nodes[idx] = { ...nodes[idx], ...rest };
   await saveNodes(c.env, nodes);
+  // body 里若含动态字段（billing_mode / 月配额重置等），同步到 nodestat 单键
+  await saveNodeStat(c.env, nodes[idx]);
+  c.executionCtx.waitUntil(pushAuthRefresh(c.env)); // 节点信息（host/port/active 等）变更进快照
   return c.json({ ok: true, data: nodes[idx] });
 });
 
@@ -83,6 +112,8 @@ nodesRoutes.delete("/:id", async (c) => {
     return c.json({ ok: false, error: "node not found" }, 404);
   }
   await saveNodes(c.env, filtered);
+  await deleteNodeStat(c.env, id);
+  c.executionCtx.waitUntil(pushAuthRefresh(c.env)); // 节点摘除进快照
   return c.json({ ok: true });
 });
 

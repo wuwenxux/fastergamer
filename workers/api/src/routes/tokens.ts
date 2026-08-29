@@ -7,6 +7,7 @@ import { createMagicTicket, consumeMagicTicket, createSession, getSessionAccount
 import { recordReferral } from "../lib/referral";
 import { newTokenId } from "../lib/ids";
 import { activatePaidToken } from "../lib/activate";
+import { pushAuthRefresh } from "../lib/authpush";
 import type { Env } from "../types";
 
 export const tokensRoutes = new Hono<{ Bindings: Env }>();
@@ -220,6 +221,8 @@ tokensRoutes.post("/:id/activate", async (c) => {
   }
 
   const activated = await activatePaidToken(c.env, token);
+  // 新激活的 uuid 需要立刻进各节点白名单：推送事件刷新，不等兜底轮询
+  c.executionCtx.waitUntil(pushAuthRefresh(c.env));
   const owner = await isOwner(c.env, c.req.header("authorization"), activated);
   return c.json({ ok: true, data: owner ? activated : toSummary(activated) });
 });
@@ -264,6 +267,7 @@ tokensRoutes.post("/:id/devices", async (c) => {
   token.devices = [...(token.devices ?? []), device];
   await saveToken(c.env, token);
   await saveDeviceIndex(c.env, device.uuid, token.id);
+  c.executionCtx.waitUntil(pushAuthRefresh(c.env)); // 新设备 uuid 立即进白名单
   return c.json({ ok: true, data: device });
 });
 
@@ -282,6 +286,7 @@ tokensRoutes.delete("/:id/devices/:deviceId", async (c) => {
   token.devices = (token.devices ?? []).filter((d) => d.id !== deviceId);
   await saveToken(c.env, token);
   await deleteDeviceIndex(c.env, device.uuid);
+  c.executionCtx.waitUntil(pushAuthRefresh(c.env)); // 解绑的设备 uuid 立即从白名单摘除
   return c.json({ ok: true, data: { id: deviceId } });
 });
 
@@ -312,6 +317,7 @@ tokensRoutes.post("/:id/blocked-ips", async (c) => {
     }
     token.blocked_ips.push(ip);
     await saveToken(c.env, token);
+    c.executionCtx.waitUntil(pushAuthRefresh(c.env)); // 封禁 IP 立即下发各节点防火墙
   }
   return c.json({ ok: true, data: { blocked_ips: token.blocked_ips } });
 });
@@ -327,5 +333,6 @@ tokensRoutes.delete("/:id/blocked-ips/:ip", async (c) => {
   const ip = c.req.param("ip");
   token.blocked_ips = (token.blocked_ips ?? []).filter((x) => x !== ip);
   await saveToken(c.env, token);
+  c.executionCtx.waitUntil(pushAuthRefresh(c.env)); // 解封同样立即下发
   return c.json({ ok: true, data: { blocked_ips: token.blocked_ips } });
 });
