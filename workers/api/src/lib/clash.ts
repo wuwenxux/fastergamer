@@ -47,6 +47,29 @@ export const buildClashConfig = ({ uuid, nodes, regions }: BuildConfigInput): st
   const lines: string[] = [];
   lines.push("mixed-port: 7890", "allow-lan: false", "mode: rule", "log-level: info", "");
 
+  // DNS 分流：国内域名走阿里/腾讯 DNS（结果真实、指向国内 CDN），境外域名走代理解析。
+  // 没有这段时 GEOIP/GEOSITE 依赖系统 DNS，被污染或解析到境外 CDN 会导致国内站误判走代理。
+  lines.push(
+    "dns:",
+    "  enable: true",
+    "  ipv6: false",
+    "  enhanced-mode: fake-ip",
+    "  fake-ip-range: 198.18.0.1/16",
+    "  nameserver:",
+    "    - 223.5.5.5",
+    "    - 119.29.29.29",
+    "  proxy-server-nameserver:",
+    "    - 223.5.5.5",
+    "  nameserver-policy:",
+    '    "geosite:cn":',
+    "      - 223.5.5.5",
+    "      - 119.29.29.29",
+    '    "geosite:geolocation-!cn":',
+    "      - https://1.1.1.1/dns-query",
+    "      - https://dns.google/dns-query",
+    ""
+  );
+
   const proxies: {
     name: string;
     region: string;

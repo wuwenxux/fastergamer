@@ -166,6 +166,27 @@ TEST_URL = "http://www.gstatic.com/generate_204"
 def build_clash_yaml(uuid: str, nodes: list) -> str:
     """与中心 workers/api/src/lib/clash.ts 的输出格式保持一致（按区域分组）。"""
     lines = ["mixed-port: 7890", "allow-lan: false", "mode: rule", "log-level: info", ""]
+    # DNS 分流：国内域名走阿里/腾讯 DNS，境外域名走代理解析（与 clash.ts 保持一致）
+    lines += [
+        "dns:",
+        "  enable: true",
+        "  ipv6: false",
+        "  enhanced-mode: fake-ip",
+        "  fake-ip-range: 198.18.0.1/16",
+        "  nameserver:",
+        "    - 223.5.5.5",
+        "    - 119.29.29.29",
+        "  proxy-server-nameserver:",
+        "    - 223.5.5.5",
+        "  nameserver-policy:",
+        '    "geosite:cn":',
+        "      - 223.5.5.5",
+        "      - 119.29.29.29",
+        '    "geosite:geolocation-!cn":',
+        "      - https://1.1.1.1/dns-query",
+        "      - https://dns.google/dns-query",
+        "",
+    ]
     proxies = [
         {
             "name": f"{n['region']} {n['name']}",
