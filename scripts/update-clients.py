@@ -59,9 +59,11 @@ REPOS = [
         "clash_verge",
         [
             (lambda n: n.endswith("_x64-setup.exe"), "clash-verge-windows-x64.exe"),
+            (lambda n: n.endswith("_arm64-setup.exe"), "clash-verge-windows-arm64.exe"),
             (lambda n: n.endswith("_x64.dmg"), "clash-verge-macos-x64.dmg"),
             (lambda n: n.endswith("_aarch64.dmg"), "clash-verge-macos-arm64.dmg"),
             (lambda n: n.endswith("_amd64.deb"), "clash-verge-linux-amd64.deb"),
+            (lambda n: n.endswith("_arm64.deb"), "clash-verge-linux-arm64.deb"),
         ],
     ),
     (

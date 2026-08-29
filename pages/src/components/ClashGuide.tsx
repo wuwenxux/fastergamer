@@ -3,11 +3,18 @@ import { Link } from "react-router-dom";
 
 export const CLASH_DOWNLOADS = [
   {
-    platform: "Windows",
+    platform: "Windows-x64",
     name: "Clash Verge Rev",
     versionKey: "clash_verge",
     url: "https://dl.fastergamer.click/clash-verge-windows-x64.exe",
     note: "推荐，支持 VLESS + WS",
+  },
+  {
+    platform: "Windows-arm64",
+    name: "Clash Verge Rev (ARM64)",
+    versionKey: "clash_verge",
+    url: "https://dl.fastergamer.click/clash-verge-windows-arm64.exe",
+    note: "ARM 芯片 Windows（Surface Pro X 等）",
   },
   {
     platform: "macOS-arm64",
@@ -24,11 +31,18 @@ export const CLASH_DOWNLOADS = [
     note: "老款 Intel 芯片",
   },
   {
-    platform: "Linux",
+    platform: "Linux-x64",
     name: "Clash Verge Rev",
     versionKey: "clash_verge",
     url: "https://dl.fastergamer.click/clash-verge-linux-amd64.deb",
     note: "deb 包（Debian / Ubuntu）",
+  },
+  {
+    platform: "Linux-arm64",
+    name: "Clash Verge Rev (ARM64)",
+    versionKey: "clash_verge",
+    url: "https://dl.fastergamer.click/clash-verge-linux-arm64.deb",
+    note: "ARM 架构 Linux（树莓派 / ARM 笔记本）",
   },
   {
     platform: "Android",
