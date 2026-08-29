@@ -38,7 +38,12 @@ subRoutes.get("/", async (c) => {
   }
 
   const nodes = (await getNodes(c.env)).filter((n) => !isBudgetExhausted(n));
-  const yaml = buildClashConfig({ uuid, nodes, regions: parseRegions(c.env.CLASH_REGIONS) });
+  const yaml = buildClashConfig({
+    uuid,
+    nodes,
+    regions: parseRegions(c.env.CLASH_REGIONS),
+    userAgent: c.req.header("user-agent"),
+  });
 
   // subscription-userinfo：Clash/Stash 客户端可直接显示已用流量与到期时间
   // （不区分上下行，已用量统一计入 download）

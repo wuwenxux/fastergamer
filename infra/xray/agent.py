@@ -163,10 +163,18 @@ MAIN_GROUP = "🚀 节点选择"
 TEST_URL = "http://www.gstatic.com/generate_204"
 
 
-def build_clash_yaml(uuid: str, nodes: list) -> str:
+def supports_geosite(ua: str) -> bool:
+    """mihomo 系（Verge/Meta/FlClash）与 Stash 支持 GEOSITE；Clash Premium 不支持。"""
+    import re
+    return bool(re.search(r"mihomo|verge|meta|stash|flclash", ua or "", re.I))
+
+
+def build_clash_yaml(uuid: str, nodes: list, user_agent: str = "") -> str:
     """与中心 workers/api/src/lib/clash.ts 的输出格式保持一致（按区域分组）。"""
+    geosite = supports_geosite(user_agent)
     lines = ["mixed-port: 7890", "allow-lan: false", "mode: rule", "log-level: info", ""]
     # DNS 分流：国内域名走阿里/腾讯 DNS，境外域名走代理解析（与 clash.ts 保持一致）
+    # 老内核 nameserver-policy 的 key 用 +.cn 域名后缀（不认识 geosite: 前缀）
     lines += [
         "dns:",
         "  enable: true",
@@ -179,8 +187,8 @@ def build_clash_yaml(uuid: str, nodes: list) -> str:
         "  proxy-server-nameserver:",
         "    - 223.5.5.5",
         "  nameserver-policy:",
-        '    "geosite:cn": 223.5.5.5',
-        '    "geosite:geolocation-!cn": https://1.1.1.1/dns-query',
+        f'    {"\"geosite:cn\"" if geosite else "\"+.cn\""}: 223.5.5.5',
+        *(['    "geosite:geolocation-!cn": https://1.1.1.1/dns-query'] if geosite else []),
         "",
     ]
     proxies = [
@@ -261,7 +269,8 @@ def build_clash_yaml(uuid: str, nodes: list) -> str:
     lines.append("  - IP-CIDR,172.16.0.0/12,DIRECT,no-resolve")
     lines.append("  - IP-CIDR,192.168.0.0/16,DIRECT,no-resolve")
     lines.append("  - IP-CIDR,127.0.0.0/8,DIRECT,no-resolve")
-    lines.append("  - GEOSITE,CN,DIRECT")
+    if geosite:
+        lines.append("  - GEOSITE,CN,DIRECT")
     lines.append("  - GEOIP,CN,DIRECT")
     lines.append(f"  - MATCH,{MAIN_GROUP}")
     return "\n".join(lines)
@@ -324,7 +333,9 @@ class SubHandler(BaseHTTPRequestHandler):
             return self._reply(503, "节点列表尚未同步，请稍后重试", head_only=head_only)
         # 节点本地无法提供 per-token 用量，故不下发 subscription-userinfo 头
         self.send_response(200)
-        data = build_clash_yaml(uuid, state["nodes"]).encode("utf-8")
+        data = build_clash_yaml(
+            uuid, state["nodes"], self.headers.get("user-agent", "")
+        ).encode("utf-8")
         self.send_header("content-type", "text/yaml; charset=utf-8")
         self.send_header("content-disposition", "attachment; filename=fastergamer.yaml")
         # 客户端启动时距上次更新超过该间隔（小时）才拉取：24 = 打开客户端时更新

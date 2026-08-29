@@ -37,20 +37,29 @@ export interface BuildConfigInput {
   nodes?: Node[];
   /** 区域元数据（emoji/显示名/排序），来自 CLASH_REGIONS；缺省用内置列表 */
   regions?: ClashRegion[];
+  /** 订阅请求的 User-Agent，用于判断是否支持 GEOSITE 规则 */
+  userAgent?: string;
 }
+
+/** 支持 GEOSITE 规则的内核：mihomo 系（Verge/Meta/FlClash）与 Stash；
+ *  Clash Premium（CFW/ClashX）不支持，碰到 GEOSITE 规则会直接加载失败 */
+export const supportsGeosite = (ua: string | undefined): boolean =>
+  /mihomo|verge|meta|stash|flclash/i.test(ua ?? "");
 
 const AUTO_GROUP = "♻️ 自动选择";
 const MAIN_GROUP = "🚀 节点选择";
 const TEST_URL = "http://www.gstatic.com/generate_204";
 
-export const buildClashConfig = ({ uuid, nodes, regions }: BuildConfigInput): string => {
+export const buildClashConfig = ({ uuid, nodes, regions, userAgent }: BuildConfigInput): string => {
   const lines: string[] = [];
   lines.push("mixed-port: 7890", "allow-lan: false", "mode: rule", "log-level: info", "");
 
   // DNS 分流：国内域名走阿里/腾讯 DNS（结果真实、指向国内 CDN），境外域名走代理解析。
   // 没有这段时 GEOIP/GEOSITE 依赖系统 DNS，被污染或解析到境外 CDN 会导致国内站误判走代理。
-  // nameserver-policy 的值用单字符串（不用列表）：旧版 mihomo/Clash.Meta 内核
-  // 只接受 string，列表会报 "cannot unmarshal !!seq into string"
+  const geosite = supportsGeosite(userAgent);
+  // nameserver-policy 的 key：新内核用 geosite 分类；老内核（Premium）用 +.cn 域名后缀
+  const cnPolicyKey = geosite ? '"geosite:cn"' : '"+.cn"';
+  const gfwPolicyKey = '"geosite:geolocation-!cn"';
   lines.push(
     "dns:",
     "  enable: true",
@@ -63,8 +72,8 @@ export const buildClashConfig = ({ uuid, nodes, regions }: BuildConfigInput): st
     "  proxy-server-nameserver:",
     "    - 223.5.5.5",
     "  nameserver-policy:",
-    '    "geosite:cn": 223.5.5.5',
-    '    "geosite:geolocation-!cn": https://1.1.1.1/dns-query',
+    `    ${cnPolicyKey}: 223.5.5.5`,
+    ...(geosite ? [`    ${gfwPolicyKey}: https://1.1.1.1/dns-query`] : []),
     ""
   );
 
@@ -154,11 +163,11 @@ export const buildClashConfig = ({ uuid, nodes, regions }: BuildConfigInput): st
     "  - IP-CIDR,192.168.0.0/16,DIRECT,no-resolve",
     "  - IP-CIDR,127.0.0.0/8,DIRECT,no-resolve"
   );
-  // 国内站点直连（双保险）：
-  // 1) GEOSITE,CN 按域名匹配（domain-list-community 的 cn 列表），fake-ip / 域名先行的
-  //    场景下也能命中，避免国内站域名被送进代理绕一圈；需要 mihomo / Stash 等新内核
-  // 2) GEOIP,CN 按解析结果 IP 兜底，覆盖不在域名列表里的小站点
-  lines.push("  - GEOSITE,CN,DIRECT");
+  // 国内站点直连：
+  // 1) GEOSITE,CN 按域名匹配（cn 域名列表），fake-ip / 域名先行场景也能命中——
+  //    仅 mihomo/Stash 等新内核支持，老内核（Premium）下发会整个配置加载失败，按 UA 降级
+  // 2) GEOIP,CN 按解析结果 IP 兜底（DNS 已分流到国内 DNS，判定可靠）
+  if (geosite) lines.push("  - GEOSITE,CN,DIRECT");
   lines.push("  - GEOIP,CN,DIRECT");
   lines.push(`  - MATCH,${MAIN_GROUP}`);
 
