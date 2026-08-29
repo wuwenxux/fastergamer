@@ -25,7 +25,6 @@ const STATUS_COLOR: Record<Token["status"], string> = {
 export default function TokenStatus({ token }: { token: Token }) {
   const [current, setCurrent] = useState<Token>(token);
   const [copied, setCopied] = useState(false);
-  const [allCopied, setAllCopied] = useState(false);
   const [now, setNow] = useState(Date.now());
   const [remainingMs, setRemainingMs] = useState<number>(() =>
     current.expires_at ? current.expires_at - Date.now() : 0
@@ -197,26 +196,6 @@ export default function TokenStatus({ token }: { token: Token }) {
     }
   };
 
-  const copyAll = async () => {
-    const lines = [
-      "【GameBoost 加速凭证】",
-      `Token ID：${current.id}`,
-      `UUID：${current.uuid}`,
-      current.contact ? `联系方式：${current.contact}` : "",
-      current.expires_at ? `有效期至：${new Date(current.expires_at).toLocaleString()}` : "",
-      `订阅链接：${api.subUrl(current.uuid)}`,
-      "",
-      "建议：复制本条消息 → 粘贴到微信收藏 / 备忘录 / 邮箱保存，遗失后可凭此找回。",
-    ].filter(Boolean);
-    try {
-      await navigator.clipboard.writeText(lines.join("\n"));
-      setAllCopied(true);
-      setTimeout(() => setAllCopied(false), 1500);
-    } catch {
-      /* ignore */
-    }
-  };
-
   return (
     <div className="rounded-2xl border border-slate-700 bg-slate-900 p-6 space-y-4">
       <div className="flex items-center justify-between flex-wrap gap-2">
@@ -327,13 +306,6 @@ export default function TokenStatus({ token }: { token: Token }) {
           </p>
         </div>
       )}
-
-      <button
-        onClick={copyAll}
-        className="w-full rounded-lg border border-amber-500/50 bg-amber-500/10 py-2.5 font-medium text-amber-400 hover:bg-amber-500/20 transition-colors"
-      >
-        {allCopied ? "✓ 已复制全部信息" : "📋 复制全部信息（粘贴到微信收藏保存）"}
-      </button>
 
       {active && (
         <div className="flex flex-col gap-3 rounded-xl border border-slate-700 bg-slate-950 p-4">
@@ -453,9 +425,6 @@ export default function TokenStatus({ token }: { token: Token }) {
             </div>
           )}
 
-          <p className="text-xs text-amber-400">
-            💡 建议：点击上方「复制全部信息」，粘贴到微信收藏、备忘录或邮箱保存。遗失后可凭 Token ID 或联系方式找回。
-          </p>
         </div>
       )}
 
