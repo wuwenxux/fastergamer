@@ -1,7 +1,7 @@
 /**
  * 风险检测与客户提醒
  *
- * 触发点：/api/agent/traffic（每 30s）与 /api/admin/notify-scan（cron 每 6h）
+ * 触发点：/api/agent/traffic（结算事件）与 /api/admin/notify-scan（cron 每 15min）
  * 幂等：token.notify_log 记录每类提醒的发送时间，同类提醒不重复发送
  *   - traffic_80 / exhausted / multi_device：每个 token 只发一次
  *   - expire_24h：每个 token 只发一次
@@ -354,39 +354,4 @@ export async function checkNodeBudget(env: Env, node: Node): Promise<void> {
       `节点 ${node.name}（${node.id}）本月已用 ${usedGb.toFixed(1)}/${node.monthly_budget_gb} GB（80%）。到 100% 将自动摘除。`
     );
   }
-}
-
-/**
- * 节点失联检测（由 notify-scan 每 15min 调用）：
- * - last_seen_at 超过 5 分钟 → agent 失联（可能 Xray 仍在免密跑量）
- * - 心跳正常但 stats_updated_at 超过 5 分钟 → Xray 统计异常
- * 恢复后自动清零告警标记。
- */
-export async function checkNodeHealth(env: Env, nodes: Node[]): Promise<boolean> {
-  const now = Date.now();
-  const STALE_MS = 5 * 60_000;
-  let changed = false;
-  for (const node of nodes) {
-    if (!node.active) continue;
-    const agentStale = (node.last_seen_at ?? 0) < now - STALE_MS;
-    const statsStale = !agentStale && (node.stats_updated_at ?? 0) < now - STALE_MS;
-    const unhealthy = agentStale || statsStale;
-
-    if (unhealthy && (node.offline_alerted_at ?? 0) < now - 6 * 3_600_000) {
-      node.offline_alerted_at = now;
-      changed = true;
-      const kind = agentStale ? "agent 失联" : "Xray 统计异常";
-      await notifyAdmin(
-        env,
-        `节点${kind}：${node.name}`,
-        `<p>节点 <strong>${node.name}</strong>（${node.id}）${kind}，超过 5 分钟未上报。</p>
-         <p>注意：agent 失联期间若 Xray 仍在运行，用户流量将不被记账（可超量使用）。请尽快登录 ${node.host} 检查 vpn-agent / xray 服务。</p>`,
-        `节点 ${node.name}（${node.id}）${kind} 超过 5 分钟。agent 失联期间流量不记账，请尽快检查 ${node.host}。`
-      );
-    } else if (!unhealthy && node.offline_alerted_at) {
-      node.offline_alerted_at = undefined;
-      changed = true;
-    }
-  }
-  return changed;
 }

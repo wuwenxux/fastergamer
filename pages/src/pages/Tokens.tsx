@@ -188,6 +188,8 @@ export default function Tokens() {
         忘记 Token ID？直接输入购买时留的邮箱，登录链接邮件里会列出名下所有 Token。
       </p>
 
+      <ReferralCard />
+
       {token &&
         (token.restricted ? (
           <RestrictedTokenCard token={token} />
@@ -201,8 +203,6 @@ export default function Tokens() {
           查看完整使用教程 →
         </Link>
       </p>
-
-      <ReferralCard />
 
       {savedTokens.length > 0 && (
         <div className="space-y-3">
