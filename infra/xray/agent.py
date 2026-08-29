@@ -179,12 +179,8 @@ def build_clash_yaml(uuid: str, nodes: list) -> str:
         "  proxy-server-nameserver:",
         "    - 223.5.5.5",
         "  nameserver-policy:",
-        '    "geosite:cn":',
-        "      - 223.5.5.5",
-        "      - 119.29.29.29",
-        '    "geosite:geolocation-!cn":',
-        "      - https://1.1.1.1/dns-query",
-        "      - https://dns.google/dns-query",
+        '    "geosite:cn": 223.5.5.5',
+        '    "geosite:geolocation-!cn": https://1.1.1.1/dns-query',
         "",
     ]
     proxies = [

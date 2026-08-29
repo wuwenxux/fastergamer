@@ -49,6 +49,8 @@ export const buildClashConfig = ({ uuid, nodes, regions }: BuildConfigInput): st
 
   // DNS 分流：国内域名走阿里/腾讯 DNS（结果真实、指向国内 CDN），境外域名走代理解析。
   // 没有这段时 GEOIP/GEOSITE 依赖系统 DNS，被污染或解析到境外 CDN 会导致国内站误判走代理。
+  // nameserver-policy 的值用单字符串（不用列表）：旧版 mihomo/Clash.Meta 内核
+  // 只接受 string，列表会报 "cannot unmarshal !!seq into string"
   lines.push(
     "dns:",
     "  enable: true",
@@ -61,12 +63,8 @@ export const buildClashConfig = ({ uuid, nodes, regions }: BuildConfigInput): st
     "  proxy-server-nameserver:",
     "    - 223.5.5.5",
     "  nameserver-policy:",
-    '    "geosite:cn":',
-    "      - 223.5.5.5",
-    "      - 119.29.29.29",
-    '    "geosite:geolocation-!cn":',
-    "      - https://1.1.1.1/dns-query",
-    "      - https://dns.google/dns-query",
+    '    "geosite:cn": 223.5.5.5',
+    '    "geosite:geolocation-!cn": https://1.1.1.1/dns-query',
     ""
   );
 
