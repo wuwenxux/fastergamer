@@ -46,7 +46,10 @@ subRoutes.get("/", async (c) => {
     "subscription-userinfo",
     `upload=0; download=${usedBytes}; total=${totalBytes}; expire=${expireSec}`
   );
+  // 客户端启动时会检查距上次更新是否超过该间隔（小时），超过才拉取；
+  // 设 24 = 实际效果是每次打开客户端时更新一次，不频繁刷
+  c.header("profile-update-interval", "24");
   c.header("content-type", "text/yaml; charset=utf-8");
-  c.header("content-disposition", 'attachment; filename="clash.yaml"');
+  c.header("content-disposition", "attachment; filename=fastergamer.yaml");
   return c.body(yaml);
 });

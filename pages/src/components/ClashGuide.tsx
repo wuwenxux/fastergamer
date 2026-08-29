@@ -5,25 +5,36 @@ export const CLASH_DOWNLOADS = [
   {
     platform: "Windows",
     name: "Clash Verge Rev",
-    url: "https://github.com/clash-verge-rev/clash-verge-rev/releases",
+    versionKey: "clash_verge",
+    url: "https://dl.fastergamer.click/clash-verge-windows-x64.exe",
     note: "推荐，支持 VLESS + WS",
   },
   {
     platform: "macOS",
-    name: "Clash Verge Rev",
-    url: "https://github.com/clash-verge-rev/clash-verge-rev/releases",
-    note: "支持 Apple Silicon / Intel",
+    name: "Clash Verge Rev (Apple Silicon)",
+    versionKey: "clash_verge",
+    url: "https://dl.fastergamer.click/clash-verge-macos-arm64.dmg",
+    note: "M 系列芯片",
+  },
+  {
+    platform: "macOS",
+    name: "Clash Verge Rev (Intel)",
+    versionKey: "clash_verge",
+    url: "https://dl.fastergamer.click/clash-verge-macos-x64.dmg",
+    note: "老款 Intel 芯片",
   },
   {
     platform: "Linux",
     name: "Clash Verge Rev",
-    url: "https://github.com/clash-verge-rev/clash-verge-rev/releases",
-    note: "AppImage / deb / rpm",
+    versionKey: "clash_verge",
+    url: "https://dl.fastergamer.click/clash-verge-linux-amd64.deb",
+    note: "deb 包（Debian / Ubuntu）",
   },
   {
     platform: "Android",
     name: "Clash Meta for Android",
-    url: "https://github.com/MetaCubeX/ClashMetaForAndroid/releases",
+    versionKey: "cmfa",
+    url: "https://dl.fastergamer.click/cmfa-android-arm64-v8a.apk",
     note: "支持 VLESS + WS",
   },
   {
@@ -54,6 +65,15 @@ interface Step {
 export default function ClashGuide() {
   const currentPlatform = useMemo(detectPlatform, []);
   const recommended = CLASH_DOWNLOADS.find((d) => d.platform === currentPlatform);
+  const [versions, setVersions] = useState<Record<string, string>>({});
+
+  // 下载站（R2）上的 version.json 由 scripts/update-clients.py 每天自动刷新
+  useEffect(() => {
+    fetch("https://dl.fastergamer.click/version.json")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((j) => j && setVersions(j))
+      .catch(() => {});
+  }, []);
 
   const steps: Step[] = [
     {
@@ -66,7 +86,7 @@ export default function ClashGuide() {
           </p>
           <ul className="space-y-1.5 text-slate-400">
             {CLASH_DOWNLOADS.filter((d) => d.platform !== "iOS").map((d) => (
-              <li key={d.platform}>
+              <li key={d.name}>
                 <a
                   href={d.url}
                   target="_blank"
@@ -75,7 +95,12 @@ export default function ClashGuide() {
                 >
                   {d.platform}：{d.name} ↗
                 </a>
-                <span className="text-xs text-slate-500 ml-2">{d.note}</span>
+                <span className="text-xs text-slate-500 ml-2">
+                  {d.note}
+                  {"versionKey" in d && versions[d.versionKey as string]
+                    ? ` · 当前 v${versions[d.versionKey as string]}`
+                    : ""}
+                </span>
               </li>
             ))}
           </ul>

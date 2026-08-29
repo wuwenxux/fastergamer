@@ -1,6 +1,7 @@
 /**
  * Clash 订阅配置生成：每个 active 节点生成一个代理，
  * 「自动选择」url-test 分组做故障切换，「选择节点」select 分组供手动指定。
+ * 规则：局域网与国内流量（GEOIP CN）直连，其余走代理。
  */
 
 import type { Node } from "../../../../shared/types";
@@ -85,6 +86,18 @@ export const buildClashConfig = ({ uuid, nodes }: BuildConfigInput): string => {
   for (const p of proxies) lines.push(`      - "${p.name}"`);
 
   lines.push("", "rules:");
+  // 订阅/官网域名强制直连：防止全局模式或 TUN 下访问 fastergamer.cn 被送进代理节点，
+  // 节点异常时订阅更新失败（GEOIP 规则在全局模式下不生效）
+  lines.push("  - DOMAIN-SUFFIX,fastergamer.cn,DIRECT");
+  // 局域网/本机直连
+  lines.push(
+    "  - IP-CIDR,10.0.0.0/8,DIRECT,no-resolve",
+    "  - IP-CIDR,172.16.0.0/12,DIRECT,no-resolve",
+    "  - IP-CIDR,192.168.0.0/16,DIRECT,no-resolve",
+    "  - IP-CIDR,127.0.0.0/8,DIRECT,no-resolve"
+  );
+  // 国内流量直连：避免银行/政务类 App 因境外 IP 触发风控，也省节点流量
+  lines.push("  - GEOIP,CN,DIRECT");
   lines.push(`  - MATCH,🚀 选择节点`);
 
   return lines.join("\n");

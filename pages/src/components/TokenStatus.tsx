@@ -4,7 +4,9 @@ import type { Token } from "../../../shared/types";
 import { api } from "../services/api";
 import DeviceManager from "./DeviceManager";
 
-type VerifyResult = { valid: true; nodeCount: number } | { valid: false; error: string };
+type VerifyResult =
+  | { valid: true; nodeCount: number; mirror?: string }
+  | { valid: false; error: string };
 
 const STATUS_LABEL: Record<Token["status"], string> = {
   paid: "待激活",
@@ -36,6 +38,9 @@ export default function TokenStatus({ token }: { token: Token }) {
   const [monthlyQuotaGb, setMonthlyQuotaGb] = useState<number | null>(null);
   // 非本人激活时后端只返回概要（无 uuid），置此标记展示登录引导
   const [activatedRestricted, setActivatedRestricted] = useState(false);
+  // 备用订阅入口（节点镜像）列表，null = 未展开
+  const [mirrors, setMirrors] = useState<Array<{ name: string; host: string }> | null>(null);
+  const [mirrorCopied, setMirrorCopied] = useState<string | null>(null);
 
   // 套餐带月度配额时拉取配额值用于展示
   useEffect(() => {
@@ -133,13 +138,36 @@ export default function TokenStatus({ token }: { token: Token }) {
     }
   };
 
+  const toggleMirrors = async () => {
+    if (mirrors !== null) {
+      setMirrors(null);
+      return;
+    }
+    try {
+      const nodes = await api.nodesStatus();
+      setMirrors(nodes.map((n) => ({ name: n.name, host: n.host })));
+    } catch {
+      setMirrors([]);
+    }
+  };
+
+  const copyMirror = async (host: string) => {
+    try {
+      await navigator.clipboard.writeText(api.subUrlOn(host, current.uuid));
+      setMirrorCopied(host);
+      setTimeout(() => setMirrorCopied(null), 1500);
+    } catch {
+      /* 剪贴板不可用时忽略 */
+    }
+  };
+
   const onVerify = async () => {
     setVerifying(true);
     setVerify(null);
     try {
       const res = await api.verifySub(current.uuid);
       if (res.valid) {
-        setVerify({ valid: true, nodeCount: res.nodeCount });
+        setVerify({ valid: true, nodeCount: res.nodeCount, mirror: res.mirror });
       } else {
         setVerify({ valid: false, error: res.error ?? "验证失败" });
       }
@@ -243,8 +271,7 @@ export default function TokenStatus({ token }: { token: Token }) {
             <span className={trafficExhausted ? "text-rose-400 font-medium" : "text-slate-200"}>
               {usedGb.toFixed(2)} / {limitGb} GB
             </span>
-          </div>
-          <div className="h-2 w-full rounded-full bg-slate-700 overflow-hidden">
+          </div><div className="h-2 w-full rounded-full bg-slate-700 overflow-hidden">
             <div
               className={`h-full rounded-full ${
                 trafficExhausted ? "bg-rose-500" : trafficPercent > 80 ? "bg-amber-500" : "bg-emerald-500"
@@ -270,6 +297,16 @@ export default function TokenStatus({ token }: { token: Token }) {
               ；宽限期结束后服务才会暂停。
             </p>
           )}
+        </div>
+      )}
+
+      {limitGb <= 0 && (
+        <div className="rounded-lg bg-slate-800/60 p-3 space-y-1">
+          <div className="flex justify-between text-xs">
+            <span className="text-slate-400">流量</span>
+            <span className="text-emerald-300 font-medium">不限量（公平使用）</span>
+          </div>
+          <div className="text-xs text-slate-400">累计已用 {usedGb.toFixed(2)} GB</div>
         </div>
       )}
 
@@ -308,6 +345,39 @@ export default function TokenStatus({ token }: { token: Token }) {
           <p className="text-xs text-slate-400">
             这个链接不是用浏览器直接打开的，而是 Clash 用来下载配置的地址。复制链接 → 打开 Clash → 粘贴到「订阅/Profiles」里即可自动导入节点。
           </p>
+
+          <button
+            onClick={toggleMirrors}
+            className="self-start text-xs text-sky-400 hover:text-sky-300 underline underline-offset-2"
+          >
+            {mirrors !== null ? "收起备用订阅链接" : "主站在你的网络打不开？查看备用订阅链接"}
+          </button>
+
+          {mirrors !== null && (
+            <div className="rounded-lg border border-slate-700 bg-slate-900 p-3 space-y-2">
+              <p className="text-xs text-slate-400">
+                以下备用链接与主链接内容相同，走不同节点域名。个别网络访问不了主站时，把 Clash 里的订阅地址换成其中任意一条：
+              </p>
+              {mirrors.length === 0 ? (
+                <p className="text-xs text-rose-400">节点列表加载失败，请稍后重试</p>
+              ) : (
+                mirrors.map((m) => (
+                  <div key={m.host} className="flex items-center gap-2">
+                    <span className="text-xs text-slate-400 shrink-0">{m.name}</span>
+                    <span className="font-mono text-[11px] break-all text-slate-300 flex-1">
+                      {api.subUrlOn(m.host, current.uuid)}
+                    </span>
+                    <button
+                      onClick={() => copyMirror(m.host)}
+                      className="shrink-0 rounded border border-slate-600 px-2 py-1 text-xs hover:border-sky-500 transition-colors"
+                    >
+                      {mirrorCopied === m.host ? "✓ 已复制" : "复制"}
+                    </button>
+                  </div>
+                ))
+              )}
+            </div>
+          )}
 
           <p className="text-xs text-rose-400">
             ⚠️ 请勿把订阅链接分享给他人：UUID 就是全部连接凭证，泄露后会被他人盗用并消耗你的流量额度。
@@ -350,6 +420,12 @@ export default function TokenStatus({ token }: { token: Token }) {
               <p className="text-xs text-emerald-400">
                 ✅ 订阅链接可以正常访问（含 {verify.nodeCount} 个节点），服务端没有问题。
               </p>
+              {verify.mirror && (
+                <p className="text-xs text-amber-400">
+                  ⚠️ 主站在你当前网络不可达，本次是通过备用入口 {verify.mirror} 验证成功的。
+                  建议把 Clash 里的订阅地址换成上方备用链接，否则 Clash 自动更新订阅仍会失败。
+                </p>
+              )}
               <p className="text-xs text-slate-300 font-medium">Clash 仍导入失败的话，按顺序排查：</p>
               <ol className="text-xs text-slate-400 list-decimal pl-4 space-y-1">
                 <li>彻底退出其他 VPN / 加速器（右键状态栏图标选「退出」，只关窗口不够）</li>
