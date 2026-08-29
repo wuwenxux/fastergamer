@@ -67,13 +67,13 @@ const plans = [
     "duration_days": 365,
     "price_cny": 120,
     "traffic_limit_gb": 240,
-    "max_devices": 3,
+    "max_devices": 5,
     "monthly_quota_gb": 20,
     "tag": "家庭多设备",
-    "description": "一年有效，每月 20GB（用超预支下月，有效期提前），3 台设备",
+    "description": "一年有效，每月 20GB（用超预支下月，有效期提前），5 台设备",
     "features": [
       "每月 20 GB",
-      "3 台设备",
+      "5 台设备",
       "多地域自动切换"
     ],
     "pitch": "全家用一年，最划算"
@@ -84,13 +84,13 @@ const plans = [
     "duration_days": 365,
     "price_cny": 100,
     "traffic_limit_gb": 240,
-    "max_devices": 3,
+    "max_devices": 5,
     "monthly_quota_gb": 20,
     "tag": "老用户优惠",
-    "description": "连续包年，每月 20GB（用超预支下月，有效期提前），3 台设备",
+    "description": "连续包年，每月 20GB（用超预支下月，有效期提前），5 台设备",
     "features": [
       "每月 20 GB",
-      "3 台设备",
+      "5 台设备",
       "年付到期续费专用"
     ],
     "pitch": "老用户续一年，省 20 元"
