@@ -1,5 +1,6 @@
 import { Link, Route, Routes } from "react-router-dom";
 import AuthMagic from "./pages/AuthMagic";
+import Enterprise from "./pages/Enterprise";
 import Home from "./pages/Home";
 import Guide from "./pages/Guide";
 import Purchase from "./pages/Purchase";
@@ -24,6 +25,9 @@ export default function App() {
           <Link to="/tokens" className="hover:text-sky-400 transition-colors">
             我的 Token
           </Link>
+          <Link to="/enterprise" className="hover:text-sky-400 transition-colors">
+            企业服务
+          </Link>
           <Link to="/guide" className="hover:text-sky-400 transition-colors">
             使用教程
           </Link>
@@ -41,6 +45,7 @@ export default function App() {
           <Route path="/tokens" element={<Tokens />} />
           <Route path="/auth/magic" element={<AuthMagic />} />
           <Route path="/guide" element={<Guide />} />
+          <Route path="/enterprise" element={<Enterprise />} />
           <Route path="/support" element={<Support />} />
         </Routes>
       </main>

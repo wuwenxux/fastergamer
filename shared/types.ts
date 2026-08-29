@@ -12,7 +12,13 @@ export interface Plan {
   price_cny: number;
   /** 套餐描述，展示在卡片上 */
   description: string;
-  /** 可选：流量上限 GB（当前版本按总流量计费） */
+  /** 场景标签，如“个人日常”“企业团队”，展示为卡片角标 */
+  tag?: string;
+  /** 一句话卖点（海报卡片大字展示），缺省用 description */
+  pitch?: string;
+  /** 卖点列表（场景优势/确定性说明），展示为卡片 bullet；缺省时前端用默认文案 */
+  features?: string[];
+  /** 可选：流量上限 GB；0 或缺省表示不限量（公平使用） */
   traffic_limit_gb?: number;
   /** 可绑定的设备数上限（含主设备），缺省按 2 处理 */
   max_devices?: number;
@@ -57,7 +63,7 @@ export interface Token {
   status: TokenStatus;
   /** 购买时留下的联系方式（邮箱/Telegram/微信等），方便售后 */
   contact?: string;
-  /** 总流量上限（GB） */
+  /** 总流量上限（GB）；0 表示不限量（公平使用，不参与耗尽/宽限期判断） */
   traffic_limit_gb: number;
   /** 已用流量（GB） */
   traffic_used_gb: number;
@@ -130,6 +136,14 @@ export interface Order {
   discount_cny?: number;
   /** 实付金额（元）= 套餐价 - 减免；无减免时等于套餐价 */
   payable_cny?: number;
+  /** 买家声明「我已转账」（静态收款模式）：管理员收到邮件提醒后核对到账再确认 */
+  paid_claim?: {
+    at: number;
+    /** 买家自述转账金额（元），可选 */
+    amount_cny?: number;
+    /** 买家自述付款账号昵称/尾号，可选，辅助对账 */
+    note?: string;
+  };
   created_at: number;
 }
 
@@ -193,6 +207,10 @@ export interface Node {
   online_count?: number;
   /** 节点统计最近一次上报时间（unix 毫秒） */
   stats_updated_at?: number;
+  /** 中心主动探测（probe-nodes.sh）最近一次判定结果；只在状态翻转时写入 */
+  probe_online?: boolean;
+  /** 最近一次探测判定时间（unix 毫秒） */
+  probe_at?: number;
 }
 
 /** 用户反馈工单 —— 安装/使用问题反馈与邮件解答 */
