@@ -1,6 +1,9 @@
 /**
- * Clash 订阅配置生成：每个 active 节点生成一个代理，
- * 「自动选择」url-test 分组做故障切换，「选择节点」select 分组供手动指定。
+ * Clash 订阅配置生成：每个 active 节点生成一个代理。
+ * 分组结构（按区域）：
+ *   🚀 节点选择（select）→ ♻️ 自动选择（全部节点 url-test）
+ *                        → 🇭🇰 香港 / 🇯🇵 日本 …（各区域 url-test）
+ *                        → 各节点（手动指定）
  * 规则：局域网与国内流量（GEOIP CN）直连，其余走代理。
  */
 
@@ -32,18 +35,32 @@ export interface BuildConfigInput {
   uuid: string;
   /** 每个 active 节点生成一个代理 */
   nodes?: Node[];
+  /** 区域元数据（emoji/显示名/排序），来自 CLASH_REGIONS；缺省用内置列表 */
+  regions?: ClashRegion[];
 }
 
-export const buildClashConfig = ({ uuid, nodes }: BuildConfigInput): string => {
+const AUTO_GROUP = "♻️ 自动选择";
+const MAIN_GROUP = "🚀 节点选择";
+const TEST_URL = "http://www.gstatic.com/generate_204";
+
+export const buildClashConfig = ({ uuid, nodes, regions }: BuildConfigInput): string => {
   const lines: string[] = [];
   lines.push("mixed-port: 7890", "allow-lan: false", "mode: rule", "log-level: info", "");
 
-  const proxies: { name: string; server: string; port: number; tls: boolean; wsPath: string }[] = [];
+  const proxies: {
+    name: string;
+    region: string;
+    server: string;
+    port: number;
+    tls: boolean;
+    wsPath: string;
+  }[] = [];
 
   for (const node of nodes ?? []) {
     if (!node.active) continue;
     proxies.push({
       name: `${node.region} ${node.name}`,
+      region: node.region,
       server: node.host,
       port: node.port,
       tls: node.tls,
@@ -67,23 +84,41 @@ export const buildClashConfig = ({ uuid, nodes }: BuildConfigInput): string => {
     );
   }
 
+  // 按区域归类：区域顺序跟随 CLASH_REGIONS，未登记的区域排在最后
+  const regionMeta = regions ?? parseRegions(undefined);
+  const byRegion = new Map<string, string[]>(); // region code -> proxy names
+  for (const p of proxies) {
+    const list = byRegion.get(p.region) ?? [];
+    list.push(p.name);
+    byRegion.set(p.region, list);
+  }
+  const orderedCodes = [
+    ...regionMeta.map((r) => r.code).filter((c) => byRegion.has(c)),
+    ...[...byRegion.keys()].filter((c) => !regionMeta.some((r) => r.code === c)),
+  ];
+  const regionGroupName = (code: string) => {
+    const meta = regionMeta.find((r) => r.code === code);
+    return meta ? `${meta.flag} ${meta.name}` : code;
+  };
+
   lines.push("", "proxy-groups:");
-  // url-test 分组：客户端按延迟自动切换可用节点，单节点故障时无需手动干预
-  lines.push(
-    `  - name: "🚀 自动选择"`,
-    "    type: url-test",
-    "    proxies:"
-  );
+  // 主分组：默认「自动选择」，可切到某区域（区域内自动测速切换）或手动指定单节点
+  lines.push(`  - name: "${MAIN_GROUP}"`, "    type: select", "    proxies:");
+  lines.push(`      - "${AUTO_GROUP}"`);
+  for (const code of orderedCodes) lines.push(`      - "${regionGroupName(code)}"`);
   for (const p of proxies) lines.push(`      - "${p.name}"`);
-  lines.push(
-    "    url: http://www.gstatic.com/generate_204",
-    "    interval: 300",
-    "    tolerance: 50"
-  );
-  // select 分组默认选中「自动选择」，用户也可手动指定节点
-  lines.push(`  - name: "🚀 选择节点"`, "    type: select", "    proxies:");
-  lines.push(`      - "🚀 自动选择"`);
+
+  // 全局自动选择：url-test 覆盖全部节点，单节点故障无需手动干预
+  lines.push(`  - name: "${AUTO_GROUP}"`, "    type: url-test", "    proxies:");
   for (const p of proxies) lines.push(`      - "${p.name}"`);
+  lines.push(`    url: ${TEST_URL}`, "    interval: 300", "    tolerance: 50");
+
+  // 每个区域一个 url-test 分组：锁定区域时仍享受区域内故障切换
+  for (const code of orderedCodes) {
+    lines.push(`  - name: "${regionGroupName(code)}"`, "    type: url-test", "    proxies:");
+    for (const name of byRegion.get(code)!) lines.push(`      - "${name}"`);
+    lines.push(`    url: ${TEST_URL}`, "    interval: 300", "    tolerance: 50");
+  }
 
   lines.push("", "rules:");
   // 订阅/官网域名强制直连：防止全局模式或 TUN 下访问订阅域名被送进代理节点，
@@ -100,7 +135,7 @@ export const buildClashConfig = ({ uuid, nodes }: BuildConfigInput): string => {
   );
   // 国内流量直连：避免银行/政务类 App 因境外 IP 触发风控，也省节点流量
   lines.push("  - GEOIP,CN,DIRECT");
-  lines.push(`  - MATCH,🚀 选择节点`);
+  lines.push(`  - MATCH,${MAIN_GROUP}`);
 
   return lines.join("\n");
 };

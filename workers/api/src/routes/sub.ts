@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import { getTokenByAnyUuid } from "../lib/kv";
 import { activatePaidToken } from "../lib/activate";
-import { buildClashConfig } from "../lib/clash";
+import { buildClashConfig, parseRegions } from "../lib/clash";
 import { getNodes, isBudgetExhausted } from "../lib/nodes";
 import { pushAuthRefresh } from "../lib/authpush";
 import type { Env } from "../types";
@@ -38,7 +38,7 @@ subRoutes.get("/", async (c) => {
   }
 
   const nodes = (await getNodes(c.env)).filter((n) => !isBudgetExhausted(n));
-  const yaml = buildClashConfig({ uuid, nodes });
+  const yaml = buildClashConfig({ uuid, nodes, regions: parseRegions(c.env.CLASH_REGIONS) });
 
   // subscription-userinfo：Clash/Stash 客户端可直接显示已用流量与到期时间
   // （不区分上下行，已用量统一计入 download）

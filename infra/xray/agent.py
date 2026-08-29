@@ -151,12 +151,25 @@ metrics_state = {
 NODE_KEY = ""
 
 
+REGION_META = [
+    ("HK", "🇭🇰", "香港"),
+    ("JP", "🇯🇵", "日本"),
+    ("MY", "🇲🇾", "马来西亚"),
+    ("SG", "🇸🇬", "新加坡"),
+    ("US", "🇺🇸", "美国"),
+]
+AUTO_GROUP = "♻️ 自动选择"
+MAIN_GROUP = "🚀 节点选择"
+TEST_URL = "http://www.gstatic.com/generate_204"
+
+
 def build_clash_yaml(uuid: str, nodes: list) -> str:
-    """与中心 workers/api/src/lib/clash.ts 的输出格式保持一致。"""
+    """与中心 workers/api/src/lib/clash.ts 的输出格式保持一致（按区域分组）。"""
     lines = ["mixed-port: 7890", "allow-lan: false", "mode: rule", "log-level: info", ""]
     proxies = [
         {
             "name": f"{n['region']} {n['name']}",
+            "region": n["region"],
             "server": n["host"],
             "port": n["port"],
             "tls": n["tls"],
@@ -178,32 +191,61 @@ def build_clash_yaml(uuid: str, nodes: list) -> str:
         lines.append("    ws-opts:")
         lines.append(f'      path: "{p["ws_path"]}"')
 
+    # 按区域归类：顺序跟随 REGION_META，未登记的区域排最后
+    meta_by_code = {code: (flag, name) for code, flag, name in REGION_META}
+
+    def region_group_name(code: str) -> str:
+        meta = meta_by_code.get(code)
+        return f"{meta[0]} {meta[1]}" if meta else code
+
+    by_region: dict[str, list[str]] = {}
+    for p in proxies:
+        by_region.setdefault(p["region"], []).append(p["name"])
+    ordered_codes = [c for c, _, _ in REGION_META if c in by_region] + [
+        c for c in by_region if c not in meta_by_code
+    ]
+
     lines.append("")
     lines.append("proxy-groups:")
-    lines.append('  - name: "🚀 自动选择"')
+    # 主分组：默认「自动选择」，可切区域（区域内自动测速）或手动指定单节点
+    lines.append(f'  - name: "{MAIN_GROUP}"')
+    lines.append("    type: select")
+    lines.append("    proxies:")
+    lines.append(f'      - "{AUTO_GROUP}"')
+    for code in ordered_codes:
+        lines.append(f'      - "{region_group_name(code)}"')
+    for p in proxies:
+        lines.append(f'      - "{p["name"]}"')
+    # 全局自动选择：url-test 覆盖全部节点
+    lines.append(f'  - name: "{AUTO_GROUP}"')
     lines.append("    type: url-test")
     lines.append("    proxies:")
     for p in proxies:
         lines.append(f'      - "{p["name"]}"')
-    lines.append("    url: http://www.gstatic.com/generate_204")
+    lines.append(f"    url: {TEST_URL}")
     lines.append("    interval: 300")
     lines.append("    tolerance: 50")
-    lines.append('  - name: "🚀 选择节点"')
-    lines.append("    type: select")
-    lines.append("    proxies:")
-    lines.append('      - "🚀 自动选择"')
-    for p in proxies:
-        lines.append(f'      - "{p["name"]}"')
+    # 每个区域一个 url-test 分组
+    for code in ordered_codes:
+        lines.append(f'  - name: "{region_group_name(code)}"')
+        lines.append("    type: url-test")
+        lines.append("    proxies:")
+        for name in by_region[code]:
+            lines.append(f'      - "{name}"')
+        lines.append(f"    url: {TEST_URL}")
+        lines.append("    interval: 300")
+        lines.append("    tolerance: 50")
 
     lines.append("")
     lines.append("rules:")
+    lines.append("  - DOMAIN-SUFFIX,fastergamer.cn,DIRECT")
     lines.append("  - DOMAIN-SUFFIX,fastergamer.click,DIRECT")
     lines.append("  - IP-CIDR,10.0.0.0/8,DIRECT,no-resolve")
     lines.append("  - IP-CIDR,172.16.0.0/12,DIRECT,no-resolve")
     lines.append("  - IP-CIDR,192.168.0.0/16,DIRECT,no-resolve")
     lines.append("  - IP-CIDR,127.0.0.0/8,DIRECT,no-resolve")
     lines.append("  - GEOIP,CN,DIRECT")
-    lines.append("  - MATCH,🚀 选择节点")
+    lines.append(f"  - MATCH,{MAIN_GROUP}")
     return "\n".join(lines)
 
 
