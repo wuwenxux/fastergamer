@@ -134,7 +134,7 @@ export default function Home() {
                   : "border-slate-700 bg-slate-900 text-slate-300 hover:border-sky-500/60"
               }`}
             >
-              {d.platform} · {d.name}
+              {d.platform.split("-")[0]} · {d.name}
             </a>
           ))}
         </div>

@@ -10,14 +10,14 @@ export const CLASH_DOWNLOADS = [
     note: "推荐，支持 VLESS + WS",
   },
   {
-    platform: "macOS",
+    platform: "macOS-arm64",
     name: "Clash Verge Rev (Apple Silicon)",
     versionKey: "clash_verge",
     url: "https://dl.fastergamer.click/clash-verge-macos-arm64.dmg",
     note: "M 系列芯片",
   },
   {
-    platform: "macOS",
+    platform: "macOS-x64",
     name: "Clash Verge Rev (Intel)",
     versionKey: "clash_verge",
     url: "https://dl.fastergamer.click/clash-verge-macos-x64.dmg",
@@ -45,10 +45,34 @@ export const CLASH_DOWNLOADS = [
   },
 ];
 
+/**
+ * Mac 芯片检测：UA 里 ARM Mac 也写 "Intel Mac OS X"（苹果冻结了 UA），
+ * 只能用 WebGL 的 renderer 字符串区分——M 系列显示 "Apple M*"/"Apple GPU"，
+ * Intel Mac 显示 Intel/AMD/NVIDIA 显卡名。识别不了返回空串，UI 不给推荐而不是瞎猜。
+ */
+function detectMacArch(): "arm64" | "x64" | "" {
+  try {
+    const canvas = document.createElement("canvas");
+    const gl = canvas.getContext("webgl");
+    if (!gl) return "";
+    const ext = gl.getExtension("WEBGL_debug_renderer_info");
+    if (!ext) return "";
+    const renderer = String(gl.getParameter(ext.UNMASKED_RENDERER_WEBGL));
+    if (/Apple\s?(M\d|GPU)/i.test(renderer)) return "arm64";
+    if (/Intel|AMD|NVIDIA|Radeon/i.test(renderer)) return "x64";
+  } catch {
+    /* ignore */
+  }
+  return "";
+}
+
 export function detectPlatform(): string {
   const ua = navigator.userAgent;
   if (/iPhone|iPad|iPod/i.test(ua)) return "iOS";
-  if (/Macintosh|Mac OS X/i.test(ua)) return "macOS";
+  if (/Macintosh|Mac OS X/i.test(ua)) {
+    const arch = detectMacArch();
+    return arch ? `macOS-${arch}` : "macOS";
+  }
   if (/Android/i.test(ua)) return "Android";
   if (/Windows/i.test(ua)) return "Windows";
   if (/Linux/i.test(ua)) return "Linux";
@@ -111,7 +135,7 @@ export default function ClashGuide() {
               rel="noopener noreferrer"
               className="inline-flex items-center mt-3 rounded-lg bg-sky-500 px-4 py-2 text-sm font-medium hover:bg-sky-400 transition-colors"
             >
-              下载 {recommended.name}（{recommended.platform}）
+              下载 {recommended.name}（检测到适配你的设备）
             </a>
           )}
         </>
