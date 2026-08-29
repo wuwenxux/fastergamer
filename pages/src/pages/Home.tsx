@@ -1,8 +1,8 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import type { Plan } from "../../../shared/types";
 import PlanCard from "../components/PlanCard";
-import { CLASH_DOWNLOADS, detectPlatform } from "../components/ClashGuide";
+import { CLASH_DOWNLOADS, platformMatches, usePlatform } from "../components/ClashGuide";
 import { api } from "../services/api";
 
 const REF_KEY = "fg_ref";
@@ -30,7 +30,7 @@ function savedRefCode(): string | undefined {
 export default function Home() {
   const [plans, setPlans] = useState<Plan[]>([]);
   const [error, setError] = useState("");
-  const currentPlatform = useMemo(detectPlatform, []);
+  const currentPlatform = usePlatform();
 
   useEffect(() => {
     captureRefCode();
@@ -129,7 +129,7 @@ export default function Home() {
               target="_blank"
               rel="noopener noreferrer"
               className={`rounded-lg border px-4 py-2 text-sm transition-colors ${
-                d.platform === currentPlatform
+                platformMatches(d.platform, currentPlatform)
                   ? "border-sky-500 bg-sky-500/10 text-sky-300"
                   : "border-slate-700 bg-slate-900 text-slate-300 hover:border-sky-500/60"
               }`}

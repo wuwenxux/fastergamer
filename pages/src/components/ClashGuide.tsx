@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 
 export const CLASH_DOWNLOADS = [
@@ -46,11 +46,21 @@ export const CLASH_DOWNLOADS = [
 ];
 
 /**
- * Mac 芯片检测：UA 里 ARM Mac 也写 "Intel Mac OS X"（苹果冻结了 UA），
- * 只能用 WebGL 的 renderer 字符串区分——M 系列显示 "Apple M*"/"Apple GPU"，
- * Intel Mac 显示 Intel/AMD/NVIDIA 显卡名。识别不了返回空串，UI 不给推荐而不是瞎猜。
+ * 平台识别：三段式，宁可返回空串（UI 不推荐）也不瞎猜。
+ *
+ * 1) UA 粗判 OS。注意两个坑：
+ *    - ARM Mac 的 UA 也写 "Intel Mac OS X"（苹果冻结 UA），架构必须靠 2)/3)
+ *    - iPadOS 13+ 的 UA 伪装成 Macintosh，用 maxTouchPoints 区分
+ * 2) navigator.userAgentData.getHighEntropyValues（Chromium 系：Chrome/Edge/Brave/
+ *    国产 Chromium 壳）能拿到真实 CPU 架构，ARM Windows / ARM Linux 都准；异步
+ * 3) WebGL UNMASKED_RENDERER 兜底（Safari/Firefox）：M 系列 Mac 显示 "Apple M 系列/Apple GPU"，
+ *    Intel Mac = Intel/AMD/NVIDIA 显卡名；ARM Windows = Qualcomm Adreno
  */
-function detectMacArch(): "arm64" | "x64" | "" {
+
+type Arch = "arm64" | "x64" | "";
+
+/** WebGL 显卡串 → 架构（同步，Safari/Firefox 也能用） */
+function archFromWebGL(): Arch {
   try {
     const canvas = document.createElement("canvas");
     const gl = canvas.getContext("webgl");
@@ -58,25 +68,79 @@ function detectMacArch(): "arm64" | "x64" | "" {
     const ext = gl.getExtension("WEBGL_debug_renderer_info");
     if (!ext) return "";
     const renderer = String(gl.getParameter(ext.UNMASKED_RENDERER_WEBGL));
-    if (/Apple\s?(M\d|GPU)/i.test(renderer)) return "arm64";
-    if (/Intel|AMD|NVIDIA|Radeon/i.test(renderer)) return "x64";
+    if (/Apple\s?(M\d|GPU)/i.test(renderer)) return "arm64"; // M 系列 Mac
+    if (/Adreno|Snapdragon|Mali/i.test(renderer)) return "arm64"; // ARM Windows / ARM 设备
+    if (/Intel|AMD|NVIDIA|Radeon|GeForce/i.test(renderer)) return "x64";
   } catch {
     /* ignore */
   }
   return "";
 }
 
-export function detectPlatform(): string {
+/** UA 粗判 OS（含 iPadOS 伪装 Mac 的识别） */
+function detectOS(): string {
   const ua = navigator.userAgent;
   if (/iPhone|iPad|iPod/i.test(ua)) return "iOS";
-  if (/Macintosh|Mac OS X/i.test(ua)) {
-    const arch = detectMacArch();
-    return arch ? `macOS-${arch}` : "macOS";
-  }
   if (/Android/i.test(ua)) return "Android";
+  if (/Macintosh|Mac OS X/i.test(ua)) {
+    // iPadOS 桌面模式 UA = Macintosh，靠触屏点数区分
+    if (navigator.maxTouchPoints > 1) return "iOS";
+    return "macOS";
+  }
   if (/Windows/i.test(ua)) return "Windows";
   if (/Linux/i.test(ua)) return "Linux";
   return "";
+}
+
+/** 同步首判：OS + WebGL 架构（能立刻给出大概率的推荐） */
+export function detectPlatform(): string {
+  const os = detectOS();
+  if (os !== "macOS" && os !== "Windows" && os !== "Linux") return os;
+  const arch = archFromWebGL();
+  return arch ? `${os}-${arch}` : os;
+}
+
+/** UA-CH 高精度值：Chromium 系浏览器的权威架构信息（比 WebGL 更准） */
+async function archFromUserAgentData(): Promise<Arch> {
+  try {
+    const uad = (
+      navigator as Navigator & {
+        userAgentData?: {
+          getHighEntropyValues(hints: string[]): Promise<{ architecture?: string; bitness?: string }>;
+        };
+      }
+    ).userAgentData;
+    if (!uad?.getHighEntropyValues) return "";
+    const v = await uad.getHighEntropyValues(["architecture", "bitness"]);
+    if (v.architecture === "arm") return "arm64";
+    if (v.architecture === "x86" && v.bitness === "64") return "x64";
+  } catch {
+    /* ignore */
+  }
+  return "";
+}
+
+/** React hook：先给同步首判，Chromium 上再用 UA-CH 修正（能纠正 WebGL 的误判） */
+export function usePlatform(): string {
+  const [platform, setPlatform] = useState(detectPlatform);
+  useEffect(() => {
+    const os = detectOS();
+    if (os !== "macOS" && os !== "Windows" && os !== "Linux") return;
+    archFromUserAgentData().then((arch) => {
+      if (arch) setPlatform(`${os}-${arch}`);
+    });
+  }, []);
+  return platform;
+}
+
+/** 下载项与检测结果的匹配：精确匹配优先；无架构后缀的下载项（Windows/Linux/Android
+ *  只有单构建）匹配该 OS 的任意架构；macOS 分构建，未识别出架构时不推荐 */
+export function platformMatches(downloadPlatform: string, detected: string): boolean {
+  if (!detected) return false;
+  if (downloadPlatform === detected) return true;
+  if (downloadPlatform.includes("-")) return false;
+  const [os] = detected.split("-");
+  return downloadPlatform.toLowerCase() === os.toLowerCase();
 }
 
 interface Step {
@@ -87,8 +151,8 @@ interface Step {
 }
 
 export default function ClashGuide() {
-  const currentPlatform = useMemo(detectPlatform, []);
-  const recommended = CLASH_DOWNLOADS.find((d) => d.platform === currentPlatform);
+  const currentPlatform = usePlatform();
+  const recommended = CLASH_DOWNLOADS.find((d) => platformMatches(d.platform, currentPlatform));
   const [versions, setVersions] = useState<Record<string, string>>({});
 
   // 下载站（R2）上的 version.json 由 scripts/update-clients.py 每天自动刷新
