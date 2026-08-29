@@ -6,7 +6,7 @@
 //   CLOUDFLARE_API_TOKEN=xxx node scripts/cf-dns.mjs set <子域> <IP> [备注]  # 更新已有记录
 // 约定：节点域名一律 DNS-only（灰云，客户端直连），地理命名 hk01/jp01/…，与 KV 注册表 host 一致
 const TOKEN = process.env.CLOUDFLARE_API_TOKEN;
-const ZONE_ID = "f04cfb1b711bb644611054b1db63f7f6"; // fastergamer.click
+const ZONE_ID = "d7cebab6160f1fb76c179c4b53e0a0af"; // fastergamer.click
 const DOMAIN = "fastergamer.click";
 
 if (!TOKEN) {
