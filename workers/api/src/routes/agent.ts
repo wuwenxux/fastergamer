@@ -1,8 +1,10 @@
 import { Hono } from "hono";
-import { KV, type Token } from "../../../../shared/types";
-import { getNodeByKey, getNodes, saveNodes, currentMonthKey, isBudgetExhausted } from "../lib/nodes";
-import { getTokenByAnyUuid, getPlans, listKeys, saveToken } from "../lib/kv";
+import { KV, type Device, type Node, type Plan, type Token } from "../../../../shared/types";
+import { getNodeByKey, saveNodeStat, currentMonthKey, isBudgetExhausted } from "../lib/nodes";
+import { getTokenByAnyUuid, getPlans, saveTokenValue } from "../lib/kv";
 import { checkNodeBudget, checkTokenRisks, checkTrafficSpike, notifyBorrow, notifyMonth80, notifyIpChange } from "../lib/risk-notify";
+import { getAuthSnapshot, TRAFFIC_GRACE_MS } from "../lib/authsnapshot";
+import { pushAuthRefresh } from "../lib/authpush";
 import type { Env } from "../types";
 
 export const agentRoutes = new Hono<{ Bindings: Env }>();
@@ -49,22 +51,14 @@ function detectIpChange(token: Token, key: string, conns: Record<string, number>
   return curr.filter((ip) => !prev.includes(ip));
 }
 
-/**
- * 流量耗尽后的宽限期：不立即断连，先邮件引导续费，宽限期内可正常接入，
- * 超过宽限期仍未处理（续费/重置）才切断。
- */
-export const TRAFFIC_GRACE_MS = 48 * 3_600_000;
-
-/** 流量准入：未超限，或超限但仍在宽限期内 */
-export const withinTrafficAllowance = (token: Token, now: number): boolean => {
-  if (token.traffic_used_gb < token.traffic_limit_gb) return true;
-  return !!token.traffic_exhausted_at && now - token.traffic_exhausted_at < TRAFFIC_GRACE_MS;
-};
+/** nodestat 动态状态的最小写入间隔：流量累计按计数器差值计算，跳过中间写不丢量 */
+export const NODE_STAT_WRITE_MIN_INTERVAL_MS = 30 * 60_000;
 
 /**
  * GET /api/agent/config —— 节点 Agent 拉取本节点配置
  * 认证方式：header x-node-key
- * 返回：{ node: {...}, uuids: [...active token uuid] }
+ * 返回：{ node: {...}, nodes: [...全部可用节点], uuids: [...active token uuid] }
+ * nodes 供节点本地渲染订阅（中心不可达时节点仍能独立应答 /api/sub）
  */
 agentRoutes.get("/config", async (c) => {
   const key = c.req.header("x-node-key");
@@ -77,29 +71,15 @@ agentRoutes.get("/config", async (c) => {
     return c.json({ ok: false, error: "invalid or inactive node" }, 403);
   }
 
-  // 拉取所有 active、未过期且流量在可用额度内（含耗尽宽限期）的 token UUID（主 uuid + 各设备槽位 uuid）
-  // 月流量超配额的节点返回空列表，agent 会清空 Xray clients，已连接设备随连接断开被切断
-  const uuids: string[] = [];
-  // 用户自助封禁的 IP 合集：agent 同步到节点防火墙，被封 IP 无法连接本节点
-  const blockedIps = new Set<string>();
-  if (!isBudgetExhausted(node)) {
-    const keys = await listKeys(c.env.TOKENS, KV.TOKEN);
-    const now = Date.now();
-    for (const k of keys) {
-      const raw = await c.env.TOKENS.get(k.name);
-      if (!raw) continue;
-      const token = JSON.parse(raw) as Token;
-      for (const ip of token.blocked_ips ?? []) blockedIps.add(ip);
-      if (
-        token.status === "active" &&
-        (token.expires_at ?? 0) > now &&
-        withinTrafficAllowance(token, now)
-      ) {
-        uuids.push(token.uuid);
-        for (const d of token.devices ?? []) uuids.push(d.uuid);
-      }
-    }
-  }
+  const snap = await getAuthSnapshot(c.env);
+
+  // 月流量超配额的节点返回空名单，agent 会清空 Xray clients，已连接设备随连接断开被切断
+  const uuids = isBudgetExhausted(node) ? [] : snap.uuids;
+  const allow = new Set(uuids);
+  // 部署初期 KV 里可能还躺着旧格式快照（无 usage 字段），兜底为空表
+  const usage = Object.fromEntries(
+    Object.entries(snap.usage ?? {}).filter(([u]) => allow.has(u))
+  );
 
   return c.json({
     ok: true,
@@ -113,36 +93,135 @@ agentRoutes.get("/config", async (c) => {
         tls: node.tls,
         ws_path: node.ws_path,
       },
+      nodes: snap.nodes,
       uuids,
-      blocked_ips: [...blockedIps],
+      blocked_ips: snap.blockedIps,
+      usage,
     },
   });
 });
 
 /**
- * POST /api/agent/heartbeat —— 节点 Agent 心跳
- * 用于中心判断节点是否在线
+ * 单 uuid 的流量增量记账（新旧两种上报格式共用）：
+ * 累加按节点分账 → IP 分摊/变更检测 → 设备审计 → 总量与月度配额 → 耗尽宽限 → 风险通知。
+ * 落盘只写 token 主键（索引不变，省一次写）。
+ * 返回 true 表示发生了授权相关变更（新耗尽/宽限期结束过期），调用方应推送节点刷新。
  */
-agentRoutes.post("/heartbeat", async (c) => {
-  const key = c.req.header("x-node-key");
-  if (!key) {
-    return c.json({ ok: false, error: "missing x-node-key" }, 401);
+async function applyTrafficDelta(
+  env: Env,
+  node: Node,
+  found: { token: Token; device?: Device },
+  uuid: string,
+  delta: number,
+  billing: "sum" | "downlink",
+  conns: Record<string, number>,
+  plansById: Map<string, Plan>,
+  now: number
+): Promise<boolean> {
+  const { token, device } = found;
+  // 授权相关变更标记：新耗尽 / 宽限期结束过期 / 预支提前到期时置位
+  let authChanged = false;
+
+  // 多节点流量聚合：traffic_by_node 存各节点最新计数器（用于清零检测），
+  // traffic_total_by_node 按 delta 累计真实消耗（重启/rmu 不清零）
+  token.traffic_by_node = token.traffic_by_node ?? {};
+  token.billing_by_node = token.billing_by_node ?? {};
+  // 迁移：老数据没有累计表，把当前计数器值视为已消耗量作为起点
+  token.traffic_total_by_node = token.traffic_total_by_node ?? { ...token.traffic_by_node };
+  const nodeKey = device ? `${node.id}:${uuid}` : node.id;
+  // 计费口径切换（双向→下行）：该节点基线重置，当次不计增量，避免历史上行被重复计费。
+  // 无记录的键默认视为当前口径（?? billing）：双向计费的存量 token 早在口径切换时就已写入
+  // 显式记录，没记录的都是切换后新建的，按老默认 "sum" 会把它们首次结算误清零。
+  if ((token.billing_by_node[nodeKey] ?? billing) !== billing) {
+    delta = 0;
+    token.billing_by_node[nodeKey] = billing;
+  }
+  token.traffic_total_by_node[nodeKey] =
+    (token.traffic_total_by_node[nodeKey] ?? token.traffic_by_node[nodeKey] ?? 0) + delta;
+
+  // 流量暴增检测：1h 窗口内新增超阈值告警客户与管理员
+  await checkTrafficSpike(env, token, delta);
+
+  // 接入 IP 统计：把本次增量按连接数比例分摊到各来源 IP（估算）
+  // 活跃 IP 与上次不一致 = 接入地址变更，提醒本人自查（本人换网络属正常）
+  attributeIpTraffic(token, conns, delta, now);
+  const changedIps = detectIpChange(token, nodeKey, conns);
+  if (changedIps.length > 0) {
+    await notifyIpChange(env, token, changedIps);
   }
 
-  const nodes = await getNodes(c.env);
-  const idx = nodes.findIndex((n) => n.key === key);
-  if (idx === -1 || !nodes[idx].active) {
-    return c.json({ ok: false, error: "invalid or inactive node" }, 403);
+  // 设备级流量审计：该设备 uuid 在各节点的累计消耗之和
+  if (device) {
+    const devTotal = Object.entries(token.traffic_total_by_node)
+      .filter(([k]) => k.endsWith(`:${uuid}`))
+      .reduce((sum, [, v]) => sum + v, 0);
+    device.traffic_used_gb = devTotal / 1024 / 1024 / 1024;
+    device.last_active_at = now;
   }
 
-  nodes[idx].last_seen_at = Date.now();
-  await saveNodes(c.env, nodes);
-  return c.json({ ok: true });
-});
+  const totalBytes = Math.max(
+    0,
+    Object.values(token.traffic_total_by_node).reduce((sum, v) => sum + v, 0) -
+      (token.traffic_offset_bytes ?? 0)
+  );
+  token.traffic_used_gb = totalBytes / 1024 / 1024 / 1024;
+  token.last_active_at = now;
+
+  // 月度配额：当月用超自动预支下月额度，有效期永久提前一个月（每档邮件通知一次）
+  const quotaGb = plansById.get(token.plan_id)?.monthly_quota_gb;
+  if (quotaGb && quotaGb > 0) {
+    const quotaBytes = quotaGb * 1024 ** 3;
+    const mk = currentMonthKey();
+    if (token.month_key !== mk) {
+      // 跨月：锁定当月已预支月数，月度计数归零
+      token.months_borrowed =
+        (token.months_borrowed ?? 0) + Math.floor((token.month_used_bytes ?? 0) / quotaBytes);
+      token.month_used_bytes = 0;
+      token.month_key = mk;
+    }
+    token.month_used_bytes = (token.month_used_bytes ?? 0) + delta;
+    const borrowed =
+      (token.months_borrowed ?? 0) + Math.floor(token.month_used_bytes / quotaBytes);
+    const base = token.base_expires_at ?? token.expires_at;
+    if (base) {
+      token.base_expires_at = base;
+      token.expires_at = base - borrowed * 30 * 86_400_000;
+      if (token.status === "active" && token.expires_at <= now) {
+        token.status = "expired";
+        authChanged = true; // 预支耗尽提前到期：从授权名单摘除
+      }
+    }
+    // 80% 提前预警（每月一次）→ 用超时自动预支（每档一次）
+    await notifyMonth80(env, token, quotaGb);
+    await notifyBorrow(env, token, borrowed, quotaGb);
+  }
+
+  // 不限量套餐（上限 ≤ 0）不参与耗尽判断；流量仍照常累计供审计
+  if (token.traffic_limit_gb > 0 && token.traffic_used_gb >= token.traffic_limit_gb) {
+    if (!token.traffic_exhausted_at) {
+      // 刚耗尽：进入宽限期，不断连，由 checkTokenRisks 发续费引导邮件
+      // 授权变更（用量基数超线）：推送节点更新本地配额基数
+      token.traffic_exhausted_at = now;
+      authChanged = true;
+    } else if (now - token.traffic_exhausted_at > TRAFFIC_GRACE_MS) {
+      // 宽限期结束仍未续费/重置：才置过期并切断
+      token.status = "expired";
+      authChanged = true;
+    }
+  }
+
+  // 风险检测：流量 80% / 耗尽时提醒客户（幂等，每类只发一次）
+  await checkTokenRisks(env, token);
+  await saveTokenValue(env, token);
+  return authChanged;
+}
 
 /**
- * POST /api/agent/traffic —— 节点 Agent 上报每个 token 的流量
- * 请求体：{ "stats": { "uuid": used_bytes, ... } }
+ * POST /api/agent/traffic —— 节点 Agent 上报流量
+ * 两种格式：
+ * - 旧版（滚动升级兼容）：{ "stats": { uuid: 计数器累计值 } }，中心按计数器差值算增量
+ * - v2 结算制：{ "v": 2, "settled": { uuid: 增量字节 } }，agent 本地记账，
+ *   只在断联/配额事件/兜底周期时上报，中心直接累加
  */
 agentRoutes.post("/traffic", async (c) => {
   const key = c.req.header("x-node-key");
@@ -156,7 +235,9 @@ agentRoutes.post("/traffic", async (c) => {
   }
 
   const body = (await c.req.json().catch(() => null)) as {
+    v?: number;
     stats?: Record<string, number>;
+    settled?: Record<string, number>;
     online?: Record<string, boolean>;
     node_total_bytes?: number;
     online_count?: number;
@@ -164,6 +245,7 @@ agentRoutes.post("/traffic", async (c) => {
     ip_conns?: Record<string, Record<string, number>>;
   } | null;
   const stats = body?.stats ?? {};
+  const settled = body?.settled ?? {};
   const online = body?.online ?? {};
   const ipConns = body?.ip_conns ?? {};
   // 计费口径：默认历史双向计费；agent 上报 downlink 表示只计下行
@@ -171,105 +253,49 @@ agentRoutes.post("/traffic", async (c) => {
   const now = Date.now();
 
   // 月度配额需要套餐定义，循环前一次性加载
-  const plans = Object.keys(stats).length > 0 ? await getPlans(c.env) : [];
+  const plans = Object.keys(stats).length + Object.keys(settled).length > 0 ? await getPlans(c.env) : [];
   const plansById = new Map(plans.map((p) => [p.id, p]));
 
+  // 有授权相关变更（新耗尽/宽限结束过期/预支提前到期）时，结束后推送全节点立即刷新
+  let authChanged = false;
+
+  // v2 结算制：settled 里是 agent 本地账本算好的增量，直接累加
+  for (const [uuid, bytes] of Object.entries(settled)) {
+    const delta = Math.max(0, Math.round(bytes));
+    if (delta <= 0) {
+      delete ipConns[uuid];
+      continue;
+    }
+    const found = await getTokenByAnyUuid(c.env, uuid);
+    if (!found || found.token.status !== "active") continue;
+    authChanged =
+      (await applyTrafficDelta(
+        c.env, node, found, uuid, delta, billing, ipConns[uuid] ?? {}, plansById, now
+      )) || authChanged;
+    delete ipConns[uuid];
+  }
+
+  // 旧版格式：stats 里是 xray 计数器累计值，中心按差值算增量（滚动升级兼容，全量切换后可删）
   for (const [uuid, bytes] of Object.entries(stats)) {
     const found = await getTokenByAnyUuid(c.env, uuid);
     if (!found || found.token.status !== "active") continue;
-    const { token, device } = found;
+    const { token } = found;
 
-    // 多节点流量聚合：traffic_by_node 存各节点最新计数器（用于清零检测），
-    // traffic_total_by_node 按 delta 累计真实消耗（重启/rmu 不清零）
     token.traffic_by_node = token.traffic_by_node ?? {};
-    token.billing_by_node = token.billing_by_node ?? {};
-    // 迁移：老数据没有累计表，把当前计数器值视为已消耗量作为起点
-    token.traffic_total_by_node = token.traffic_total_by_node ?? { ...token.traffic_by_node };
-    const nodeKey = device ? `${node.id}:${uuid}` : node.id;
+    const nodeKey = found.device ? `${node.id}:${uuid}` : node.id;
     const prev = token.traffic_by_node[nodeKey] ?? 0;
-    let delta = bytes >= prev ? bytes - prev : bytes;
-    // 计费口径切换（双向→下行）：该节点基线重置，当次不计增量，避免历史上行被重复计费
-    if ((token.billing_by_node[nodeKey] ?? "sum") !== billing) {
-      delta = 0;
-      token.billing_by_node[nodeKey] = billing;
-    }
+    // Xray 重启/rmu 后计数器清零；上报值变小按新基准把当前值全量计入
+    const delta = bytes >= prev ? bytes - prev : bytes;
     token.traffic_by_node[nodeKey] = bytes;
-    token.traffic_total_by_node[nodeKey] =
-      (token.traffic_total_by_node[nodeKey] ?? prev) + delta;
 
-    // 流量暴增检测：1h 窗口内新增超阈值告警客户与管理员
-    await checkTrafficSpike(c.env, token, delta);
-
-    // 接入 IP 统计：把本周期增量按连接数比例分摊到各来源 IP（估算）
-    // 活跃 IP 与上周期不一致 = 接入地址变更，提醒本人自查（本人换网络属正常）
-    attributeIpTraffic(token, ipConns[uuid] ?? {}, delta, now);
-    const changedIps = detectIpChange(token, nodeKey, ipConns[uuid] ?? {});
+    authChanged =
+      (await applyTrafficDelta(
+        c.env, node, found, uuid, delta, billing, ipConns[uuid] ?? {}, plansById, now
+      )) || authChanged;
     delete ipConns[uuid];
-    if (changedIps.length > 0) {
-      await notifyIpChange(c.env, token, changedIps);
-    }
-
-    // 设备级流量审计：该设备 uuid 在各节点的累计消耗之和
-    if (device) {
-      const devTotal = Object.entries(token.traffic_total_by_node)
-        .filter(([k]) => k.endsWith(`:${uuid}`))
-        .reduce((sum, [, v]) => sum + v, 0);
-      device.traffic_used_gb = devTotal / 1024 / 1024 / 1024;
-      device.last_active_at = now;
-    }
-
-    const totalBytes = Math.max(
-      0,
-      Object.values(token.traffic_total_by_node).reduce((sum, v) => sum + v, 0) -
-        (token.traffic_offset_bytes ?? 0)
-    );
-    token.traffic_used_gb = totalBytes / 1024 / 1024 / 1024;
-    token.last_active_at = now;
-
-    // 月度配额：当月用超自动预支下月额度，有效期永久提前一个月（每档邮件通知一次）
-    const quotaGb = plansById.get(token.plan_id)?.monthly_quota_gb;
-    if (quotaGb && quotaGb > 0) {
-      const quotaBytes = quotaGb * 1024 ** 3;
-      const mk = currentMonthKey();
-      if (token.month_key !== mk) {
-        // 跨月：锁定当月已预支月数，月度计数归零
-        token.months_borrowed =
-          (token.months_borrowed ?? 0) + Math.floor((token.month_used_bytes ?? 0) / quotaBytes);
-        token.month_used_bytes = 0;
-        token.month_key = mk;
-      }
-      token.month_used_bytes = (token.month_used_bytes ?? 0) + delta;
-      const borrowed =
-        (token.months_borrowed ?? 0) + Math.floor(token.month_used_bytes / quotaBytes);
-      const base = token.base_expires_at ?? token.expires_at;
-      if (base) {
-        token.base_expires_at = base;
-        token.expires_at = base - borrowed * 30 * 86_400_000;
-        if (token.status === "active" && token.expires_at <= now) {
-          token.status = "expired";
-        }
-      }
-      // 80% 提前预警（每月一次）→ 用超时自动预支（每档一次）
-      await notifyMonth80(c.env, token, quotaGb);
-      await notifyBorrow(c.env, token, borrowed, quotaGb);
-    }
-
-    if (token.traffic_used_gb >= token.traffic_limit_gb) {
-      if (!token.traffic_exhausted_at) {
-        // 刚耗尽：进入宽限期，不断连，由 checkTokenRisks 发续费引导邮件
-        token.traffic_exhausted_at = now;
-      } else if (now - token.traffic_exhausted_at > TRAFFIC_GRACE_MS) {
-        // 宽限期结束仍未续费/重置：才置过期并切断
-        token.status = "expired";
-      }
-    }
-
-    // 风险检测：流量 80% / 耗尽时提醒客户（幂等，每类只发一次）
-    await checkTokenRisks(c.env, token);
-    await saveToken(c.env, token);
   }
 
-  // 本周期有连接但无流量增量的 uuid（stats 循环未覆盖）：只记连接数与最近接入时间
+  // 本周期有连接但无流量增量的 uuid（上面两个循环未覆盖）：只记连接数与最近接入时间
   for (const [uuid, conns] of Object.entries(ipConns)) {
     const found = await getTokenByAnyUuid(c.env, uuid);
     if (!found || found.token.status !== "active") continue;
@@ -279,12 +305,14 @@ agentRoutes.post("/traffic", async (c) => {
     if (changedIps.length > 0) {
       await notifyIpChange(c.env, found.token, changedIps);
     }
-    await saveToken(c.env, found.token);
+    await saveTokenValue(c.env, found.token);
   }
 
   // 更新用户在线状态与设备数（只有 active token 才更新）
-  // 同一 token 在多个节点同时上线 = 多设备/分享使用，记录标记供运营处理
-  const MULTI_DEVICE_WINDOW_MS = 90_000;
+  // 同一 token 在多个节点同时上线 = 多设备/分享使用，记录标记供运营处理。
+  // 窗口与结算节奏对齐：online 状态现在只在结算/兜底上报时刷新（30 分钟粒度），
+  // 多设备判定随之变为「40 分钟内在多个节点有过活跃」，比原来粗，属可接受的口径变化。
+  const MULTI_DEVICE_WINDOW_MS = 40 * 60_000;
   for (const [uuid, isOnline] of Object.entries(online)) {
     const found = await getTokenByAnyUuid(c.env, uuid);
     if (!found || found.token.status !== "active") continue;
@@ -306,7 +334,7 @@ agentRoutes.post("/traffic", async (c) => {
       }
       // 多设备标记产生时提醒客户（幂等）
       await checkTokenRisks(c.env, token);
-      await saveToken(c.env, token);
+      await saveTokenValue(c.env, token);
     } else {
       // 离线：清除该节点的在线记录；窗口内无其他节点在线则判定下线
       if (token.online_by_node[node.id] === undefined && !token.online) continue;
@@ -319,37 +347,48 @@ agentRoutes.post("/traffic", async (c) => {
         token.online = false;
       }
       token.online_updated_at = now;
-      await saveToken(c.env, token);
+      await saveTokenValue(c.env, token);
     }
   }
 
   // 更新节点级总流量与在线连接数（含月度账期记账与配额检查）
-  const nodes = await getNodes(c.env);
-  const idx = nodes.findIndex((n) => n.key === key);
-  if (idx !== -1) {
-    const reported = body?.node_total_bytes ?? 0;
-    const prev = nodes[idx].last_node_total_bytes ?? 0;
-    // Xray 重启后统计会清零；如果上报值比上次小，按新的基准直接累加
-    let delta = reported >= prev ? reported - prev : reported;
-    // 计费口径切换（双向→下行）：节点基线重置，当次不计增量
-    if ((nodes[idx].billing_mode ?? "sum") !== billing) {
-      delta = 0;
-      nodes[idx].billing_mode = billing;
+  // 动态状态写 nodestat:<id> 单键，避免多节点并发写整表互相覆盖。
+  // 写入按 NODE_STAT_WRITE_MIN_INTERVAL 节流：流量按计数器差值累计，跳过中间写不丢量；
+  // 在线状态/节点流量的可见粒度降为 30 分钟（probe-nodes.sh 有独立的 5 分钟探测）。
+  {
+    const due = now - (node.stats_updated_at ?? 0) > NODE_STAT_WRITE_MIN_INTERVAL_MS;
+    if (due) {
+      const reported = body?.node_total_bytes ?? 0;
+      const prev = node.last_node_total_bytes ?? 0;
+      // Xray 重启后统计会清零；如果上报值比上次小，按新的基准直接累加
+      let delta = reported >= prev ? reported - prev : reported;
+      // 计费口径切换（双向→下行）：节点基线重置，当次不计增量。
+      // 无记录默认当前口径（?? billing），理由同 applyTrafficDelta。
+      if ((node.billing_mode ?? billing) !== billing) {
+        delta = 0;
+        node.billing_mode = billing;
+      }
+      node.total_bytes = (node.total_bytes ?? 0) + delta;
+      node.last_node_total_bytes = reported;
+      // 月度账期：跨月归零重计，告警水位一并清零
+      const mk = currentMonthKey();
+      if (node.month_key !== mk) {
+        node.month_key = mk;
+        node.month_bytes = 0;
+        node.budget_alert_level = 0;
+      }
+      node.month_bytes = (node.month_bytes ?? 0) + delta;
+      node.online_count = body?.online_count ?? node.online_count ?? 0;
+      node.last_seen_at = now;
+      node.stats_updated_at = now;
+      await checkNodeBudget(c.env, node);
+      await saveNodeStat(c.env, node);
     }
-    nodes[idx].total_bytes = (nodes[idx].total_bytes ?? 0) + delta;
-    nodes[idx].last_node_total_bytes = reported;
-    // 月度账期：跨月归零重计，告警水位一并清零
-    const mk = currentMonthKey();
-    if (nodes[idx].month_key !== mk) {
-      nodes[idx].month_key = mk;
-      nodes[idx].month_bytes = 0;
-      nodes[idx].budget_alert_level = 0;
-    }
-    nodes[idx].month_bytes = (nodes[idx].month_bytes ?? 0) + delta;
-    nodes[idx].online_count = body?.online_count ?? nodes[idx].online_count ?? 0;
-    nodes[idx].stats_updated_at = Date.now();
-    await checkNodeBudget(c.env, nodes[idx]);
-    await saveNodes(c.env, nodes);
+  }
+
+  // 授权相关变更：重建快照并推送全节点立即刷新（fire-and-forget，不拖慢上报应答）
+  if (authChanged) {
+    c.executionCtx.waitUntil(pushAuthRefresh(c.env));
   }
 
   return c.json({ ok: true });
