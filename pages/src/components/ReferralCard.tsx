@@ -12,7 +12,7 @@ interface ReferralInfo {
 }
 
 /**
- * 推广有礼卡片：登录后展示我的推广链接、已邀请人数与推广余额。
+ * 推广有礼横幅：海报式大数字 + 10 格点亮进度，少文字。
  * 未登录（无 session）时接口返回 401，卡片自动隐藏，不影响页面其他功能。
  */
 export default function ReferralCard() {
@@ -29,7 +29,8 @@ export default function ReferralCard() {
   if (!info) return null;
 
   const balance = Math.max(0, info.available_credits) * info.discount_per_credit;
-  const progress = Math.min(100, balance % 100 || (balance > 0 ? 100 : 0));
+  // 10 格进度：每 10 元点亮一格，满格 = 免费一年
+  const litSlots = Math.min(10, Math.floor(balance / info.discount_per_credit));
 
   const copy = async () => {
     try {
@@ -42,32 +43,45 @@ export default function ReferralCard() {
   };
 
   return (
-    <div className="rounded-2xl border border-emerald-500/40 bg-emerald-500/5 p-5 space-y-3">
-      <div className="flex items-center justify-between">
-        <h3 className="font-semibold text-emerald-300">🎁 推广有礼</h3>
-        <span className="text-xs text-slate-400">
-          已付费 {info.invited_count} 人{info.pending_count > 0 ? ` · ${info.pending_count} 人待付费` : ""} · 推广余额 {balance} 元
-        </span>
+    <div className="overflow-hidden rounded-3xl border border-emerald-500/40">
+      {/* 海报头：渐变底 + 大数字 */}
+      <div className="bg-gradient-to-br from-emerald-500/25 via-slate-900 to-slate-950 px-6 pt-7 pb-6 text-center space-y-2">
+        <div className="text-sm font-medium text-emerald-300 tracking-widest">🎁 推广余额</div>
+        <div className="text-6xl font-black text-emerald-300">¥{balance}</div>
+        <div className="text-sm text-slate-300">
+          每邀请 1 人付费 <span className="text-emerald-300 font-semibold">+¥{info.discount_per_credit}</span>
+          ，攒满 ¥100 <span className="text-emerald-300 font-semibold">免费用一年</span>
+        </div>
+        {(info.invited_count > 0 || info.pending_count > 0) && (
+          <div className="text-xs text-slate-500">
+            已付费 {info.invited_count} 人{info.pending_count > 0 ? ` · ${info.pending_count} 人待付费` : ""}
+          </div>
+        )}
       </div>
-      <div className="h-1.5 overflow-hidden rounded-full bg-slate-800">
-        <div className="h-full rounded-full bg-emerald-500 transition-all" style={{ width: `${progress}%` }} />
-      </div>
-      <p className="text-xs text-slate-400">
-        把链接发给朋友，对方通过链接注册并<strong className="text-emerald-300">成功付费</strong>即算成功邀请：每 1 人付费余额 +{info.discount_per_credit} 元，余额满 100 元（累计 10 人付费）——已开通套餐的自动<strong className="text-emerald-300">续期一年</strong>，还没开通的直接<strong className="text-emerald-300">送一年年付套餐</strong>（也可下单时抵扣，可叠加）。
-      </p>
-      <div className="flex gap-2">
-        <input
-          readOnly
-          value={info.link}
-          onFocus={(e) => e.target.select()}
-          className="flex-1 rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-xs font-mono text-slate-300 outline-none"
-        />
+
+      {/* 10 格点亮进度（图示替代文字） */}
+      <div className="bg-slate-950/60 border-t border-slate-800 px-6 py-5 space-y-4">
+        <div className="flex justify-between gap-1.5">
+          {Array.from({ length: 10 }, (_, i) => (
+            <div
+              key={i}
+              className={`h-3 flex-1 rounded-full transition-colors ${
+                i < litSlots ? "bg-emerald-400" : "bg-slate-800"
+              }`}
+            />
+          ))}
+        </div>
+
+        {/* 复制链接：主行动按钮 */}
         <button
           onClick={copy}
-          className="shrink-0 rounded-lg bg-emerald-500 px-4 text-sm font-medium hover:bg-emerald-400 transition-colors"
+          className="w-full rounded-xl bg-emerald-500 py-3 text-lg font-bold text-slate-950 hover:bg-emerald-400 transition-colors"
         >
-          {copied ? "✓ 已复制" : "复制链接"}
+          {copied ? "✓ 链接已复制，去发给朋友吧" : "📋 一键复制我的邀请链接"}
         </button>
+        <p className="text-center text-xs text-slate-500">
+          朋友通过你的链接注册并付费即算邀请成功，余额不满 ¥100 也能在下单时直接抵扣
+        </p>
       </div>
     </div>
   );
