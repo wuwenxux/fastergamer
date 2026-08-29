@@ -289,6 +289,8 @@ adminRoutes.delete("/tokens/:id", async (c) => {
   if (!token) return c.json({ ok: false, error: "token not found" }, 404);
   await c.env.TOKENS.delete(KV.TOKEN + token.uuid);
   await c.env.TOKENS.delete(KV.TOKEN_BY_ID + token.id);
+  // 删除活跃 token 需立即从各节点白名单摘除
+  c.executionCtx.waitUntil(pushAuthRefresh(c.env));
   return c.json({ ok: true });
 });
 

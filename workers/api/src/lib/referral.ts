@@ -101,17 +101,18 @@ interface ReferralMarker {
 /**
  * 被邀请人首次付费成功（订单发货）时给邀请人结算：余额 +10 元并邮件通知；
  * 邀请人有激活中的付费套餐且余额满续费价时自动续期一年。幂等：每个被邀请人只结算一次。
+ * 返回 true 表示授权名单有变化（自动续期复活了已过期 token），调用方应推送节点刷新。
  */
-export const rewardReferrerOnPayment = async (env: Env, inviteeEmail: string): Promise<void> => {
+export const rewardReferrerOnPayment = async (env: Env, inviteeEmail: string): Promise<boolean> => {
   const raw = await env.TOKENS.get(KV.REFERRAL + inviteeEmail);
-  if (!raw) return;
+  if (!raw) return false;
   let marker: ReferralMarker;
   try {
     marker = JSON.parse(raw) as ReferralMarker;
   } catch {
-    return;
+    return false;
   }
-  if (marker.rewarded !== false) return;
+  if (marker.rewarded !== false) return false;
   marker.rewarded = true;
   await env.TOKENS.put(KV.REFERRAL + inviteeEmail, JSON.stringify(marker));
 
@@ -147,7 +148,7 @@ export const rewardReferrerOnPayment = async (env: Env, inviteeEmail: string): P
       `你的推广余额已满 ${renew.renewCostCny} 元，已自动为套餐（${renew.tokenId}）续期一年，新到期时间：${expiry}。`
     );
     if (!renewRes.ok) console.error(`[referral] renew mail failed for ${referrer}: ${renewRes.error}`);
-    return;
+    return true; // 续期可能复活已过期的 token，授权名单有变
   }
 
   // 未开通付费套餐：余额满额直接发放年付 token（待激活）
@@ -155,6 +156,7 @@ export const rewardReferrerOnPayment = async (env: Env, inviteeEmail: string): P
   if (reward.issued) {
     console.log(`[referral] reward token ${reward.tokenId} issued to ${referrer}`);
   }
+  return false; // 奖励 token 为 paid 待激活状态，不进授权名单
 };
 
 /** 可用额度 → 最大可减金额（元），下单时调用方再与套餐价取 min */

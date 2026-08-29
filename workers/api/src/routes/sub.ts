@@ -3,6 +3,7 @@ import { getTokenByAnyUuid } from "../lib/kv";
 import { activatePaidToken } from "../lib/activate";
 import { buildClashConfig } from "../lib/clash";
 import { getNodes, isBudgetExhausted } from "../lib/nodes";
+import { pushAuthRefresh } from "../lib/authpush";
 import type { Env } from "../types";
 
 export const subRoutes = new Hono<{ Bindings: Env }>();
@@ -29,6 +30,8 @@ subRoutes.get("/", async (c) => {
   // 避免"复制订阅链接→导入→403"的新手卡点
   if (token.status === "paid") {
     token = await activatePaidToken(c.env, token);
+    // 导入即激活的新 uuid 立即进各节点白名单，否则首次连接要等兜底轮询
+    c.executionCtx.waitUntil(pushAuthRefresh(c.env));
   }
   if (token.status !== "active" || (token.expires_at && token.expires_at <= now)) {
     return c.text("token 已过期或被撤销，请登录网站查看", 403);

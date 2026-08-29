@@ -8,6 +8,7 @@ import { createMagicTicket } from "./accounts";
 import { getPlans, getTokenById, saveOrder, saveToken } from "./kv";
 import { newTokenId } from "./ids";
 import { rewardReferrerOnPayment } from "./referral";
+import { pushAuthRefresh } from "./authpush";
 import type { Env } from "../types";
 
 /** 只需要 waitUntil，用最小结构类型兼容 Hono 与 workers-types 的 ExecutionContext 差异 */
@@ -78,8 +79,16 @@ export const fulfillOrder = async (
   order.paid_at = Date.now();
   await saveOrder(env, order);
 
-  // 推广结算：被邀请人首次付费成功，给邀请人结算余额（可能触发自动续期）
-  if (order.contact) ctx.waitUntil(rewardReferrerOnPayment(env, order.contact.trim().toLowerCase()));
+  // 推广结算：被邀请人首次付费成功，给邀请人结算余额（可能触发自动续期）。
+  // 续期可能复活已过期 token → 授权名单有变，结算完成后补一次推送（不能与本路径其他推送
+  // 并行，否则快照重建可能赶在续期写库之前，漏掉复活）
+  if (order.contact) {
+    ctx.waitUntil(
+      rewardReferrerOnPayment(env, order.contact.trim().toLowerCase()).then((authChanged) =>
+        authChanged ? pushAuthRefresh(env) : undefined
+      )
+    );
+  }
 
   return { token, already: false };
 };
