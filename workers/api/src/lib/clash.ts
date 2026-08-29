@@ -133,7 +133,11 @@ export const buildClashConfig = ({ uuid, nodes, regions }: BuildConfigInput): st
     "  - IP-CIDR,192.168.0.0/16,DIRECT,no-resolve",
     "  - IP-CIDR,127.0.0.0/8,DIRECT,no-resolve"
   );
-  // 国内流量直连：避免银行/政务类 App 因境外 IP 触发风控，也省节点流量
+  // 国内站点直连（双保险）：
+  // 1) GEOSITE,CN 按域名匹配（domain-list-community 的 cn 列表），fake-ip / 域名先行的
+  //    场景下也能命中，避免国内站域名被送进代理绕一圈；需要 mihomo / Stash 等新内核
+  // 2) GEOIP,CN 按解析结果 IP 兜底，覆盖不在域名列表里的小站点
+  lines.push("  - GEOSITE,CN,DIRECT");
   lines.push("  - GEOIP,CN,DIRECT");
   lines.push(`  - MATCH,${MAIN_GROUP}`);
 

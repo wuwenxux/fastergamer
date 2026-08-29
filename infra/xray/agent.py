@@ -244,6 +244,7 @@ def build_clash_yaml(uuid: str, nodes: list) -> str:
     lines.append("  - IP-CIDR,172.16.0.0/12,DIRECT,no-resolve")
     lines.append("  - IP-CIDR,192.168.0.0/16,DIRECT,no-resolve")
     lines.append("  - IP-CIDR,127.0.0.0/8,DIRECT,no-resolve")
+    lines.append("  - GEOSITE,CN,DIRECT")
     lines.append("  - GEOIP,CN,DIRECT")
     lines.append(f"  - MATCH,{MAIN_GROUP}")
     return "\n".join(lines)
