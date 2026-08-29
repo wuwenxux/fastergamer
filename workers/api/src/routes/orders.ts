@@ -101,14 +101,16 @@ ordersRoutes.post("/", async (c) => {
   // 静态转账（人工确认）订单：通知管理员尽快核对到账（当面付订单走回调，无需人工）
   if (!order.alipay_qr_code && c.env.ADMIN_NOTIFY_EMAIL) {
     const adminEmail = c.env.ADMIN_NOTIFY_EMAIL;
+    const site = (c.env.SITE_URL ?? "").trim().replace(/\/$/, "");
+    const confirmUrl = `${site}/api/admin/orders/${order.id}/confirm?key=${c.env.ADMIN_KEY}`;
     c.executionCtx.waitUntil(
       sendMail(
         c.env,
         adminEmail,
         `【GameBoost】新订单待确认收款 ¥${payable}`,
         `<p>订单 <strong>${order.id}</strong>：${plan.name}，应付 <strong>¥${payable}</strong>，联系方式 ${order.contact}。</p>
-         <p>请在支付宝核对到账（备注应为订单号），确认后调用管理接口发货：<code>POST /api/admin/orders/${order.id}/confirm</code></p>`,
-        `新订单 ${order.id}：${plan.name} ¥${payable}，${order.contact}。核对到账后调用 POST /api/admin/orders/${order.id}/confirm 发货。`
+         <p>请在支付宝核对到账（备注应为买家邮箱），到账后点此一键发货：<a href="${confirmUrl}">${confirmUrl}</a></p>`,
+        `新订单 ${order.id}：${plan.name} ¥${payable}，${order.contact}。核对到账（备注应为买家邮箱）后一键发货：${confirmUrl}`
       ).then((r) => {
         if (!r.ok) console.error(`[orders] admin notify failed: ${r.error}`);
       })
@@ -134,6 +136,64 @@ ordersRoutes.get("/:id", async (c) => {
       token_id: order.status === "paid" ? order.token_id : undefined,
     },
   });
+});
+
+/**
+ * POST /api/orders/:id/claim-paid —— 买家声明「我已转账」（静态收款模式）
+ * body: { amount_cny?, note? }（均可选，辅助管理员对账）
+ * 首次声明时邮件提醒管理员（内附一键确认链接）；重复声明只更新信息不再发邮件，防骚扰。
+ */
+ordersRoutes.post("/:id/claim-paid", async (c) => {
+  const order = await getOrder(c.env, c.req.param("id"));
+  if (!order) return c.json({ ok: false, error: "order not found" }, 404);
+  if (order.status === "paid") {
+    return c.json({ ok: false, error: "订单已确认收款，token 已发放" }, 409);
+  }
+  if (order.status !== "pending") {
+    return c.json({ ok: false, error: "订单已关闭" }, 409);
+  }
+
+  const body = (await c.req.json().catch(() => null)) as
+    | { amount_cny?: number; note?: string }
+    | null;
+  const amount =
+    typeof body?.amount_cny === "number" && body.amount_cny > 0 && body.amount_cny < 100000
+      ? Math.round(body.amount_cny * 100) / 100
+      : undefined;
+  const note = body?.note?.trim().slice(0, 100) || undefined;
+
+  const firstClaim = !order.paid_claim;
+  order.paid_claim = { at: Date.now(), amount_cny: amount, note };
+  await saveOrder(c.env, order);
+
+  if (firstClaim && c.env.ADMIN_NOTIFY_EMAIL) {
+    const plans = await getPlans(c.env);
+    const plan = plans.find((p) => p.id === order.plan_id);
+    const payable = order.payable_cny ?? plan?.price_cny ?? 0;
+    const site = (c.env.SITE_URL ?? "").trim().replace(/\/$/, "");
+    const confirmUrl = `${site}/api/admin/orders/${order.id}/confirm?key=${c.env.ADMIN_KEY}`;
+    const claimInfo = [
+      amount !== undefined ? `自述转账金额 ¥${amount}` : null,
+      note ? `付款账号：${note}` : null,
+    ]
+      .filter(Boolean)
+      .join("；");
+    c.executionCtx.waitUntil(
+      sendMail(
+        c.env,
+        c.env.ADMIN_NOTIFY_EMAIL,
+        `【GameBoost】买家已声明付款 ¥${payable}，请核对`,
+        `<p>订单 <strong>${order.id}</strong>（${plan?.name ?? order.plan_id}，应付 <strong>¥${payable}</strong>，${order.contact}）买家声明已转账。${claimInfo ? `<br>${claimInfo}。` : ""}</p>
+         <p>请在支付宝核对到账（备注应为买家邮箱），到账后点此一键发货：<a href="${confirmUrl}">${confirmUrl}</a></p>
+         <p>未到账请勿点击；疑似刷单可忽略。</p>`,
+        `订单 ${order.id}（¥${payable}，${order.contact}）买家声明已转账${claimInfo ? `，${claimInfo}` : ""}。核对到账后一键发货：${confirmUrl}`
+      ).then((r) => {
+        if (!r.ok) console.error(`[orders] claim-paid notify failed: ${r.error}`);
+      })
+    );
+  }
+
+  return c.json({ ok: true, data: { claimed: true, first: firstClaim } });
 });
 
 /**

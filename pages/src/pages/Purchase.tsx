@@ -16,7 +16,7 @@ export default function Purchase() {
   const [step, setStep] = useState<Step>("summary");
   const [processing, setProcessing] = useState(false);
   const [order, setOrder] = useState<Order | null>(null);
-  const [contact, setContact] = useState("");
+  const [contact, setContact] = useState(() => localStorage.getItem("fg_contact") ?? "");
 
   // 根据 plan 参数加载套餐信息
   useEffect(() => {
@@ -41,6 +41,7 @@ export default function Purchase() {
       // 带上 localStorage 里的推广码（首页 ?ref= 捕获），未领试用直接下单也能归因
       const ref = localStorage.getItem("fg_ref") ?? undefined;
       const res = await api.createOrder(plan.id, contact.trim(), ref);
+      localStorage.setItem("fg_contact", contact.trim()); // 记住邮箱，下次下单免填
       setOrder(res.order);
       setStep("result");
     } catch (e) {
@@ -74,7 +75,7 @@ export default function Purchase() {
             {typeof plan.traffic_limit_gb === "number" && (
               <div className="flex justify-between">
                 <span className="text-slate-400">总流量</span>
-                <span>{plan.traffic_limit_gb} GB</span>
+                <span>{plan.traffic_limit_gb > 0 ? `${plan.traffic_limit_gb} GB` : "不限量（公平使用）"}</span>
               </div>
             )}
             <div className="flex justify-between items-baseline border-t border-slate-700 pt-4">
@@ -110,6 +111,7 @@ export default function Purchase() {
 function PaymentResult({ order, plan }: { order: Order; plan: Plan }) {
   const [copied, setCopied] = useState(false);
   const [copiedAccount, setCopiedAccount] = useState(false);
+  const [copiedEmail, setCopiedEmail] = useState(false);
   // 推广减免后实付 0 元的订单在创建时已直接发货
   const [paid, setPaid] = useState(order.status === "paid");
   const dynamicQr = order.alipay_qr_code;
@@ -184,8 +186,8 @@ function PaymentResult({ order, plan }: { order: Order; plan: Plan }) {
             <>打开<strong className="text-sky-300">支付宝</strong>扫码支付，支付成功自动到账。</>
           ) : (
             <>
-              支付时请<strong className="text-amber-300">备注订单号</strong>，
-              确认到账后 token 会发送到你的邮箱。
+              支付时请<strong className="text-amber-300">备注你的邮箱</strong>，
+              卖家凭邮箱核对到账，确认后 token 会发送到你的邮箱。
             </>
           )}
         </p>
@@ -201,6 +203,25 @@ function PaymentResult({ order, plan }: { order: Order; plan: Plan }) {
             {order.id} {copied ? "✓ 已复制" : "📋"}
           </button>
         </div>
+        {!dynamicQr && order.contact && (
+          <div className="flex justify-between items-center border-t border-slate-700 pt-4">
+            <span className="text-slate-400 text-sm">转账备注（填你的邮箱）</span>
+            <button
+              onClick={async () => {
+                try {
+                  await navigator.clipboard.writeText(order.contact!);
+                  setCopiedEmail(true);
+                  setTimeout(() => setCopiedEmail(false), 1500);
+                } catch {
+                  /* ignore */
+                }
+              }}
+              className="font-mono text-amber-300 hover:text-amber-200 text-sm break-all text-right"
+            >
+              {order.contact} {copiedEmail ? "✓ 已复制" : "📋"}
+            </button>
+          </div>
+        )}
         <div className="flex justify-between items-baseline border-t border-slate-700 pt-4">
           <span className="text-slate-400">{plan.name}</span>
           <span className="text-3xl font-bold text-sky-400">¥{payable}</span>
@@ -238,7 +259,7 @@ function PaymentResult({ order, plan }: { order: Order; plan: Plan }) {
                 {copiedAccount ? "✓ 已复制" : "复制账号"}
               </button>
               <p className="text-xs text-amber-300">
-                转账时请在备注里填写上方订单号，否则无法自动核对到账
+                转账时请在备注里填写上方你的邮箱，卖家凭邮箱核对到账
               </p>
             </div>
           ) : (
@@ -246,6 +267,8 @@ function PaymentResult({ order, plan }: { order: Order; plan: Plan }) {
           )}
         </div>
       </div>
+
+      {!dynamicQr && <ClaimPaidCard orderId={order.id} payable={payable} />}
 
       <p className="text-xs text-slate-500 text-center">
         {dynamicQr
@@ -259,8 +282,92 @@ function PaymentResult({ order, plan }: { order: Order; plan: Plan }) {
   );
 }
 
-function QrCard({ label, src }: { label: string; src: string }) {
-  const [missing, setMissing] = useState(false);
+/** 静态转账模式：买家转账后主动声明，系统即时邮件通知管理员核对（邮件内附一键确认链接） */
+function ClaimPaidCard({ orderId, payable }: { orderId: string; payable: number }) {
+  const [open, setOpen] = useState(false);
+  const [amount, setAmount] = useState(String(payable));
+  const [note, setNote] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [done, setDone] = useState(false);
+  const [err, setErr] = useState("");
+
+  const submit = async () => {
+    setBusy(true);
+    setErr("");
+    try {
+      const n = parseFloat(amount);
+      await api.claimPaid(
+        orderId,
+        Number.isFinite(n) && n > 0 ? n : undefined,
+        note.trim() || undefined
+      );
+      setDone(true);
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (done) {
+    return (
+      <div className="rounded-2xl border border-emerald-500/50 bg-emerald-500/10 p-5 text-center space-y-1">
+        <p className="text-emerald-300 font-medium">已通知卖家核对到账</p>
+        <p className="text-xs text-slate-400">确认后 token 会发送到你的邮箱，一般 10 分钟内。</p>
+      </div>
+    );
+  }
+
+  if (!open) {
+    return (
+      <button
+        onClick={() => setOpen(true)}
+        className="w-full rounded-lg border border-sky-500/50 py-3 text-sky-300 font-medium hover:bg-sky-500/10 transition-colors"
+      >
+        我已完成转账
+      </button>
+    );
+  }
+
+  return (
+    <div className="rounded-2xl border border-slate-700 bg-slate-900 p-5 space-y-3">
+      <p className="text-sm text-slate-300">转账已完成？填写信息帮助卖家快速核对：</p>
+      <div className="flex gap-3">
+        <label className="flex-1 space-y-1">
+          <span className="text-xs text-slate-400">转账金额（元）</span>
+          <input
+            type="number"
+            min="0"
+            step="0.01"
+            value={amount}
+            onChange={(e) => setAmount(e.target.value)}
+            className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm outline-none focus:border-sky-500"
+          />
+        </label>
+        <label className="flex-1 space-y-1">
+          <span className="text-xs text-slate-400">付款昵称/账号尾号（选填）</span>
+          <input
+            type="text"
+            value={note}
+            onChange={(e) => setNote(e.target.value)}
+            placeholder="方便对账"
+            className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm outline-none focus:border-sky-500"
+          />
+        </label>
+      </div>
+      {err && <p className="text-rose-400 text-xs">{err}</p>}
+      <button
+        onClick={submit}
+        disabled={busy}
+        className="w-full rounded-lg bg-sky-500 py-2.5 text-sm font-medium hover:bg-sky-400 transition-colors disabled:opacity-60"
+      >
+        {busy ? "提交中…" : "提交，通知卖家核对"}
+      </button>
+    </div>
+  );
+}
+
+function QrCard({ label, src }: { label: string; src: string }) {  const [missing, setMissing] = useState(false);
   return (
     <div className="rounded-xl border border-slate-700 bg-slate-950 p-3 text-center space-y-2">
       {missing ? (

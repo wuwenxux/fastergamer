@@ -84,6 +84,13 @@ export const api = {
   orderStatus: (id: string) =>
     request<{ status: Order["status"]; token_id?: string }>(`/api/orders/${id}`),
 
+  /** 买家声明「我已转账」（静态收款模式）：通知管理员核对到账，金额/备注可选辅助对账 */
+  claimPaid: (id: string, amount_cny?: number, note?: string) =>
+    request<{ claimed: boolean; first: boolean }>(`/api/orders/${id}/claim-paid`, {
+      method: "POST",
+      body: JSON.stringify({ amount_cny, note }),
+    }),
+
   /** 查询 token 详情（带会话时本人返回完整数据，否则只返回概要并带 restricted 标记） */
   getToken: (id: string) => request<TokenView>(`/api/tokens/${id}`, { headers: sessionHeaders() }),
 
@@ -138,8 +145,12 @@ export const api = {
       >
     >("/api/nodes/status"),
 
-  /** Clash 订阅链接（需 token 处于 active） */
-  subUrl: (uuid: string) => `${absoluteBase()}/api/sub?uuid=${encodeURIComponent(uuid)}`,
+  /** Clash 订阅链接（需 token 处于 active）；固定走 fastergamer.click（CF 反代到 hk02，数据实时） */
+  subUrl: (uuid: string) => `https://fastergamer.click/api/sub?uuid=${encodeURIComponent(uuid)}`,
+
+  /** 备用订阅链接：节点域名镜像了 /api，个别网络访问不了主站时换用 */
+  subUrlOn: (host: string, uuid: string) =>
+    `https://${host}/api/sub?uuid=${encodeURIComponent(uuid)}`,
 
   /** 凭联系方式找回 token（返回概要列表，不含 uuid） */
   recoverTokens: (contact: string) =>
@@ -191,18 +202,46 @@ export const api = {
       body: JSON.stringify({ email, ref: ref || undefined }),
     }),
 
-  /** 验证订阅是否可用，返回节点数或错误信息 */
+  /** 验证订阅是否可用：主站不通时自动尝试节点镜像入口，返回节点数或错误信息 */
   verifySub: async (uuid: string) => {
-    const url = `${absoluteBase()}/api/sub?uuid=${encodeURIComponent(uuid)}`;
-    const res = await fetch(url, { method: "GET", cache: "no-store" });
-    const text = await res.text();
-    if (!res.ok) {
-      return { valid: false, nodeCount: 0, error: `请求失败 (${res.status})` } as const;
+    const path = `/api/sub?uuid=${encodeURIComponent(uuid)}`;
+    const tryFetch = async (base: string) => {
+      const res = await fetch(`${base}${path}`, { method: "GET", cache: "no-store" });
+      const text = await res.text();
+      if (!res.ok) throw new Error(`请求失败 (${res.status})`);
+      return (text.match(/^  - name:/gm) ?? []).length;
+    };
+    // 用户实际使用的订阅链接是 fastergamer.click，先验证它；再试本站与节点镜像
+    const mainBase = "https://fastergamer.click";
+    const bases = [mainBase];
+    const origin = absoluteBase();
+    if (origin && origin !== mainBase) bases.push(origin);
+    try {
+      const nodes = await api.nodesStatus();
+      for (const n of nodes) bases.push(`https://${n.host}`);
+    } catch {
+      /* 节点列表拿不到就只试主站 */
     }
-    const nodeCount = (text.match(/^  - name:/gm) ?? []).length;
-    if (nodeCount === 0) {
-      return { valid: false, nodeCount: 0, error: "订阅内容未包含任何节点" } as const;
+
+    let lastErr = "网络不可达";
+    for (const base of bases) {
+      try {
+        const nodeCount = await tryFetch(base);
+        if (nodeCount === 0) {
+          return { valid: false, nodeCount: 0, error: "订阅内容未包含任何节点" } as const;
+        }
+        const mirror = base !== mainBase ? new URL(base).host : undefined;
+        return { valid: true, nodeCount, mirror, error: undefined } as const;
+      } catch (e) {
+        lastErr = (e as Error).message;
+      }
     }
-    return { valid: true, nodeCount, error: undefined } as const;
+    return {
+      valid: false,
+      nodeCount: 0,
+      error:
+        `当前网络无法访问订阅服务（已尝试主站 + ${bases.length - 1} 个备用入口）：${lastErr}。` +
+        "请关闭代理/更换网络后重试，或改用下方备用订阅链接",
+    } as const;
   },
 };
