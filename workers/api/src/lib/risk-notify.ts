@@ -71,7 +71,8 @@ const fmtGb = (n: number) => n.toFixed(2);
 
 /**
  * 在 token 数据更新后调用：检查流量阈值与多设备风险，必要时提醒客户。
- * 注意：调用方负责在此函数返回后 saveToken（本函数可能修改 notify_log）。
+ * 注意：本函数可能修改 notify_log；调用方负责在此函数返回后把 notify_log 变更
+ * 键级合并写回（mergeTokenSettlement），且必须在结算字段写库之后调用。
  */
 export async function checkTokenRisks(env: Env, token: Token): Promise<void> {
   const limit = token.traffic_limit_gb ?? 0;
@@ -138,7 +139,7 @@ export async function checkExpiringToken(env: Env, token: Token): Promise<void> 
 
 /**
  * 月度配额预支提醒：当月用量每预支一个月档位时通知客户一次（borrow_1 / borrow_2 …）。
- * 调用方负责在此函数返回后 saveToken（本函数可能修改 notify_log）。
+ * 调用方负责在此函数返回后把 notify_log 变更键级合并写回（mergeTokenSettlement）。
  */
 /**
  * 月度配额 80% 提前预警（每自然月一次）。
@@ -233,7 +234,7 @@ async function lookupIpGeo(ip: string): Promise<string | null> {
  * 接入地址变更提醒：当前活跃接入 IP 与上一上报周期不一致时邮件通知本人。
  * 触发即「地址变了」，无论该 IP 是否历史见过；首次使用建基线不提醒。
  * 限流：每个 token 12 小时最多一封（动态 IP 用户换地址是常态，不能刷屏）。
- * 调用方负责 saveToken（本函数改 notify_log）。
+ * 调用方负责把 notify_log 变更键级合并写回（mergeTokenSettlement）。
  */
 export async function notifyIpChange(env: Env, token: Token, ips: string[]): Promise<void> {
   if (ips.length === 0 || !shouldSendEmail(token.contact)) return;
@@ -283,26 +284,33 @@ export const SPIKE_WINDOW_MS = 3_600_000;
 export const SPIKE_THRESHOLD_BYTES = 10 * 1024 ** 3;
 
 /**
- * 流量暴增检测（在 agent 流量入账时调用，deltaBytes 为本次上报新增量）。
- * 超阈值时告警客户与管理员，24h 内最多一次。调用方负责 saveToken。
+ * 流量暴增检测的纯记账部分（无 await，在 token 写库前调用）：
+ * 更新速率窗口；越过阈值且 24h 内未告警过时记录 notify_log.traffic_spike 并返回 true，
+ * 调用方随后在写库之后调用 sendSpikeAlert 发告警。
  */
-export async function checkTrafficSpike(env: Env, token: Token, deltaBytes: number): Promise<void> {
-  if (deltaBytes <= 0) return;
-  const now = Date.now();
+export function updateSpikeWindow(token: Token, deltaBytes: number, now = Date.now()): boolean {
+  if (deltaBytes <= 0) return false;
   if (!token.rate_window_start || now - token.rate_window_start > SPIKE_WINDOW_MS) {
     token.rate_window_start = now;
     token.rate_window_bytes = 0;
   }
   token.rate_window_bytes = (token.rate_window_bytes ?? 0) + deltaBytes;
-  if (token.rate_window_bytes < SPIKE_THRESHOLD_BYTES) return;
+  if (token.rate_window_bytes < SPIKE_THRESHOLD_BYTES) return false;
 
   const last = token.notify_log?.traffic_spike ?? 0;
-  if (now - last < 24 * 3_600_000) return;
-
-  const gb = (token.rate_window_bytes / 1024 ** 3).toFixed(1);
-  console.log(`[risk] traffic spike ${token.id}: ${gb} GB in 1h`);
+  if (now - last < 24 * 3_600_000) return false;
   token.notify_log = token.notify_log ?? {};
   token.notify_log.traffic_spike = now;
+  return true;
+}
+
+/**
+ * 流量暴增告警（发邮件，含 await）：必须在 token 结算字段写库之后调用，
+ * 避免读-改-写之间穿插邮件 await 导致并发覆盖。
+ */
+export async function sendSpikeAlert(env: Env, token: Token): Promise<void> {
+  const gb = ((token.rate_window_bytes ?? 0) / 1024 ** 3).toFixed(1);
+  console.log(`[risk] traffic spike ${token.id}: ${gb} GB in 1h`);
 
   if (shouldSendEmail(token.contact)) {
     const { subject, html, text } = shell(

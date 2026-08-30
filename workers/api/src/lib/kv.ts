@@ -2,7 +2,7 @@
  * KV 数据访问层
  * 键规则见 shared/types.ts 的 KV 常量
  */
-import { KV, type Device, type Order, type Plan, type Ticket, type Token } from "../../../../shared/types";
+import { KV, type Device, type Order, type Plan, type Presence, type Ticket, type Token } from "../../../../shared/types";
 import type { Env } from "../types";
 
 /**
@@ -66,6 +66,81 @@ export const saveTokenValue = (env: Env, token: Token): Promise<void> =>
 /** 删除某个 uuid 的 token 主键（rotate-uuid 时清理旧凭证用） */
 export const deleteTokenByUuid = (env: Env, uuid: string): Promise<void> =>
   env.TOKENS.delete(KV.TOKEN + uuid);
+
+// ---------- Presence（高频动态状态，与 token 主键解耦） ----------
+export const getPresence = async (env: Env, uuid: string): Promise<Presence | null> => {
+  const raw = await env.TOKENS.get(KV.PRESENCE + uuid);
+  return raw ? (JSON.parse(raw) as Presence) : null;
+};
+
+/** 从 token JSON 旧字段构造 Presence（存量数据兼容回退用） */
+const presenceFromToken = (token: Token): Presence => ({
+  online: token.online,
+  online_updated_at: token.online_updated_at,
+  online_by_node: token.online_by_node,
+  last_active_at: token.last_active_at,
+  traffic_by_ip: token.traffic_by_ip,
+  active_ips: token.active_ips,
+});
+
+/**
+ * 读取 token 的动态状态：presence:{uuid} 键存在则以它为准；
+ * 不存在时回退 token JSON 内的旧字段（存量数据兼容）。
+ */
+export const getTokenPresence = async (env: Env, token: Token): Promise<Presence> =>
+  (await getPresence(env, token.uuid)) ?? presenceFromToken(token);
+
+/**
+ * presence 有变化才写（与读取时的基准做 JSON 比较），无变化跳过，省 KV 写配额。
+ * base 必须是读取后、修改前的深拷贝（嵌套对象会被原地修改）。
+ */
+export const savePresenceIfChanged = async (
+  env: Env,
+  uuid: string,
+  base: Presence,
+  next: Presence
+): Promise<void> => {
+  if (JSON.stringify(base) === JSON.stringify(next)) return;
+  await env.TOKENS.put(KV.PRESENCE + uuid, JSON.stringify(next));
+};
+
+/** 结算补丁：只含结算路径拥有的 token 字段 */
+export interface TokenSettlementPatch extends Partial<Token> {
+  /** 设备级结算字段按设备 uuid 定点合并，避免整体覆盖并发增删的设备槽位 */
+  device_usage?: { uuid: string; traffic_used_gb?: number; last_active_at?: number };
+}
+
+/**
+ * 结算字段的「重读-合并」写：重新读取 token 最新副本，只把补丁里的结算字段覆盖上去再写回，
+ * 并发用户操作（加设备/封 IP 等）改过的其他字段不丢。
+ * - notify_log 按键级合并：并发路径（结算/notify-scan）各自新增的提醒记录互不覆盖；
+ * - patch 里值为 undefined 的键会被忽略（不会误删最新副本上的既有字段）；
+ * - token 已不存在（删除/rotate）时直接丢弃本次结算。
+ */
+export const mergeTokenSettlement = async (
+  env: Env,
+  uuid: string,
+  patch: TokenSettlementPatch
+): Promise<void> => {
+  const fresh = await getTokenByUuid(env, uuid);
+  if (!fresh) return;
+  const { device_usage, ...fields } = patch;
+  if (fields.notify_log) {
+    fresh.notify_log = { ...fresh.notify_log, ...fields.notify_log };
+    delete fields.notify_log;
+  }
+  for (const [k, v] of Object.entries(fields)) {
+    if (v !== undefined) (fresh as unknown as Record<string, unknown>)[k] = v;
+  }
+  if (device_usage) {
+    const dev = fresh.devices?.find((d) => d.uuid === device_usage.uuid);
+    if (dev) {
+      if (device_usage.traffic_used_gb !== undefined) dev.traffic_used_gb = device_usage.traffic_used_gb;
+      if (device_usage.last_active_at !== undefined) dev.last_active_at = device_usage.last_active_at;
+    }
+  }
+  await saveTokenValue(env, fresh);
+};
 
 // ---------- 设备槽位 ----------
 /** 设备 uuid 反查索引：device:{uuid} → { token_id } */

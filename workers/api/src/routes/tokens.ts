@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import { KV } from "../../../../shared/types";
 import type { Device, Token } from "../../../../shared/types";
-import { deleteDeviceIndex, getPlans, getTokenById, listTokensByContact, saveDeviceIndex, saveToken } from "../lib/kv";
+import { deleteDeviceIndex, getPlans, getTokenById, getTokenPresence, listTokensByContact, saveDeviceIndex, saveToken } from "../lib/kv";
 import { isEmail, sendMail, sendTokenEmail, shouldSendEmail } from "../lib/email-aliyun";
 import { createMagicTicket, consumeMagicTicket, createSession, getSessionAccount } from "../lib/accounts";
 import { recordReferral } from "../lib/referral";
@@ -138,8 +138,11 @@ tokensRoutes.post("/recover", async (c) => {
 tokensRoutes.get("/:id", async (c) => {
   const token = await getTokenById(c.env, c.req.param("id"));
   if (!token) return c.json({ ok: false, error: "token not found" }, 404);
+  // 在线状态/最近活跃/接入 IP 统计等高频字段已拆到 presence:{uuid}，合并进响应视图
+  // （presence 键缺失时 getTokenPresence 回退 token 旧字段，存量数据兼容）
+  const view = { ...token, ...(await getTokenPresence(c.env, token)) };
   const owner = await isOwner(c.env, c.req.header("authorization"), token);
-  return c.json({ ok: true, data: owner ? token : toSummary(token) });
+  return c.json({ ok: true, data: owner ? view : toSummary(view) });
 });
 
 /**

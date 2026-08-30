@@ -1,8 +1,8 @@
 import { Hono } from "hono";
 import { KV } from "../../../../shared/types";
-import type { Order, Plan, Token } from "../../../../shared/types";
+import type { Order, Plan, Presence, Token } from "../../../../shared/types";
 import { adminAuth } from "../middleware/admin";
-import { deleteDeviceIndex, deleteTokenByUuid, getOrder, getPlans, getTicket, getTokenById, listKeys, listOrders, listTickets, listTokensByContact, saveOrder, savePlans, saveTicket, saveToken } from "../lib/kv";
+import { deleteDeviceIndex, deleteTokenByUuid, getOrder, getPlans, getTicket, getTokenById, getTokenPresence, listKeys, listOrders, listTickets, listTokensByContact, mergeTokenSettlement, saveOrder, savePlans, savePresenceIfChanged, saveTicket, saveToken } from "../lib/kv";
 import { checkExpiringToken, notifyAdmin } from "../lib/risk-notify";
 import { getNodes } from "../lib/nodes";
 import { isEmail, sendMail, shouldSendEmail } from "../lib/email-aliyun";
@@ -294,6 +294,7 @@ adminRoutes.delete("/tokens/:id", async (c) => {
   if (!token) return c.json({ ok: false, error: "token not found" }, 404);
   await c.env.TOKENS.delete(KV.TOKEN + token.uuid);
   await c.env.TOKENS.delete(KV.TOKEN_BY_ID + token.id);
+  await c.env.TOKENS.delete(KV.PRESENCE + token.uuid);
   // 清设备反查索引与试用领取标记，避免残留脏数据
   for (const d of token.devices ?? []) await deleteDeviceIndex(c.env, d.uuid);
   if (token.contact && isEmail(token.contact)) {
@@ -323,6 +324,8 @@ adminRoutes.post("/tokens/:id/rotate-uuid", async (c) => {
   delete token.notify_log?.multi_device;
 
   await deleteTokenByUuid(c.env, oldUuid);
+  // 在线状态存 presence:{uuid}（按旧 uuid 索引），随旧凭证一并清理
+  await c.env.TOKENS.delete(KV.PRESENCE + oldUuid);
   await saveToken(c.env, token);
   c.executionCtx.waitUntil(pushAuthRefresh(c.env)); // 旧 uuid 立即失效、新 uuid 立即生效
   return c.json({ ok: true, data: { id: token.id, uuid: token.uuid } });
@@ -347,7 +350,7 @@ adminRoutes.post("/notify-scan", async (c) => {
     if (!raw) continue;
     const token = JSON.parse(raw) as Token;
 
-    // 过期/撤销满 90 天：删除主键 + id 索引 + 全部设备索引
+    // 过期/撤销满 90 天：删除主键 + id 索引 + presence + 全部设备索引
     const endAt = token.expires_at ?? token.purchased_at ?? 0;
     if (
       (token.status === "expired" || token.status === "revoked") &&
@@ -356,6 +359,7 @@ adminRoutes.post("/notify-scan", async (c) => {
     ) {
       await c.env.TOKENS.delete(KV.TOKEN + token.uuid);
       await c.env.TOKENS.delete(KV.TOKEN_BY_ID + token.id);
+      await c.env.TOKENS.delete(KV.PRESENCE + token.uuid);
       for (const d of token.devices ?? []) await deleteDeviceIndex(c.env, d.uuid);
       purgedTokens++;
       continue;
@@ -363,33 +367,38 @@ adminRoutes.post("/notify-scan", async (c) => {
 
     scanned++;
 
-    // active 但已过有效期：置 expired，否则永远留在 KV 且状态失真
+    // active 但已过有效期：置 expired，否则永远留在 KV 且状态失真。
+    // 重读-合并写，只覆盖 status，不覆盖结算路径并发更新的其他字段
     if (token.status === "active" && token.expires_at && token.expires_at < now) {
       token.status = "expired";
-      await saveToken(c.env, token);
+      await mergeTokenSettlement(c.env, token.uuid, { status: "expired" });
       expiredNow++;
       continue;
     }
 
     // 在线状态清扫：Xray 只在用户在线时才有 online 计数器，离线即消失，
     // 所以离线靠这里的窗口过期来判定。窗口与 agent 结算节奏对齐（30 分钟兜底上报 + 富余）。
+    // 在线状态存 presence:{uuid}（键缺失时回退 token 旧字段），有变化才写。
     const ONLINE_WINDOW_MS = 40 * 60_000;
-    if (token.online || Object.keys(token.online_by_node ?? {}).length > 0) {
-      const activeNodes = Object.entries(token.online_by_node ?? {}).filter(
+    const presence = await getTokenPresence(c.env, token);
+    const presenceBase: Presence = JSON.parse(JSON.stringify(presence));
+    if (presence.online || Object.keys(presence.online_by_node ?? {}).length > 0) {
+      const activeNodes = Object.entries(presence.online_by_node ?? {}).filter(
         ([, ts]) => ts > now - ONLINE_WINDOW_MS
       );
       const stillOnline = activeNodes.length > 0;
-      if (!stillOnline || activeNodes.length !== Object.keys(token.online_by_node ?? {}).length) {
-        token.online_by_node = Object.fromEntries(activeNodes);
-        if (token.online && !stillOnline) token.online = false;
-        await saveToken(c.env, token);
+      if (!stillOnline || activeNodes.length !== Object.keys(presence.online_by_node ?? {}).length) {
+        presence.online_by_node = Object.fromEntries(activeNodes);
+        if (presence.online && !stillOnline) presence.online = false;
       }
     }
+    await savePresenceIfChanged(c.env, token.uuid, presenceBase, presence);
 
     const before = token.notify_log?.expire_24h;
     await checkExpiringToken(c.env, token);
     if (token.notify_log?.expire_24h && token.notify_log.expire_24h !== before) {
-      await saveToken(c.env, token);
+      // 只键级合并 notify_log，不整写 token（结算路径可能正在并发更新流量字段）
+      await mergeTokenSettlement(c.env, token.uuid, { notify_log: token.notify_log });
       notified++;
     }
   }

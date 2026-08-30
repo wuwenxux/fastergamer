@@ -85,17 +85,17 @@ export interface Token {
   base_expires_at?: number;
   /** 流量耗尽时间 */
   traffic_exhausted_at?: number;
-  /** 当前是否在线（由 Agent 根据 Xray online 统计更新） */
+  /** 当前是否在线（由 Agent 根据 Xray online 统计更新）。已迁移至 presence:{uuid}，此处仅为存量数据兼容保留 */
   online?: boolean;
-  /** 在线状态最后一次更新时间（unix 毫秒） */
+  /** 在线状态最后一次更新时间（unix 毫秒）。已迁移至 presence:{uuid}，仅为存量兼容保留 */
   online_updated_at?: number;
-  /** 各节点最近一次报告该 token 在线的时间（node.id → unix 毫秒），用于多节点同时在线检测 */
+  /** 各节点最近一次报告该 token 在线的时间（node.id → unix 毫秒），用于多节点同时在线检测。已迁移至 presence:{uuid}，仅为存量兼容保留 */
   online_by_node?: Record<string, number>;
   /** 最近一次检测到多节点同时在线（疑似多设备/分享使用）的时间（unix 毫秒） */
   multi_device_detected_at?: number;
-  /** 接入 IP 统计（IP → 估算流量/连接数/最近接入），由节点 access log 解析得出，仅供用户自查 */
+  /** 接入 IP 统计（IP → 估算流量/连接数/最近接入），由节点 access log 解析得出，仅供用户自查。已迁移至 presence:{uuid}，仅为存量兼容保留 */
   traffic_by_ip?: Record<string, IpStat>;
-  /** 上一上报周期的活跃接入 IP（key：node.id 或 node.id:设备uuid），用于接入地址变更检测 */
+  /** 上一上报周期的活跃接入 IP（key：node.id 或 node.id:设备uuid），用于接入地址变更检测。已迁移至 presence:{uuid}，仅为存量兼容保留 */
   active_ips?: Record<string, string[]>;
   /** 用户自助封禁的接入 IP 列表；agent 同步到各节点防火墙，被封 IP 无法连接任何节点 */
   blocked_ips?: string[];
@@ -107,12 +107,34 @@ export interface Token {
   rate_window_bytes?: number;
   /** 绑定的设备槽位（不含主设备 uuid），每个设备独立 uuid 做流量审计 */
   devices?: Device[];
-  /** 最后一次产生流量的时间（unix 毫秒） */
+  /** 最后一次产生流量的时间（unix 毫秒）。已迁移至 presence:{uuid}，仅为存量兼容保留 */
   last_active_at?: number;
   /** unix 毫秒时间戳 */
   purchased_at: number;
   activated_at?: number;
   expires_at?: number;
+}
+
+/**
+ * Presence —— token 的高频动态状态，独立存 presence:{uuid}（TOKENS namespace）。
+ * 只有结算路径（/api/agent/traffic）与 notify-scan 的在线清扫写它；
+ * 与 token:{uuid} 主键解耦，避免结算与用户操作（加设备/封 IP/rotate）对同一 JSON 的
+ * read-modify-write 互相覆盖丢更新。
+ * 读规则：presence 键存在则以它为准；不存在时回退 token JSON 里的旧字段（存量兼容）。
+ */
+export interface Presence {
+  /** 当前是否在线（由 Agent 根据 Xray online 统计更新） */
+  online?: boolean;
+  /** 在线状态最后一次更新时间（unix 毫秒） */
+  online_updated_at?: number;
+  /** 各节点最近一次报告该 token 在线的时间（node.id → unix 毫秒），用于多节点同时在线检测 */
+  online_by_node?: Record<string, number>;
+  /** 最后一次产生流量/上线的时间（unix 毫秒） */
+  last_active_at?: number;
+  /** 接入 IP 统计（IP → 估算流量/连接数/最近接入），由节点 access log 解析得出，仅供用户自查 */
+  traffic_by_ip?: Record<string, IpStat>;
+  /** 上一上报周期的活跃接入 IP（key：node.id 或 node.id:设备uuid），用于接入地址变更检测 */
+  active_ips?: Record<string, string[]>;
 }
 
 /** 订单 —— 一次购买行为 */
@@ -251,6 +273,7 @@ export interface MagicTicket {
 /** KV 键前缀常量 */
 export const KV = {
   TOKEN: "token:", // token:{uuid} → Token JSON
+  PRESENCE: "presence:", // presence:{uuid} → Presence JSON（高频动态状态，存 TOKENS namespace）
   TOKEN_BY_ID: "tokenid:", // tokenid:{id} → { uuid }
   PLAN: "plan:", // plan:{id} → Plan JSON
   ORDER: "order:", // order:{id} → Order JSON
