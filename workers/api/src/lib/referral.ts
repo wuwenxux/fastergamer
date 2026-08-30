@@ -159,11 +159,18 @@ export const rewardReferrerOnPayment = async (env: Env, inviteeEmail: string): P
   return false; // 奖励 token 为 paid 待激活状态，不进授权名单
 };
 
-/** 可用额度 → 最大可减金额（元），下单时调用方再与套餐价取 min */
+/** 可用额度 → 最大可减金额（元），按 10 的倍数返回，下单时调用方再与套餐价对齐 */
 export const availableDiscount = async (env: Env, email: string): Promise<number> => {
   const credit = await getCredit(env, email);
   return Math.max(0, credit.earned - credit.used) * DISCOUNT_PER_CREDIT;
 };
+
+/**
+ * 下单抵扣金额：额度按个数记账（1 个 = 10 元），抵扣向下取整到 10 的倍数，
+ * 保证 consumeCredit 折算回个数时不漏损；返回 0 表示不抵扣。
+ */
+export const orderDiscount = (availableCny: number, priceCny: number): number =>
+  Math.min(availableCny, Math.floor(priceCny / DISCOUNT_PER_CREDIT) * DISCOUNT_PER_CREDIT);
 
 /** 下单时消耗额度（按实际抵扣金额折算个数） */
 export const consumeCredit = async (env: Env, email: string, discountCny: number): Promise<void> => {

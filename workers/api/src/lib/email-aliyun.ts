@@ -173,7 +173,7 @@ export async function sendTokenEmail(
       ${ctx.expiresAt ? `
       <tr>
         <td style="padding: 10px; border: 1px solid #e2e8f0; background: #fff; font-weight: bold;">有效期至</td>
-        <td style="padding: 10px; border: 1px solid #e2e8f0; background: #fff;">${new Date(ctx.expiresAt).toLocaleString("zh-CN")}</td>
+        <td style="padding: 10px; border: 1px solid #e2e8f0; background: #fff;">${new Date(ctx.expiresAt).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" })}</td>
       </tr>
       ` : ""}
     </table>
@@ -216,7 +216,7 @@ GameBoost Token 凭证
 
 Token ID：${ctx.tokenId}
 状态：${ctx.status === "paid" ? "待激活" : "已激活"}
-${ctx.expiresAt ? `有效期至：${new Date(ctx.expiresAt).toLocaleString("zh-CN")}\n` : ""}
+${ctx.expiresAt ? `有效期至：${new Date(ctx.expiresAt).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" })}\n` : ""}
 管理入口（${ctx.magicUrl ? "一键免登录，15 分钟内有效" : "网页"}）：${tokenUrl}
 找回 Token：${recoverUrl}
 订阅链接（粘贴到 Clash${ctx.status === "paid" ? "，首次导入自动激活并开始计时" : ""}）：${subUrl}

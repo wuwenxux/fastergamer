@@ -263,7 +263,7 @@ agentRoutes.post("/traffic", async (c) => {
   for (const [uuid, bytes] of Object.entries(settled)) {
     const delta = Math.max(0, Math.round(bytes));
     if (delta <= 0) {
-      delete ipConns[uuid];
+      // 有连接但零增量：保留 ipConns 交给下方「只记连接数」的兜底循环，别丢 IP 统计
       continue;
     }
     const found = await getTokenByAnyUuid(c.env, uuid);

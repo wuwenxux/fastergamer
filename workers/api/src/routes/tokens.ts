@@ -164,7 +164,7 @@ tokensRoutes.post("/login-link", async (c) => {
         const url = `${site}/auth/magic?ticket=${ticket}`;
         const statusLabel =
           t.status === "active" ? "使用中" : t.status === "paid" ? "待激活" : t.status === "expired" ? "已过期" : "已撤销";
-        const expiry = t.expires_at ? `（有效期至 ${new Date(t.expires_at).toLocaleString("zh-CN")}）` : "";
+        const expiry = t.expires_at ? `（有效期至 ${new Date(t.expires_at).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" })}）` : "";
         return { url, label: `${t.id} · ${statusLabel}${expiry}` };
       })
     );
@@ -290,7 +290,17 @@ tokensRoutes.delete("/:id/devices/:deviceId", async (c) => {
   return c.json({ ok: true, data: { id: deviceId } });
 });
 
-const IP_RE = /^\d{1,3}(\.\d{1,3}){3}$|^[0-9a-fA-F:]+$/;
+const IPV4_RE = /^((25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)$/;
+const IPV6_RE = /^(?=.*:)[0-9a-fA-F:]+$/;
+
+/**
+ * 封禁 IP 的格式校验（简单校验，不做完整 IPv6 语法解析）：
+ * IPv4 四段各 0-255；IPv6 仅限合法字符、至少含一个冒号与一个十六进制位、不允许连续三个冒号。
+ */
+export const isValidIp = (ip: string): boolean => {
+  if (IPV4_RE.test(ip)) return true;
+  return IPV6_RE.test(ip) && /[0-9a-fA-F]/.test(ip) && !/:::/.test(ip);
+};
 
 /**
  * POST /api/tokens/:id/blocked-ips —— 封禁接入 IP（30 秒内全节点防火墙生效），仅本人可操作
@@ -306,7 +316,7 @@ tokensRoutes.post("/:id/blocked-ips", async (c) => {
 
   const body = (await c.req.json().catch(() => null)) as { ip?: string } | null;
   const ip = body?.ip?.trim() ?? "";
-  if (!IP_RE.test(ip)) {
+  if (!isValidIp(ip)) {
     return c.json({ ok: false, error: "IP 格式不正确" }, 400);
   }
 

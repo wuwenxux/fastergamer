@@ -6,14 +6,21 @@ import { KV, type Device, type Order, type Plan, type Ticket, type Token } from 
 import type { Env } from "../types";
 
 /**
- * KV list 封装：按前缀列出键名
+ * KV list 封装：按前缀列出键名。
+ * list 单次最多返回 1000 键，用 cursor 翻页拿全，避免超量后静默截断。
  */
 export const listKeys = async (
   ns: KVNamespace,
   prefix: string
 ): Promise<{ name: string }[]> => {
-  const result = await ns.list({ prefix });
-  return result.keys;
+  const keys: { name: string }[] = [];
+  let cursor: string | undefined;
+  do {
+    const result = await ns.list({ prefix, cursor });
+    keys.push(...result.keys);
+    cursor = result.list_complete ? undefined : result.cursor || undefined;
+  } while (cursor);
+  return keys;
 };
 
 // ---------- Plans ----------

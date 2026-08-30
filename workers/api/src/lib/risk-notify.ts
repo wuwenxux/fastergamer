@@ -110,7 +110,7 @@ export async function checkTokenRisks(env: Env, token: Token): Promise<void> {
       token,
       "multi_device",
       "账号安全提醒：检测到多处同时使用",
-      `<p>你好，系统检测到你的 Token（<strong>${token.id}</strong>）于 ${new Date(token.multi_device_detected_at).toLocaleString("zh-CN")} 在<strong>多个节点同时在线</strong>。</p>
+      `<p>你好，系统检测到你的 Token（<strong>${token.id}</strong>）于 ${new Date(token.multi_device_detected_at).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" })} 在<strong>多个节点同时在线</strong>。</p>
        <p>如果你自己在多台设备上使用，可以忽略本邮件；否则说明你的订阅链接可能已泄露，他人正在盗用你的流量。</p>
        <p><strong>建议措施：</strong>联系售后重置连接凭证（UUID）。重置后旧凭证立即失效，你的设备更新订阅即可恢复，盗用者将被断开。</p>`,
       `检测到你的 Token（${token.id}）在多个节点同时在线。\n如果是你自己多台设备使用可忽略；否则订阅链接可能已泄露。\n建议：联系售后重置连接凭证（UUID），旧凭证将立即失效。`
@@ -130,9 +130,9 @@ export async function checkExpiringToken(env: Env, token: Token): Promise<void> 
     token,
     "expire_24h",
     "服务即将到期",
-    `<p>你好，你的 Token（<strong>${token.id}</strong>）将于 <strong>${new Date(token.expires_at).toLocaleString("zh-CN")}</strong> 到期。</p>
+    `<p>你好，你的 Token（<strong>${token.id}</strong>）将于 <strong>${new Date(token.expires_at).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" })}</strong> 到期。</p>
      <p>到期后服务自动停止。如需继续使用，请提前购买新套餐。</p>`,
-    `你的 Token（${token.id}）将于 ${new Date(token.expires_at).toLocaleString("zh-CN")} 到期，到期后服务自动停止。\n如需继续使用请提前购买新套餐。`
+    `你的 Token（${token.id}）将于 ${new Date(token.expires_at).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" })} 到期，到期后服务自动停止。\n如需继续使用请提前购买新套餐。`
   );
 }
 
@@ -187,7 +187,7 @@ export async function notifyBorrow(
   if (token.notify_log[key]) return;
 
   const expiryText = token.expires_at
-    ? new Date(token.expires_at).toLocaleString("zh-CN")
+    ? new Date(token.expires_at).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" })
     : "未知";
   const { subject, html, text } = shell(
     env,

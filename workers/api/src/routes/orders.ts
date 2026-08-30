@@ -7,7 +7,7 @@ import { escapeHtml } from "../lib/escape-html";
 import { getOrder, getPlans, saveOrder } from "../lib/kv";
 import { newOrderId, newPaymentRef } from "../lib/ids";
 import { fulfillOrder } from "../lib/issue-token";
-import { availableDiscount, consumeCredit, recordReferral } from "../lib/referral";
+import { availableDiscount, consumeCredit, orderDiscount, recordReferral } from "../lib/referral";
 import type { Env } from "../types";
 
 export const ordersRoutes = new Hono<{ Bindings: Env }>();
@@ -57,10 +57,11 @@ ordersRoutes.post("/", async (c) => {
     c.executionCtx.waitUntil(recordReferral(c.env, refCode, order.contact!.toLowerCase()));
   }
 
-  // 推广减免：登录 session 邮箱与下单邮箱一致时，用可用额度抵扣（每额度 10 元，可叠加）
+  // 推广减免：登录 session 邮箱与下单邮箱一致时，用可用额度抵扣（每额度 10 元，可叠加）。
+  // 抵扣金额向下取整到 10 的倍数，与 consumeCredit 按个数记账对齐，避免零头漏损。
   const account = await getSessionAccount(c.env, c.req.header("authorization"));
   if (account && account.email === order.contact!.toLowerCase()) {
-    const discount = Math.min(await availableDiscount(c.env, account.email), plan.price_cny);
+    const discount = orderDiscount(await availableDiscount(c.env, account.email), plan.price_cny);
     if (discount > 0) {
       order.discount_cny = discount;
       order.payable_cny = plan.price_cny - discount;

@@ -278,9 +278,9 @@ adminRoutes.post("/tokens/:id/reset-penalty", async (c) => {
       token.contact,
       "【GameBoost】你的流量额度已重置",
       `<p>你好，你的 Token（<strong>${token.id}</strong>）流量已重置为满额 <strong>${token.traffic_limit_gb} GB</strong>，服务已恢复。</p>
-       <p>本次重置后有效期至 <strong>${token.expires_at ? new Date(token.expires_at).toLocaleString("zh-CN") : "未知"}</strong>（提前 ${daysPenalty} 天）。</p>
+       <p>本次重置后有效期至 <strong>${token.expires_at ? new Date(token.expires_at).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" }) : "未知"}</strong>（提前 ${daysPenalty} 天）。</p>
        <p>如流量消耗异常，请登录管理页检查设备列表。</p>`,
-      `你的 Token（${token.id}）流量已重置为满额 ${token.traffic_limit_gb} GB，服务已恢复。\n有效期至 ${token.expires_at ? new Date(token.expires_at).toLocaleString("zh-CN") : "未知"}（提前 ${daysPenalty} 天）。\n如流量消耗异常请检查设备列表。`
+      `你的 Token（${token.id}）流量已重置为满额 ${token.traffic_limit_gb} GB，服务已恢复。\n有效期至 ${token.expires_at ? new Date(token.expires_at).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" }) : "未知"}（提前 ${daysPenalty} 天）。\n如流量消耗异常请检查设备列表。`
     );
     if (!res.ok) console.error(`[reset-penalty] mail failed ${token.id}: ${res.error}`);
   }
@@ -301,30 +301,6 @@ adminRoutes.delete("/tokens/:id", async (c) => {
   }
   // 删除活跃 token 需立即从各节点白名单摘除
   c.executionCtx.waitUntil(pushAuthRefresh(c.env));
-  return c.json({ ok: true });
-});
-
-/**
- * POST /api/admin/alert —— 中心巡检脚本上报可用性告警，转发到管理员邮箱
- * body: { title: string, message: string }（message 按纯文本转义展示）
- */
-adminRoutes.post("/alert", async (c) => {
-  const body = (await c.req.json().catch(() => null)) as
-    | { title?: string; message?: string }
-    | null;
-  if (!body?.title?.trim() || !body?.message?.trim()) {
-    return c.json({ ok: false, error: "title and message are required" }, 400);
-  }
-  const esc = (s: string) =>
-    s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-  const title = body.title.trim().slice(0, 80);
-  const message = body.message.trim().slice(0, 4000);
-  await notifyAdmin(
-    c.env,
-    title,
-    `<pre style="white-space: pre-wrap; font-size: 13px;">${esc(message)}</pre>`,
-    message
-  );
   return c.json({ ok: true });
 });
 
@@ -445,7 +421,7 @@ adminRoutes.post("/notify-scan", async (c) => {
 
 /**
  * POST /api/admin/alert —— 通用管理员告警入口
- * 供本机运维脚本（如节点可达性探测）触发邮件告警
+ * 供本机运维脚本（probe-nodes.sh 节点可达性探测）触发邮件告警
  * body: { title: string, text: string }
  */
 adminRoutes.post("/alert", async (c) => {
@@ -508,21 +484,41 @@ adminRoutes.post("/orders/:id/confirm", async (c) => {
 
 /**
  * GET /api/admin/orders/:id/confirm?key=... —— 邮件里的一键确认链接（浏览器直接打开）
- * 与 POST 等效，返回简单结果页
+ * 只返回落地页，不直接发货：企业邮箱安全网关会预取邮件 URL，
+ * 真正的确认发货由页面按钮 JS 发 POST 到同路径完成（幂等，见上方 POST 路由）。
  */
 adminRoutes.get("/orders/:id/confirm", async (c) => {
-  const r = await confirmOrderPaid(c.env, c.executionCtx, c.req.param("id"));
-  const msg = "error" in r
-    ? `操作失败：${r.error}`
-    : r.already
-      ? `订单 ${r.order.id} 此前已确认过，token 已发放（未重复发货）`
-      : `订单 ${r.order.id} 已确认收款，token 已发放并邮件通知买家`;
-  const ok = !("error" in r);
+  const id = escapeHtml(c.req.param("id"));
   return c.html(
     `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">` +
       `<body style="font-family:sans-serif;max-width:32rem;margin:4rem auto;padding:0 1rem;text-align:center">` +
-      `<h2>${ok ? "✅" : "❌"} ${msg}</h2><p style="color:#888">本页可关闭</p></body>`,
-    "error" in r ? r.http : 200
+      `<h2>订单 ${id}</h2>` +
+      `<p>请先在支付宝核对到账（备注应为买家邮箱），确认到账后再点击下面按钮发货。</p>` +
+      `<button id="btn" style="background:#0ea5e9;color:#fff;border:0;padding:12px 28px;border-radius:8px;font-size:16px;cursor:pointer">确认已收款并发货</button>` +
+      `<p id="msg" style="color:#888"></p>` +
+      `<script>
+const btn = document.getElementById("btn");
+const msg = document.getElementById("msg");
+btn.onclick = async () => {
+  btn.disabled = true;
+  msg.textContent = "处理中…";
+  try {
+    const r = await fetch(location.pathname + location.search, { method: "POST" });
+    const j = await r.json();
+    if (j.ok) {
+      msg.textContent = j.data.already
+        ? "✅ 订单此前已确认过，token 已发放（未重复发货）"
+        : "✅ 已确认收款，token 已发放并邮件通知买家";
+    } else {
+      msg.textContent = "❌ 操作失败：" + (j.error || r.status);
+      btn.disabled = false;
+    }
+  } catch (e) {
+    msg.textContent = "❌ 网络错误，请重试";
+    btn.disabled = false;
+  }
+};
+</script></body>`
   );
 });
 
