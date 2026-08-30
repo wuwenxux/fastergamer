@@ -8,6 +8,7 @@ import { Hono } from "hono";
 import type { FaqItem, Ticket } from "../../../../shared/types";
 import { isEmail, sendMail } from "../lib/email-aliyun";
 import { listTickets, saveTicket } from "../lib/kv";
+import { escapeHtml } from "../lib/escape-html";
 import type { Env } from "../types";
 
 export const ticketsRoutes = new Hono<{ Bindings: Env }>();
@@ -85,10 +86,3 @@ ticketsRoutes.get("/faq", async (c) => {
   return c.json({ ok: true, data: faq });
 });
 
-function escapeHtml(s: string): string {
-  return s
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
-}

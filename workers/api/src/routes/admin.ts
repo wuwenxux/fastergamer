@@ -5,11 +5,12 @@ import { adminAuth } from "../middleware/admin";
 import { deleteDeviceIndex, deleteTokenByUuid, getOrder, getPlans, getTicket, getTokenById, listKeys, listOrders, listTickets, listTokensByContact, saveOrder, savePlans, saveTicket, saveToken } from "../lib/kv";
 import { checkExpiringToken, notifyAdmin } from "../lib/risk-notify";
 import { getNodes } from "../lib/nodes";
-import { sendMail, shouldSendEmail } from "../lib/email-aliyun";
+import { isEmail, sendMail, shouldSendEmail } from "../lib/email-aliyun";
 import { fulfillOrder, type WaitUntilCtx } from "../lib/issue-token";
 import { restoreCredit } from "../lib/referral";
 import { withinTrafficAllowance } from "../lib/authsnapshot";
 import { pushAuthRefresh } from "../lib/authpush";
+import { escapeHtml } from "../lib/escape-html";
 import type { Env } from "../types";
 
 export const adminRoutes = new Hono<{ Bindings: Env }>();
@@ -248,6 +249,10 @@ adminRoutes.post("/tokens/:id/reset-penalty", async (c) => {
 
   if (token.expires_at) {
     token.expires_at -= daysPenalty * 86_400_000;
+    // 月度配额套餐每次结算按 base_expires_at 重算 expires_at，扣减需同步作用于基准，否则处罚被抹掉
+    if (token.base_expires_at) {
+      token.base_expires_at -= daysPenalty * 86_400_000;
+    }
   }
 
   // 重置后重新评估状态：未撤销且仍在有效期则恢复 active
@@ -289,6 +294,11 @@ adminRoutes.delete("/tokens/:id", async (c) => {
   if (!token) return c.json({ ok: false, error: "token not found" }, 404);
   await c.env.TOKENS.delete(KV.TOKEN + token.uuid);
   await c.env.TOKENS.delete(KV.TOKEN_BY_ID + token.id);
+  // 清设备反查索引与试用领取标记，避免残留脏数据
+  for (const d of token.devices ?? []) await deleteDeviceIndex(c.env, d.uuid);
+  if (token.contact && isEmail(token.contact)) {
+    await c.env.TOKENS.delete(KV.TRIAL + token.contact.trim().toLowerCase());
+  }
   // 删除活跃 token 需立即从各节点白名单摘除
   c.executionCtx.waitUntil(pushAuthRefresh(c.env));
   return c.json({ ok: true });
@@ -355,6 +365,7 @@ adminRoutes.post("/notify-scan", async (c) => {
   let scanned = 0;
   let notified = 0;
   let purgedTokens = 0;
+  let expiredNow = 0;
   for (const key of keys) {
     const raw = await c.env.TOKENS.get(key.name);
     if (!raw) continue;
@@ -375,6 +386,14 @@ adminRoutes.post("/notify-scan", async (c) => {
     }
 
     scanned++;
+
+    // active 但已过有效期：置 expired，否则永远留在 KV 且状态失真
+    if (token.status === "active" && token.expires_at && token.expires_at < now) {
+      token.status = "expired";
+      await saveToken(c.env, token);
+      expiredNow++;
+      continue;
+    }
 
     // 在线状态清扫：Xray 只在用户在线时才有 online 计数器，离线即消失，
     // 所以离线靠这里的窗口过期来判定。窗口与 agent 结算节奏对齐（30 分钟兜底上报 + 富余）。
@@ -409,9 +428,18 @@ adminRoutes.post("/notify-scan", async (c) => {
     }
   }
 
+  // 有 token 过期转换：授权名单有变，推送节点立即刷新
+  if (expiredNow > 0) c.executionCtx.waitUntil(pushAuthRefresh(c.env));
+
   return c.json({
     ok: true,
-    data: { scanned, notified, purged_tokens: purgedTokens, purged_tickets: purgedTickets },
+    data: {
+      scanned,
+      notified,
+      expired_tokens: expiredNow,
+      purged_tokens: purgedTokens,
+      purged_tickets: purgedTickets,
+    },
   });
 });
 
@@ -505,6 +533,10 @@ adminRoutes.post("/orders/:id/cancel", async (c) => {
   if (order.status === "paid") {
     return c.json({ ok: false, error: "paid order cannot be cancelled" }, 409);
   }
+  if (order.status !== "pending") {
+    // failed 订单已取消过：拦截重复 cancel，防止 restoreCredit 重复刷余额
+    return c.json({ ok: false, error: "订单已取消过" }, 409);
+  }
   order.status = "failed";
   await saveOrder(c.env, order);
   if (order.discount_cny && order.contact) {
@@ -571,10 +603,3 @@ adminRoutes.post("/tickets/:id/close", async (c) => {
   return c.json({ ok: true, data: { id: ticket.id, status: ticket.status } });
 });
 
-function escapeHtml(s: string): string {
-  return s
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
-}

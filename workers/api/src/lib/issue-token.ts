@@ -80,9 +80,10 @@ export const fulfillOrder = async (
   await saveOrder(env, order);
 
   // 推广结算：被邀请人首次付费成功，给邀请人结算余额（可能触发自动续期）。
+  // 0 元订单（全额抵扣）不算付费，不结算返佣。
   // 续期可能复活已过期 token → 授权名单有变，结算完成后补一次推送（不能与本路径其他推送
   // 并行，否则快照重建可能赶在续期写库之前，漏掉复活）
-  if (order.contact) {
+  if (order.contact && (order.payable_cny ?? plan.price_cny) > 0) {
     ctx.waitUntil(
       rewardReferrerOnPayment(env, order.contact.trim().toLowerCase()).then((authChanged) =>
         authChanged ? pushAuthRefresh(env) : undefined

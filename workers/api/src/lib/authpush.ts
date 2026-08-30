@@ -21,7 +21,7 @@ export async function pushAuthRefresh(env: Env): Promise<void> {
     nodes
       .filter((n) => n.active)
       .map((n) =>
-        fetch(`https://${n.host}/api/agent/refresh`, {
+        fetch(`https://${n.host}:${n.port}/api/agent/refresh`, {
           method: "POST",
           headers: { "x-node-key": n.key },
           signal: AbortSignal.timeout(8000),

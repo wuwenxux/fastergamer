@@ -3,6 +3,7 @@ import type { CreateOrderRequest, CreateOrderResponse, Order } from "../../../..
 import { getSessionAccount } from "../lib/accounts";
 import { getAlipayConfig, precreate, verifyNotify } from "../lib/alipay";
 import { isEmail, sendMail } from "../lib/email-aliyun";
+import { escapeHtml } from "../lib/escape-html";
 import { getOrder, getPlans, saveOrder } from "../lib/kv";
 import { newOrderId, newPaymentRef } from "../lib/ids";
 import { fulfillOrder } from "../lib/issue-token";
@@ -46,7 +47,7 @@ ordersRoutes.post("/", async (c) => {
     plan_id: plan.id,
     payment_ref: newPaymentRef(),
     status: "pending",
-    contact: body.contact.trim(),
+    contact: body.contact.trim().toLowerCase(),
     created_at: Date.now(),
   };
 
@@ -183,7 +184,7 @@ ordersRoutes.post("/:id/claim-paid", async (c) => {
         c.env,
         c.env.ADMIN_NOTIFY_EMAIL,
         `【GameBoost】买家已声明付款 ¥${payable}，请核对`,
-        `<p>订单 <strong>${order.id}</strong>（${plan?.name ?? order.plan_id}，应付 <strong>¥${payable}</strong>，${order.contact}）买家声明已转账。${claimInfo ? `<br>${claimInfo}。` : ""}</p>
+        `<p>订单 <strong>${order.id}</strong>（${plan?.name ?? order.plan_id}，应付 <strong>¥${payable}</strong>，${order.contact}）买家声明已转账。${claimInfo ? `<br>${escapeHtml(claimInfo)}。` : ""}</p>
          <p>请在支付宝核对到账（备注应为买家邮箱），到账后点此一键发货：<a href="${confirmUrl}">${confirmUrl}</a></p>
          <p>未到账请勿点击；疑似刷单可忽略。</p>`,
         `订单 ${order.id}（¥${payable}，${order.contact}）买家声明已转账${claimInfo ? `，${claimInfo}` : ""}。核对到账后一键发货：${confirmUrl}`
