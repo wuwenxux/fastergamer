@@ -24,6 +24,7 @@ import hmac
 import json
 import os
 import re
+import socket
 import subprocess
 import sys
 import tempfile
@@ -179,6 +180,29 @@ def supports_geosite(ua: str) -> bool:
     return bool(re.search(r"mihomo|verge|meta|stash|flclash", ua or "", re.I))
 
 
+_IPV4_RE = re.compile(r"^\d{1,3}(\.\d{1,3}){3}$")
+# 节点域名 → IP 缓存（host -> (ip, 过期时间)）：订阅渲染每次请求都会用，避免重复解析
+_IP_CACHE: dict[str, tuple[str, float]] = {}
+
+
+def resolve_host_ip(host: str) -> str | None:
+    """节点本地解析节点域名 → IP（境外节点查 CF 权威很快），10 分钟缓存。
+    与 clash.ts 的 nodeIps 同目的：客户端拿到 IP 后完全跳过节点域名解析。
+    解析失败回退过期缓存，再无则返回 None（调用方用域名兜底）。"""
+    if _IPV4_RE.match(host):
+        return None  # 本来就是 IP，无需替换
+    now = time.time()
+    hit = _IP_CACHE.get(host)
+    if hit and hit[1] > now:
+        return hit[0]
+    try:
+        ip = socket.getaddrinfo(host, 443, socket.AF_INET)[0][4][0]
+    except Exception:
+        return hit[0] if hit else None
+    _IP_CACHE[host] = (ip, now + 600)
+    return ip
+
+
 def build_clash_yaml(uuid: str, nodes: list, user_agent: str = "") -> str:
     """与中心 workers/api/src/lib/clash.ts 的输出格式保持一致（按区域分组）。"""
     geosite = supports_geosite(user_agent)
@@ -191,9 +215,12 @@ def build_clash_yaml(uuid: str, nodes: list, user_agent: str = "") -> str:
         "  ipv6: false",
         "  enhanced-mode: fake-ip",
         "  fake-ip-range: 198.18.0.1/16",
+        # 阿里 DoH 放最前（防 UDP 53 被劫持/慢），纯 IP 递归做 bootstrap 兜底
         "  nameserver:",
+        "    - https://dns.alidns.com/dns-query",
         "    - 223.5.5.5",
         "    - 119.29.29.29",
+        # 节点域名解析保持单路：节点 server 已直发 IP，这里仅兜底
         "  proxy-server-nameserver:",
         "    - 223.5.5.5",
         "  nameserver-policy:",
@@ -201,17 +228,25 @@ def build_clash_yaml(uuid: str, nodes: list, user_agent: str = "") -> str:
         *(['    "geosite:geolocation-!cn": https://1.1.1.1/dns-query'] if geosite else []),
         "",
     ]
-    proxies = [
-        {
-            "name": f"{n['region']} {n['name']}",
-            "region": n["region"],
-            "server": n["host"],
-            "port": n["port"],
-            "tls": n["tls"],
-            "ws_path": n["ws_path"],
-        }
-        for n in nodes
-    ]
+    # 区域元数据提前：节点显示名要用它拼中文地区名（后面区域分组也用它）
+    meta_by_code = {code: (flag, name) for code, flag, name in REGION_META}
+    proxies = []
+    for idx, n in enumerate(nodes):
+        ip = resolve_host_ip(n["host"])
+        proxies.append(
+            {
+                # 命名与 clash.ts 一致：区域代码 + 中文地区名 + 全局序号（如 "MY 马来西亚 01"）
+                "name": f"{n['region']} {meta_by_code.get(n['region'], (None, n['name']))[1]} {idx + 1:02d}",
+                "region": n["region"],
+                # IP 直发：客户端完全跳过节点域名解析（国内递归查 CF 权威不稳）；
+                # 解析失败回退域名
+                "server": ip or n["host"],
+                "host": n["host"],
+                "port": n["port"],
+                "tls": n["tls"],
+                "ws_path": n["ws_path"],
+            }
+        )
     lines.append("proxies:")
     for p in proxies:
         lines.append(f'  - name: "{p["name"]}"')
@@ -221,14 +256,19 @@ def build_clash_yaml(uuid: str, nodes: list, user_agent: str = "") -> str:
         lines.append(f"    uuid: {uuid}")
         lines.append("    network: ws")
         lines.append(f"    tls: {'true' if p['tls'] else 'false'}")
+        # UDP 中继（游戏/语音/QUIC 走代理依赖它），与 clash.ts 一致
+        lines.append("    udp: true")
         if p["tls"]:
-            lines.append(f"    servername: {p['server']}")
+            # server 是 IP 时 TLS SNI 仍用域名，证书校验不受影响
+            lines.append(f"    servername: {p['host']}")
         lines.append("    ws-opts:")
         lines.append(f'      path: "{p["ws_path"]}"')
+        if p["server"] != p["host"]:
+            # server 是 IP 时 WS Host 头必须显式带域名，否则 Caddy 按 IP 匹配不到站点
+            lines.append("      headers:")
+            lines.append(f"        Host: {p['host']}")
 
     # 按区域归类：顺序跟随 REGION_META，未登记的区域排最后
-    meta_by_code = {code: (flag, name) for code, flag, name in REGION_META}
-
     def region_group_name(code: str) -> str:
         meta = meta_by_code.get(code)
         return f"{meta[0]} {meta[1]}" if meta else code

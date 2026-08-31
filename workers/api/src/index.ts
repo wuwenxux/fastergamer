@@ -10,7 +10,7 @@ import type { Env } from "./types";
 import { agentRoutes } from "./routes/agent";
 import { nodesRoutes } from "./routes/nodes";
 import { referralRoutes } from "./routes/referral";
-import { statusRoutes } from "./routes/status";
+import { registerRoutes } from "./routes/register";
 import { ticketsRoutes } from "./routes/tickets";
 import { rateLimit } from "./middleware/rateLimit";
 
@@ -73,16 +73,17 @@ app.use("/api/tokens/magic/consume", rateLimit(10, 60_000));
 app.use("/api/orders", rateLimit(20, 60_000));
 app.use("/api/orders/:id/claim-paid", rateLimit(10, 60_000));
 app.use("/api/feedback", rateLimit(5, 60_000));
+app.use("/api/register", rateLimit(10, 60_000));
 
 app.route("/api/plans", plansRoutes);
 app.route("/api/orders", ordersRoutes);
 app.route("/api/tokens", tokensRoutes);
+app.route("/api/register", registerRoutes);
 // 生产中心已切换到 CF：/api/sub 与 /api/agent/* 直接由本 worker + CF KV 处理，不再反代回 cn
 app.route("/api/sub", subRoutes);
 app.route("/api/admin", adminRoutes);
 app.route("/api/admin/nodes", nodesRoutes);
 app.route("/api/agent", agentRoutes);
-app.route("/api/nodes/status", statusRoutes);
 app.route("/api/referral", referralRoutes);
 app.route("/api", ticketsRoutes);
 

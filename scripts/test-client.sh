@@ -1,9 +1,10 @@
 #!/bin/bash
 set -uo pipefail
 
-# 客户端视角的节点端到端测试：只凭订阅 uuid，在任何 Linux/macOS 机器上运行。
-# 流程：拉订阅 → 解析节点 → 起临时 Xray socks 客户端 → 经节点真实代理
-# 访问 Google/YouTube/ChatGPT/Claude，逐项打勾。
+# 客户端 → 各节点的链路延迟测试：只凭订阅 uuid，在任何 Linux/macOS 机器上运行。
+# 流程：拉订阅 → 解析节点 → 起临时 Xray socks 客户端 → 经 VLESS/WS/TLS 隧道
+# 访问节点自身的 /ping（节点 Xray 出站回环到本机 Caddy，不依赖任何外部网站）。
+# 每个节点预热 1 次后测 3 次，报告 min/avg/max。
 # 用法: bash test-client.sh <订阅uuid>
 # 依赖: curl、unzip 或 python3（首次运行会自动下载 Xray 到 ~/.cache/xray-client-test）
 
@@ -14,7 +15,7 @@ if [ -z "$UUID" ]; then
   exit 1
 fi
 
-SUB_URL="https://fastergamer.click/api/sub?uuid=$UUID"
+SUB_URL="https://sub.fastergamer.click/api/sub?uuid=$UUID"
 WORK_DIR="$HOME/.cache/xray-client-test"
 mkdir -p "$WORK_DIR"
 
@@ -54,37 +55,35 @@ fi
 YAML=$(curl -s --max-time 20 "$SUB_URL")
 echo "$YAML" | grep -q "^proxies:" || { echo "✗ 订阅拉取失败：$(echo "$YAML" | head -1)"; exit 1; }
 
-# 解析 proxies 段：name/server/port 三元组
+# 解析 proxies 段：name/server/port/servername/ws-Host。订阅开启 IP 直发后
+# server 是 IP，TLS SNI 与 WS Host 需取 servername / Host 头（缺省回退 server）
 mapfile -t NODES < <(echo "$YAML" | awk '
   /^proxy-groups:/ { exit }
-  /^  - name:/     { if (name) print name "|" server "|" port; name=substr($0, index($0, "\"")) }
-  /^    server:/   { server=$2 }
-  /^    port:/     { port=$2 }
-  END { if (name) print name "|" server "|" port }
+  /^  - name:/      { if (name) print name "|" server "|" port "|" sn "|" whost; name=substr($0, index($0, "\"")); sn=""; whost="" }
+  /^    server:/    { server=$2 }
+  /^    port:/      { port=$2 }
+  /^    servername:/ { sn=$2 }
+  /^        Host:/  { whost=$2 }
+  END { if (name) print name "|" server "|" port "|" sn "|" whost }
 ')
 [ ${#NODES[@]} -gt 0 ] || { echo "✗ 订阅里没有节点"; exit 1; }
 echo "订阅包含 ${#NODES[@]} 个节点"
 
-# ---------- 逐项测试 ----------
-PASS_TOTAL=0; FAIL_TOTAL=0
+# ---------- 逐节点测延迟 ----------
 PIDS=()
 cleanup() { for p in "${PIDS[@]:-}"; do kill "$p" 2>/dev/null; done; rm -f "$WORK_DIR"/test-*.json; }
 trap cleanup EXIT
 
-check_code() { # 名称 期望码 "实得码 耗时"
-  local name="$1" expect="$2" out="$3"
-  local code="${out%% *}" secs="${out##* }"
-  if [ "$code" = "$expect" ]; then
-    echo "   ✓ $name  ($code, ${secs}s)"; PASS_TOTAL=$((PASS_TOTAL + 1))
-  else
-    echo "   ✗ $name  (期望 $expect，实得 ${code:-超时/重置})"; FAIL_TOTAL=$((FAIL_TOTAL + 1))
-  fi
-}
-
 IDX=0
 for entry in "${NODES[@]}"; do
-  NAME="${entry%%|*}"; REST="${entry#*|}"; HOST="${REST%%|*}"; PORT_N="${REST##*|}"
+  IFS='|' read -r NAME HOST PORT_N SNI WHOST <<< "$entry"
   NAME="${NAME%\"}"; NAME="${NAME#\"}"
+  SNI="${SNI:-$HOST}"
+  # 隧道内访问目标：节点自身域名（IP 直发时用 Host 头里的域名，都没有才用 server）
+  TARGET="${WHOST:-$SNI}"
+  # IP 直发时 WS 必须显式带 Host 头，否则 Caddy 按 IP 匹配不到站点
+  WS_HEADERS=""
+  [ -n "$WHOST" ] && WS_HEADERS=', "headers": {"Host": "'"$WHOST"'"}'
   PORT=$((12808 + IDX)); IDX=$((IDX + 1))
   CFG="$WORK_DIR/test-$PORT.json"
   cat > "$CFG" <<EOF
@@ -94,7 +93,7 @@ for entry in "${NODES[@]}"; do
   "outbounds": [{
     "protocol": "vless",
     "settings": {"vnext": [{"address": "$HOST", "port": $PORT_N, "users": [{"id": "$UUID", "encryption": "none"}]}]},
-    "streamSettings": {"network": "ws", "security": "tls", "tlsSettings": {"serverName": "$HOST"}, "wsSettings": {"path": "/vless-ws"}}
+    "streamSettings": {"network": "ws", "security": "tls", "tlsSettings": {"serverName": "$SNI"}, "wsSettings": {"path": "/vless-ws"$WS_HEADERS}}
   }]
 }
 EOF
@@ -102,29 +101,24 @@ EOF
   PIDS+=($!)
   sleep 1.5
 
-  echo "── $NAME ($HOST)"
-  # Google/YouTube: 验状态码；ChatGPT: 用 cdn-cgi/trace（curl 裸 UA 打首页会被 WAF 误拦）；
-  # Claude: 区域封锁会 302 到 app-unavailable-in-region，需看 Location
-  OUT=$(curl -s -o /dev/null -w "%{http_code} %{time_total}" --max-time 15 \
-        --socks5-hostname "127.0.0.1:$PORT" https://www.google.com/generate_204 2>/dev/null)
-  check_code "Google" "204" "$OUT"
-  OUT=$(curl -s -o /dev/null -w "%{http_code} %{time_total}" --max-time 15 \
-        --socks5-hostname "127.0.0.1:$PORT" https://www.youtube.com/ 2>/dev/null)
-  check_code "YouTube" "200" "$OUT"
-  OUT=$(curl -s -o /dev/null -w "%{http_code} %{time_total}" --max-time 15 \
-        --socks5-hostname "127.0.0.1:$PORT" https://chatgpt.com/cdn-cgi/trace 2>/dev/null)
-  check_code "ChatGPT" "200" "$OUT"
-  HDR=$(curl -s -I --max-time 15 --socks5-hostname "127.0.0.1:$PORT" https://claude.ai/ 2>/dev/null)
-  CODE=$(echo "$HDR" | grep -oE "^HTTP/[0-9.]+ [0-9]{3}" | tail -1 | grep -oE "[0-9]{3}")
-  LOC=$(echo "$HDR" | grep -i "^location:" || true)
-  if [[ "$CODE" =~ ^(200|301|302|303)$ ]] && ! echo "$LOC" | grep -qi "unavailable"; then
-    echo "   ✓ Claude  ($CODE)"; PASS_TOTAL=$((PASS_TOTAL + 1))
+  printf "── %-16s " "$NAME"
+  # 预热 1 次（触发 TLS 会话复用/路由收敛），失败也继续正式测
+  curl -s -o /dev/null --max-time 10 --socks5-hostname "127.0.0.1:$PORT" "https://$TARGET/ping" 2>/dev/null
+
+  TIMES=()
+  for i in 1 2 3; do
+    T=$(curl -s -o /dev/null -w "%{time_total}" --max-time 10 \
+          --socks5-hostname "127.0.0.1:$PORT" "https://$TARGET/ping" 2>/dev/null)
+    [ -n "$T" ] && [ "$T" != "0.000000" ] && TIMES+=("$T")
+  done
+
+  if [ ${#TIMES[@]} -eq 0 ]; then
+    echo "✗ 不可达（3 次均超时/失败）"
   else
-    echo "   ✗ Claude  (${CODE:-超时/重置} ${LOC:+→ 区域受限})"; FAIL_TOTAL=$((FAIL_TOTAL + 1))
+    echo "${TIMES[@]}" | tr ' ' '\n' | awk '
+      { ms[NR]=$1*1000; sum+=$1*1000; if(NR==1||$1*1000<min)min=$1*1000; if($1*1000>max)max=$1*1000 }
+      END { printf "%.0f / %.0f / %.0f ms (min/avg/max, %d 次)\n", min, sum/NR, max, NR }'
   fi
+
   kill "${PIDS[-1]}" 2>/dev/null; unset 'PIDS[-1]'
 done
-
-echo
-echo "结果：✓ $PASS_TOTAL  ✗ $FAIL_TOTAL"
-[ $FAIL_TOTAL -eq 0 ] && echo "全部通过" || exit 1

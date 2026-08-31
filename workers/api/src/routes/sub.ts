@@ -8,6 +8,33 @@ import type { Env } from "../types";
 
 export const subRoutes = new Hono<{ Bindings: Env }>();
 
+const IPV4_RE = /^\d{1,3}(\.\d{1,3}){3}$/;
+
+/**
+ * 订阅下发前把节点域名解析成 IP（DoH 查询，3s 超时，失败静默回退域名）。
+ * 背景：节点域名挂在 Cloudflare 权威 DNS，国内递归解析不稳定；
+ * 配置里 server 直接写 IP 后客户端完全跳过节点域名解析。
+ */
+const resolveNodeIps = async (hosts: string[]): Promise<Record<string, string>> => {
+  const uniq = [...new Set(hosts.filter((h) => h && !IPV4_RE.test(h)))];
+  const entries = await Promise.all(
+    uniq.map(async (h): Promise<[string, string] | null> => {
+      try {
+        const res = await fetch(
+          `https://cloudflare-dns.com/dns-query?name=${encodeURIComponent(h)}&type=A`,
+          { headers: { accept: "application/dns-json" }, signal: AbortSignal.timeout(3000) }
+        );
+        const json = (await res.json()) as { Answer?: { type: number; data: string }[] };
+        const ip = json.Answer?.find((a) => a.type === 1)?.data;
+        return ip && IPV4_RE.test(ip) ? [h, ip] : null;
+      } catch {
+        return null;
+      }
+    })
+  );
+  return Object.fromEntries(entries.filter((e): e is [string, string] => e !== null));
+};
+
 /**
  * GET /api/sub?uuid={uuid} —— 生成 Clash 订阅配置
  * uuid 可以是 token 主 uuid 或某个设备槽位的 uuid（每台设备独立订阅）
@@ -38,11 +65,13 @@ subRoutes.get("/", async (c) => {
   }
 
   const nodes = (await getNodes(c.env)).filter((n) => !isBudgetExhausted(n));
+  const nodeIps = await resolveNodeIps(nodes.filter((n) => n.active).map((n) => n.host));
   const yaml = buildClashConfig({
     uuid,
     nodes,
     regions: parseRegions(c.env.CLASH_REGIONS),
     userAgent: c.req.header("user-agent"),
+    nodeIps,
   });
 
   // subscription-userinfo：Clash/Stash 客户端可直接显示已用流量与到期时间

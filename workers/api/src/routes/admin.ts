@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import { KV } from "../../../../shared/types";
-import type { Order, Plan, Presence, Token } from "../../../../shared/types";
+import type { Order, Plan, Presence, Registration, Token } from "../../../../shared/types";
 import { adminAuth } from "../middleware/admin";
 import { deleteDeviceIndex, deleteTokenByUuid, getOrder, getPlans, getTicket, getTokenById, getTokenPresence, listKeys, listOrders, listTickets, listTokensByContact, mergeTokenSettlement, saveOrder, savePlans, savePresenceIfChanged, saveTicket, saveToken } from "../lib/kv";
 import { checkExpiringToken, notifyAdmin } from "../lib/risk-notify";
@@ -222,6 +222,23 @@ adminRoutes.get("/tokens", async (c) => {
   }
   tokens.sort((a, b) => (b.purchased_at ?? 0) - (a.purchased_at ?? 0));
   return c.json({ ok: true, data: tokens });
+});
+
+/** GET /api/admin/registrations —— 导出全部防失联登记（批量通知用） */
+adminRoutes.get("/registrations", async (c) => {
+  const keys = await listKeys(c.env.TOKENS, KV.REG);
+  const regs: Registration[] = [];
+  for (const key of keys) {
+    const raw = await c.env.TOKENS.get(key.name);
+    if (!raw) continue;
+    try {
+      regs.push(JSON.parse(raw) as Registration);
+    } catch {
+      // 跳过坏数据
+    }
+  }
+  regs.sort((a, b) => b.updated_at - a.updated_at);
+  return c.json({ ok: true, data: regs });
 });
 
 /**

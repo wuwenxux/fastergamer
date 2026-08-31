@@ -46,6 +46,14 @@ export default function Tokens() {
   const [savedIds, setSavedIds] = useState<string[]>([]);
   const [savedTokens, setSavedTokens] = useState<TokenView[]>([]);
   const [loadingSaved, setLoadingSaved] = useState(false);
+  // 是否已登录（有本地会话）：决定是否展示防失联登记入口（不对非注册用户展示）
+  const [loggedIn] = useState(() => {
+    try {
+      return !!localStorage.getItem("fg_session");
+    } catch {
+      return false;
+    }
+  });
 
   // 从其他页面跳转（state）或邮件登录链接（?id=）过来时自动查询 token
   useEffect(() => {
@@ -189,6 +197,18 @@ export default function Tokens() {
       </p>
 
       <ReferralCard />
+
+      {loggedIn && (
+        <div className="rounded-xl border border-slate-700 bg-slate-900 px-4 py-3 flex items-center justify-between">
+          <div className="text-sm">
+            <span className="text-slate-300">防失联登记</span>
+            <span className="text-xs text-slate-500 ml-2">入口有变动时通过备用邮箱/TG 通知你</span>
+          </div>
+          <Link to="/register" className="text-sm text-sky-400 hover:underline shrink-0">
+            去登记 →
+          </Link>
+        </div>
+      )}
 
       {token &&
         (token.restricted ? (

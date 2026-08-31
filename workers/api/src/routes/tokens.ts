@@ -306,9 +306,10 @@ export const isValidIp = (ip: string): boolean => {
 };
 
 /**
- * POST /api/tokens/:id/blocked-ips —— 封禁接入 IP（30 秒内全节点防火墙生效），仅本人可操作
+ * POST /api/tokens/:id/blocked-ips —— 封禁接入 IP（30 秒内全节点生效），仅本人可操作
  * body: { ip: "1.2.3.4" }
- * 注意：防火墙按 IP 阻断，若该 IP 是多人共享的出口（NAT），会影响同出口的其他用户
+ * 语义：仅「该用户从该 IP 的接入」被拒（节点 xray 路由 per-(uuid, IP) 阻断），
+ * 同 NAT/同宽带出口下的其他用户不受影响。旧版 agent 仍是整节点防火墙阻断，逐步淘汰。
  */
 tokensRoutes.post("/:id/blocked-ips", async (c) => {
   const token = await getTokenById(c.env, c.req.param("id"));

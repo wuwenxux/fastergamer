@@ -1,4 +1,4 @@
-import type { CreateOrderResponse, Device, FaqItem, Node, Order, Plan, Token } from "../../../shared/types";
+import type { CreateOrderResponse, Device, FaqItem, Order, Plan, Registration, Token } from "../../../shared/types";
 
 // 生产环境通过 VITE_API_BASE 指定 API Worker 域名，如 https://api.example.com
 // 开发环境留空，由 Vite 代理到本地 wrangler dev
@@ -131,26 +131,8 @@ export const api = {
       headers: sessionHeaders(),
     }),
 
-  /** 节点在线状态（公开接口） */
-  nodesStatus: () =>
-    request<
-      Array<
-        Pick<Node, "id" | "name" | "region" | "host" | "port" | "tls" | "ws_path"> & {
-          last_seen_at?: number;
-          online: boolean;
-          total_bytes: number;
-          online_count: number;
-          stats_updated_at?: number;
-        }
-      >
-    >("/api/nodes/status"),
-
-  /** Clash 订阅链接（需 token 处于 active）；固定走 fastergamer.click（CF 反代到 hk02，数据实时） */
-  subUrl: (uuid: string) => `https://fastergamer.click/api/sub?uuid=${encodeURIComponent(uuid)}`,
-
-  /** 备用订阅链接：节点域名镜像了 /api，个别网络访问不了主站时换用 */
-  subUrlOn: (host: string, uuid: string) =>
-    `https://${host}/api/sub?uuid=${encodeURIComponent(uuid)}`,
+  /** Clash 订阅链接（需 token 处于 active）；走 sub.fastergamer.click（灰云直连 hk02，订阅由节点本地渲染） */
+  subUrl: (uuid: string) => `https://sub.fastergamer.click/api/sub?uuid=${encodeURIComponent(uuid)}`,
 
   /** 凭联系方式找回 token（返回概要列表，不含 uuid） */
   recoverTokens: (contact: string) =>
@@ -195,6 +177,18 @@ export const api = {
       body: JSON.stringify({ contact }),
     }),
 
+  /** 查询防失联登记（需登录会话；未登记返回 null） */
+  getRegistration: () =>
+    request<Registration | null>("/api/register", { headers: sessionHeaders() }),
+
+  /** 登记/更新通知联系方式（需登录会话；至少填一项） */
+  saveRegistration: (input: { notify_email?: string; telegram?: string }) =>
+    request<Registration>("/api/register", {
+      method: "POST",
+      headers: sessionHeaders(),
+      body: JSON.stringify(input),
+    }),
+
   /** 领取免费体验（每邮箱一次，30 天 20GB，凭证发到邮箱）；ref 为推广码 */
   claimTrial: (email: string, ref?: string) =>
     request<{ token_id: string }>("/api/tokens/trial", {
@@ -202,7 +196,7 @@ export const api = {
       body: JSON.stringify({ email, ref: ref || undefined }),
     }),
 
-  /** 验证订阅是否可用：主站不通时自动尝试节点镜像入口，返回节点数或错误信息 */
+  /** 验证订阅是否可用：依次尝试主站与本站，返回节点数或错误信息 */
   verifySub: async (uuid: string) => {
     const path = `/api/sub?uuid=${encodeURIComponent(uuid)}`;
     const tryFetch = async (base: string) => {
@@ -211,17 +205,11 @@ export const api = {
       if (!res.ok) throw new Error(`请求失败 (${res.status})`);
       return (text.match(/^  - name:/gm) ?? []).length;
     };
-    // 用户实际使用的订阅链接是 fastergamer.click，先验证它；再试本站与节点镜像
-    const mainBase = "https://fastergamer.click";
+    // 用户实际使用的订阅链接是 sub.fastergamer.click，先验证它；再试本站
+    const mainBase = "https://sub.fastergamer.click";
     const bases = [mainBase];
     const origin = absoluteBase();
     if (origin && origin !== mainBase) bases.push(origin);
-    try {
-      const nodes = await api.nodesStatus();
-      for (const n of nodes) bases.push(`https://${n.host}`);
-    } catch {
-      /* 节点列表拿不到就只试主站 */
-    }
 
     let lastErr = "网络不可达";
     for (const base of bases) {
@@ -230,8 +218,7 @@ export const api = {
         if (nodeCount === 0) {
           return { valid: false, nodeCount: 0, error: "订阅内容未包含任何节点" } as const;
         }
-        const mirror = base !== mainBase ? new URL(base).host : undefined;
-        return { valid: true, nodeCount, mirror, error: undefined } as const;
+        return { valid: true, nodeCount, error: undefined } as const;
       } catch (e) {
         lastErr = (e as Error).message;
       }
@@ -240,8 +227,8 @@ export const api = {
       valid: false,
       nodeCount: 0,
       error:
-        `当前网络无法访问订阅服务（已尝试主站 + ${bases.length - 1} 个备用入口）：${lastErr}。` +
-        "请关闭代理/更换网络后重试，或改用下方备用订阅链接",
+        `当前网络无法访问订阅服务（已尝试 ${bases.length} 个入口）：${lastErr}。` +
+        "请关闭代理/更换网络后重试",
     } as const;
   },
 };

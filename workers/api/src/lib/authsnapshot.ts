@@ -30,7 +30,17 @@ export const AUTH_SNAPSHOT_KEY = "authcache:snapshot";
 export interface AuthSnapshot {
   ts: number;
   uuids: string[];
+  /**
+   * 全部 token 封禁 IP 的全局合集。保留给旧 agent 兼容（iptables 整节点阻断，
+   * 同 NAT 用户会误伤）；新 agent 优先用 blockedByUuid 做 per-(uuid, IP) 阻断。
+   */
   blockedIps: string[];
+  /**
+   * per-(uuid, IP) 封禁表：只含当前授权名单内 token（主 + 设备 uuid）的 blocked_ips。
+   * 新 agent 据此生成 xray 路由规则（user + sourceIP → blackhole），
+   * 只断该用户从被封 IP 的接入，同 NAT 出口下的其他用户不受影响。
+   */
+  blockedByUuid: Record<string, string[]>;
   nodes: Array<Pick<Node, "name" | "region" | "host" | "port" | "tls" | "ws_path">>;
   /** 每 uuid（主 + 设备）的用量基数与限额（字节）；limit=0 表示不限量 */
   usage: Record<string, { used: number; limit: number; exhausted_at: number | null }>;
@@ -55,6 +65,7 @@ export async function computeAuthSnapshot(env: Env) {
   const now = Date.now();
   const uuids: string[] = [];
   const blockedIps = new Set<string>();
+  const blockedByUuid: AuthSnapshot["blockedByUuid"] = {};
   const usage: AuthSnapshot["usage"] = {};
   const keys = await listKeys(env.TOKENS, KV.TOKEN);
   for (const k of keys) {
@@ -69,6 +80,13 @@ export async function computeAuthSnapshot(env: Env) {
     ) {
       uuids.push(token.uuid);
       for (const d of token.devices ?? []) uuids.push(d.uuid);
+      // per-(uuid, IP) 封禁表只给名单内 uuid（同设备 uuid 共享 token 的封禁列表），
+      // 过期/撤销的 token 不下发，节点路由规则随名单同步收敛
+      const ips = token.blocked_ips ?? [];
+      if (ips.length > 0) {
+        blockedByUuid[token.uuid] = ips;
+        for (const d of token.devices ?? []) blockedByUuid[d.uuid] = ips;
+      }
       // 用量基数只给名单内 uuid（agent 本地配额强制用：本地用量 = used + 未结算增量）
       const entry = {
         used: Math.round(token.traffic_used_gb * 1024 ** 3),
@@ -89,6 +107,6 @@ export async function computeAuthSnapshot(env: Env) {
       tls: n.tls,
       ws_path: n.ws_path,
     }));
-  const snap: AuthSnapshot = { ts: now, uuids, blockedIps: [...blockedIps], nodes, usage };
+  const snap: AuthSnapshot = { ts: now, uuids, blockedIps: [...blockedIps], blockedByUuid, nodes, usage };
   return snap;
 }

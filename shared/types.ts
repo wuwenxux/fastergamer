@@ -270,6 +270,20 @@ export interface MagicTicket {
   created_at: number;
 }
 
+/**
+ * 防失联登记 —— 登录用户主动留下的通知联系方式（存 TOKENS namespace）。
+ * 用途：域名被封/入口迁移时批量通知；与购买邮箱解耦（可留备用邮箱/TG）。
+ */
+export interface Registration {
+  /** 登录账号邮箱（即 KV 键 reg:{email} 的 email） */
+  account_email: string;
+  /** 通知邮箱（可与账号邮箱不同，缺省用账号邮箱） */
+  notify_email?: string;
+  /** Telegram 账号（可选，@xxx 或 t.me 链接） */
+  telegram?: string;
+  updated_at: number;
+}
+
 /** KV 键前缀常量 */
 export const KV = {
   TOKEN: "token:", // token:{uuid} → Token JSON
@@ -277,6 +291,7 @@ export const KV = {
   TOKEN_BY_ID: "tokenid:", // tokenid:{id} → { uuid }
   PLAN: "plan:", // plan:{id} → Plan JSON
   ORDER: "order:", // order:{id} → Order JSON
+  ORDER_LOCK: "orderlock:", // orderlock:{orderId} → { at }（订单发货锁，免费层 best-effort 幂等，存 TOKENS namespace）
   TICKET: "ticket:", // ticket:{id} → Ticket JSON（存 TICKETS namespace）
   DEVICE: "device:", // device:{uuid} → { token_id }（设备 uuid 反查索引，存 TOKENS namespace）
   ROUTING: "routing", // routing → 区域名列表 JSON
@@ -288,6 +303,7 @@ export const KV = {
   REFCODE: "refcode:", // refcode:{code} → { email }（推广码反查邀请人，存 TOKENS namespace）
   REFCREDIT: "refcredit:", // refcredit:{email} → { earned, used }（推广减免额度，单位：个 ×10元，存 TOKENS namespace）
   REFERRAL: "referral:", // referral:{被邀请人email} → { referrer_email, created_at }（存 TOKENS namespace）
+  REG: "reg:", // reg:{账号email} → Registration JSON（防失联登记，存 TOKENS namespace）
 } as const;
 
 /** API 统一响应格式 */

@@ -4,7 +4,7 @@ import Enterprise from "./pages/Enterprise";
 import Home from "./pages/Home";
 import Guide from "./pages/Guide";
 import Purchase from "./pages/Purchase";
-import Status from "./pages/Status";
+import Register from "./pages/Register";
 import Support from "./pages/Support";
 import Tokens from "./pages/Tokens";
 
@@ -18,9 +18,6 @@ export default function App() {
         <div className="space-x-5 text-sm">
           <Link to="/" className="hover:text-sky-400 transition-colors">
             套餐
-          </Link>
-          <Link to="/status" className="hover:text-sky-400 transition-colors">
-            节点状态
           </Link>
           <Link to="/tokens" className="hover:text-sky-400 transition-colors">
             我的 Token
@@ -41,9 +38,10 @@ export default function App() {
         <Routes>
           <Route path="/" element={<Home />} />
           <Route path="/buy" element={<Purchase />} />
-          <Route path="/status" element={<Status />} />
           <Route path="/tokens" element={<Tokens />} />
           <Route path="/auth/magic" element={<AuthMagic />} />
+          {/* 防失联登记：隐藏路由，不进导航，仅登录用户从「我的 Token」页进入 */}
+          <Route path="/register" element={<Register />} />
           <Route path="/guide" element={<Guide />} />
           <Route path="/enterprise" element={<Enterprise />} />
           <Route path="/support" element={<Support />} />

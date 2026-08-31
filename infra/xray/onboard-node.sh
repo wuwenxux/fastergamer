@@ -64,6 +64,9 @@ sshd -t && systemctl restart ssh
 # fail2ban + 自动安全更新
 DEBIAN_FRONTEND=noninteractive apt-get install -y fail2ban unattended-upgrades >/dev/null 2>&1
 systemctl enable --now fail2ban unattended-upgrades >/dev/null 2>&1
+# BBR + fq：跨境丢包链路下延迟/吞吐显著优于默认 cubic（见 enable-bbr.sh）
+printf 'net.core.default_qdisc=fq\nnet.ipv4.tcp_congestion_control=bbr\n' > /etc/sysctl.d/99-bbr.conf
+sysctl --system >/dev/null 2>&1
 "
 $SSH_WAFER "$SUDO whoami" | grep -q root
 echo "✓ wafer 密钥登录 + sudo 就绪"

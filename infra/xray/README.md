@@ -25,10 +25,9 @@ bash scripts/test-node.sh [过滤词]
 ```
 
 `test-client.sh` 走完整用户链路：拉订阅 → 解析节点 → 起临时 Xray socks
-客户端（首次自动下载到 `~/.cache/xray-client-test`）→ 经节点真实代理访问
-Google / YouTube / ChatGPT / Claude，逐项打勾。
-说明：ChatGPT 用 `/cdn-cgi/trace` 判定（curl 裸 UA 打首页会被 WAF 误拦）；
-Claude 区域封锁会 302 到 `app-unavailable-in-region`，按 Location 判定。
+客户端（首次自动下载到 `~/.cache/xray-client-test`）→ 经 VLESS/WS/TLS 隧道访问
+**节点自身的 `/ping`**（Xray 出站回环本机 Caddy，不依赖外部网站），
+每节点预热 1 次测 3 次，报告 min/avg/max 延迟。
 
 以下为手动分步流程（排障或定制时参考）。
 
@@ -123,6 +122,21 @@ agent 已是事件驱动（无心跳），节点在线状态完全由中心服�
 `scripts/probe-nodes.sh` 负责（cron 每 5 分钟）：从国内 curl 各节点
 `https://<host>/ping`，连续 2 次失败邮件告警（IP 被墙、证书失效、Caddy 故障
 都会触发），恢复后自动通知。告警走 `POST /api/admin/alert`。
+
+## 订阅专用入口（sub.fastergamer.click）
+
+主域挂 CF 橙云，国内访客被分到远端 PoP（实测 AMS，600ms+）。订阅改走
+`sub.fastergamer.click`：灰云 A 记录直连 hk02，由节点本地 agent 渲染 `/api/sub`
+（去中心化链路，不依赖中心可达），国内访问约 50ms。
+
+新增/迁移节点承载订阅入口时：
+
+```bash
+# 中心：加/改灰云 A 记录
+node scripts/cf-dns.mjs add sub <节点IP> 订阅入口
+# 节点：追加订阅专用站点块（只暴露 /api/sub 与 /ping，幂等可重跑）
+sudo bash infra/xray/add-sub-entry.sh
+```
 
 ## 中国大陆访问优化（可选项）
 

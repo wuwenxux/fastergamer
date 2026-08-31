@@ -63,8 +63,9 @@ async function deleteToken(id) {
   }
 }
 
+// /api/nodes/status 公开接口已下线，改用 admin 接口取节点流量
 async function fetchNodeStatus() {
-  return request("/api/nodes/status");
+  return request("/api/admin/nodes", { headers: { "x-admin-key": adminKey } });
 }
 
 async function fetchSub(uuid) {

@@ -1,5 +1,6 @@
 /**
  * Clash 订阅配置生成：每个 active 节点生成一个代理。
+ * 节点显示名统一为「区域代码 中文地区名 全局序号」，如 "MY 马来西亚 01"（序号按节点列表顺序全局递增）。
  * 分组结构（按区域）：
  *   🚀 节点选择（select）→ ♻️ 自动选择（全部节点 url-test）
  *                        → 🇭🇰 香港 / 🇯🇵 日本 …（各区域 url-test）
@@ -39,6 +40,10 @@ export interface BuildConfigInput {
   regions?: ClashRegion[];
   /** 订阅请求的 User-Agent，用于判断是否支持 GEOSITE 规则 */
   userAgent?: string;
+  /** 节点域名 → IP（订阅下发前由 Worker 通过 DoH 解析）。
+   *  命中时 server 直接写 IP：Cloudflare 权威 DNS 在国内解析不稳，
+   *  客户端直连 IP 可完全跳过节点域名解析；未命中回退域名 */
+  nodeIps?: Record<string, string>;
 }
 
 /** 支持 GEOSITE 规则的内核：mihomo 系（Verge/Meta/FlClash）与 Stash；
@@ -50,7 +55,7 @@ const AUTO_GROUP = "♻️ 自动选择";
 const MAIN_GROUP = "🚀 节点选择";
 const TEST_URL = "http://www.gstatic.com/generate_204";
 
-export const buildClashConfig = ({ uuid, nodes, regions, userAgent }: BuildConfigInput): string => {
+export const buildClashConfig = ({ uuid, nodes, regions, userAgent, nodeIps }: BuildConfigInput): string => {
   const lines: string[] = [];
   lines.push("mixed-port: 7890", "allow-lan: false", "mode: rule", "log-level: info", "");
 
@@ -66,9 +71,12 @@ export const buildClashConfig = ({ uuid, nodes, regions, userAgent }: BuildConfi
     "  ipv6: false",
     "  enhanced-mode: fake-ip",
     "  fake-ip-range: 198.18.0.1/16",
+    // 目标域名解析：阿里 DoH 放最前（防 UDP 53 被劫持/慢），纯 IP 递归做 bootstrap 兜底
     "  nameserver:",
+    "    - https://dns.alidns.com/dns-query",
     "    - 223.5.5.5",
     "    - 119.29.29.29",
+    // 节点域名解析保持单路：节点 server 已由 nodeIps 直发 IP，这里仅兜底
     "  proxy-server-nameserver:",
     "    - 223.5.5.5",
     "  nameserver-policy:",
@@ -76,22 +84,32 @@ export const buildClashConfig = ({ uuid, nodes, regions, userAgent }: BuildConfi
     ...(geosite ? [`    ${gfwPolicyKey}: https://1.1.1.1/dns-query`] : []),
     ""
   );
+  // 区域元数据提前解析：节点显示名要用它拼中文地区名
+  const regionMeta = regions ?? parseRegions(undefined);
 
   const proxies: {
     name: string;
     region: string;
+    /** 客户端实际连接的地址：nodeIps 命中时是 IP，否则是域名 */
     server: string;
+    /** 节点域名：TLS servername 与 WS Host 始终用它，不受 server 是否为 IP 影响 */
+    host: string;
     port: number;
     tls: boolean;
     wsPath: string;
   }[] = [];
 
+  // 显示名统一为「区域代码 中文地区名 全局序号」，如 "MY 马来西亚 01"、"HK 香港 02"，
+  // 序号按节点列表顺序全局递增（跨区域不重排），与后台维护的节点顺序一致
   for (const node of nodes ?? []) {
     if (!node.active) continue;
+    const meta = regionMeta.find((r) => r.code === node.region);
+    const seq = String(proxies.length + 1).padStart(2, "0");
     proxies.push({
-      name: `${node.region} ${node.name}`,
+      name: `${node.region} ${meta?.name ?? node.name} ${seq}`,
       region: node.region,
-      server: node.host,
+      server: nodeIps?.[node.host] ?? node.host,
+      host: node.host,
       port: node.port,
       tls: node.tls,
       wsPath: node.ws_path,
@@ -108,14 +126,18 @@ export const buildClashConfig = ({ uuid, nodes, regions, userAgent }: BuildConfi
       `    uuid: ${uuid}`,
       "    network: ws",
       `    tls: ${p.tls}`,
-      ...(p.tls ? [`    servername: ${p.server}`] : []),
+      // UDP 中继（游戏/语音/QUIC 走代理依赖它）；VLESS 原生支持，UDP 包走 WS 隧道
+      "    udp: true",
+      // server 是 IP 时 TLS SNI 仍用域名，证书链校验不受影响
+      ...(p.tls ? [`    servername: ${p.host}`] : []),
       "    ws-opts:",
-      `      path: "${p.wsPath}"`
+      `      path: "${p.wsPath}"`,
+      // server 是 IP 时 WS Host 头必须显式带域名，否则 Caddy 按 IP 匹配不到站点
+      ...(p.server !== p.host ? ["      headers:", `        Host: ${p.host}`] : [])
     );
   }
 
   // 按区域归类：区域顺序跟随 CLASH_REGIONS，未登记的区域排在最后
-  const regionMeta = regions ?? parseRegions(undefined);
   const byRegion = new Map<string, string[]>(); // region code -> proxy names
   for (const p of proxies) {
     const list = byRegion.get(p.region) ?? [];
