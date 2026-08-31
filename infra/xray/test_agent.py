@@ -11,67 +11,6 @@ import agent
 UUID_A = "12345678-1234-1234-1234-123456789abc"
 UUID_B = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
 
-NODES = [
-    {"region": "HK", "name": "节点1", "host": "hk1.example.com", "port": 443,
-     "tls": True, "ws_path": "/vless-ws"},
-    {"region": "HK", "name": "节点2", "host": "hk2.example.com", "port": 443,
-     "tls": True, "ws_path": "/vless-ws"},
-    {"region": "JP", "name": "节点1", "host": "jp1.example.com", "port": 8443,
-     "tls": False, "ws_path": "/vless-ws"},
-]
-
-
-class BuildClashYamlTest(unittest.TestCase):
-    def test_region_groups_and_proxy_count(self):
-        out = agent.build_clash_yaml(UUID_A, NODES, "clash-verge/v2.4.0")
-        lines = out.splitlines()
-        # proxies 数量对：每个节点一条 vless
-        self.assertEqual(sum(1 for l in lines if l.strip() == "type: vless"), len(NODES))
-        # 区域分组结构：主分组 + 自动选择 + 每个区域一个 url-test 分组
-        self.assertIn(f'  - name: "{agent.MAIN_GROUP}"', lines)
-        self.assertIn(f'  - name: "{agent.AUTO_GROUP}"', lines)
-        self.assertIn('  - name: "🇭🇰 香港"', lines)
-        self.assertIn('  - name: "🇯🇵 日本"', lines)
-        # 主分组引用区域分组与全部节点
-        self.assertIn('      - "🇭🇰 香港"', lines)
-        self.assertIn('      - "HK 节点1"', lines)
-        # 区域分组只含本区域节点：🇯🇵 日本分组后紧跟的 proxies 块只有 JP 节点
-        jp_idx = lines.index('  - name: "🇯🇵 日本"')
-        jp_block = lines[jp_idx:jp_idx + 6]
-        self.assertIn('      - "JP 节点1"', jp_block)
-        self.assertNotIn('      - "HK 节点1"', jp_block)
-
-    def test_old_ua_has_no_geosite(self):
-        out = agent.build_clash_yaml(UUID_A, NODES, "ClashforWindows/0.20.39")
-        self.assertNotIn("GEOSITE", out)
-        self.assertNotIn("geosite:", out)
-        self.assertIn('"+.cn": 223.5.5.5', out)
-
-    def test_new_ua_has_geosite(self):
-        out = agent.build_clash_yaml(UUID_A, NODES, "clash-verge/v2.4.0")
-        self.assertIn("  - GEOSITE,CN,DIRECT", out)
-        self.assertIn('"geosite:cn": 223.5.5.5', out)
-        self.assertIn('"geosite:geolocation-!cn": https://1.1.1.1/dns-query', out)
-
-    def test_fastergamer_domains_direct(self):
-        out = agent.build_clash_yaml(UUID_A, NODES)
-        self.assertIn("  - DOMAIN-SUFFIX,fastergamer.cn,DIRECT", out)
-        self.assertIn("  - DOMAIN-SUFFIX,fastergamer.click,DIRECT", out)
-        # 关键行齐全（不能 import yaml，断言关键行存在即可）
-        self.assertIn("rules:", out)
-        self.assertIn(f"  - MATCH,{agent.MAIN_GROUP}", out)
-
-
-class SupportsGeositeTest(unittest.TestCase):
-    def test_supported(self):
-        for ua in ("mihomo/v1.18.0", "clash-verge/v2.4.0", "Stash/2.5.0",
-                   "FlClash/0.8.0", "ClashMetaForAndroid/2.11.0"):
-            self.assertTrue(agent.supports_geosite(ua), ua)
-
-    def test_unsupported(self):
-        for ua in ("ClashforWindows/0.20.39", "Clash/1.0", "", None):
-            self.assertFalse(agent.supports_geosite(ua), ua)
-
 
 class LedgerEntryTest(unittest.TestCase):
     def test_missing_keys_filled(self):

@@ -123,21 +123,6 @@ agent 已是事件驱动（无心跳），节点在线状态完全由中心服�
 `https://<host>/ping`，连续 2 次失败邮件告警（IP 被墙、证书失效、Caddy 故障
 都会触发），恢复后自动通知。告警走 `POST /api/admin/alert`。
 
-## 订阅专用入口（sub.fastergamer.click）
-
-主域挂 CF 橙云，国内访客被分到远端 PoP（实测 AMS，600ms+）。订阅改走
-`sub.fastergamer.click`：灰云 A 记录直连 hk02，由节点本地 agent 渲染 `/api/sub`
-（去中心化链路，不依赖中心可达），国内访问约 50ms。
-
-新增/迁移节点承载订阅入口时：
-
-```bash
-# 中心：加/改灰云 A 记录
-node scripts/cf-dns.mjs add sub <节点IP> 订阅入口
-# 节点：追加订阅专用站点块（只暴露 /api/sub 与 /ping，幂等可重跑）
-sudo bash infra/xray/add-sub-entry.sh
-```
-
 ## 中国大陆访问优化（可选项）
 
 1. **优选线路 VPS**：直连模式下延迟取决于用户到 VPS 的线路，选 CN2/iplc 等优化线路

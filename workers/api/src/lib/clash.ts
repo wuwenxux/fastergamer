@@ -2,8 +2,9 @@
  * Clash 订阅配置生成：每个 active 节点生成一个代理。
  * 节点显示名统一为「区域代码 中文地区名 全局序号」，如 "MY 马来西亚 01"（序号按节点列表顺序全局递增）。
  * 分组结构（按区域）：
- *   🚀 节点选择（select）→ ♻️ 自动选择（全部节点 url-test）
- *                        → 🇭🇰 香港 / 🇯🇵 日本 …（各区域 url-test）
+ *   🚀 节点选择（select）→ ♻️ 自动选择（全部节点 url-test，gstatic 端到端）
+ *                        → 🇭🇰 香港 / 🇯🇵 日本 …（各区域 url-test，测本区域节点 /generate_204，
+ *                          显示值 ≈ 客户端→节点延迟）
  *                        → 各节点（手动指定）
  * 规则：局域网与国内流量（GEOIP CN）直连，其余走代理。
  */
@@ -160,16 +161,23 @@ export const buildClashConfig = ({ uuid, nodes, regions, userAgent, nodeIps }: B
   for (const code of orderedCodes) lines.push(`      - "${regionGroupName(code)}"`);
   for (const p of proxies) lines.push(`      - "${p.name}"`);
 
-  // 全局自动选择：url-test 覆盖全部节点，单节点故障无需手动干预
+  // 全局自动选择：url-test 覆盖全部节点，单节点故障无需手动干预。
+  // 测速目标保持 gstatic 端到端——它决定实际用哪个节点，必须反映真实上网链路
   lines.push(`  - name: "${AUTO_GROUP}"`, "    type: url-test", "    proxies:");
   for (const p of proxies) lines.push(`      - "${p.name}"`);
   lines.push(`    url: ${TEST_URL}`, "    interval: 300", "    tolerance: 50");
 
-  // 每个区域一个 url-test 分组：锁定区域时仍享受区域内故障切换
+  // 每个区域一个 url-test 分组：锁定区域时仍享受区域内故障切换。
+  // 测速目标用本区域首节点的 /generate_204：显示值 ≈ 客户端→节点延迟（区域内核间 <1ms），
+  // 不含节点→外网段；节点故障时该节点本身测速失败会被自动剔除，不影响选择正确性。
+  const regionTestUrl = (code: string) => {
+    const host = proxies.find((p) => p.region === code)?.host;
+    return host ? `https://${host}/generate_204` : TEST_URL;
+  };
   for (const code of orderedCodes) {
     lines.push(`  - name: "${regionGroupName(code)}"`, "    type: url-test", "    proxies:");
     for (const name of byRegion.get(code)!) lines.push(`      - "${name}"`);
-    lines.push(`    url: ${TEST_URL}`, "    interval: 300", "    tolerance: 50");
+    lines.push(`    url: ${regionTestUrl(code)}`, "    interval: 300", "    tolerance: 50");
   }
 
   lines.push("", "rules:");

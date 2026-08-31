@@ -131,8 +131,8 @@ export const api = {
       headers: sessionHeaders(),
     }),
 
-  /** Clash 订阅链接（需 token 处于 active）；走 sub.fastergamer.click（灰云直连 hk02，订阅由节点本地渲染） */
-  subUrl: (uuid: string) => `https://sub.fastergamer.click/api/sub?uuid=${encodeURIComponent(uuid)}`,
+  /** Clash 订阅链接（需 token 处于 active）；走主域 fastergamer.click，由 CF Worker 渲染 */
+  subUrl: (uuid: string) => `https://fastergamer.click/api/sub?uuid=${encodeURIComponent(uuid)}`,
 
   /** 凭联系方式找回 token（返回概要列表，不含 uuid） */
   recoverTokens: (contact: string) =>
@@ -205,8 +205,8 @@ export const api = {
       if (!res.ok) throw new Error(`请求失败 (${res.status})`);
       return (text.match(/^  - name:/gm) ?? []).length;
     };
-    // 用户实际使用的订阅链接是 sub.fastergamer.click，先验证它；再试本站
-    const mainBase = "https://sub.fastergamer.click";
+    // 用户实际使用的订阅链接在主域 fastergamer.click（CF Worker），先验证它；再试本站
+    const mainBase = "https://fastergamer.click";
     const bases = [mainBase];
     const origin = absoluteBase();
     if (origin && origin !== mainBase) bases.push(origin);

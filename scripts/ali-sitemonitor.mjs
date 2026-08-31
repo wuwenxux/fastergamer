@@ -22,7 +22,7 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const ENDPOINT = "https://metrics.cn-beijing.aliyuncs.com";
 const VERSION = "2019-01-01";
 
-// 当前节点表（与 KV 注册表一致；host 即探测目标）
+// 当前节点表（legacy：节点域名挂 CF，国内解析慢；仅 probe nodes 怀旧模式用）
 const NODES = [
   { name: "MY 马来西亚 01", host: "my01.fastergamer.click" },
   { name: "HK 香港 02", host: "hk01.fastergamer.click" },
@@ -31,6 +31,10 @@ const NODES = [
   { name: "HK 香港 05", host: "hk02.fastergamer.click" },
   { name: "HK 香港 06", host: "hk03.fastergamer.click" },
 ];
+
+// 默认探测目标：主站 /health（用户取订阅的入口域名，CF Worker）。
+// 客户端连接节点已 IP 直发无需解析，拨测验证的就是入口域名的国内可达性。
+const SITE_ENTRY = { name: "主站健康检查（CF Worker）", host: "fastergamer.click", path: "/health" };
 
 const env = Object.fromEntries(
   fs.readFileSync(path.join(ROOT, "workers/api/.dev.vars"), "utf8")
@@ -94,15 +98,22 @@ const ISP_POINTS = [
   { city: "777", isp: "5", type: "LASTMILE", label: "广州移动" },
 ];
 
-async function probeIsp() {
-  const total = NODES.length * ISP_POINTS.length;
-  console.log(`将创建 ${NODES.length} 任务 × ${ISP_POINTS.length} 运营商点（LASTMILE 家庭宽带，单价高于 IDC）= ${total} 次探测`);
+async function probeIsp(targetUrl) {
+  // 目标选择：默认 sub 入口（用户真实链路）；nodes = legacy 六节点；URL = 任意单目标
+  const targets =
+    targetUrl === "nodes"
+      ? NODES.map((n) => ({ ...n, url: `https://${n.host}/ping` }))
+      : targetUrl
+      ? [{ name: targetUrl, host: new URL(targetUrl).host, url: targetUrl }]
+      : [{ ...SITE_ENTRY, url: `https://${SITE_ENTRY.host}${SITE_ENTRY.path}` }];
+  const total = targets.length * ISP_POINTS.length;
+  console.log(`将创建 ${targets.length} 任务 × ${ISP_POINTS.length} 运营商点（LASTMILE 家庭宽带，单价高于 IDC）= ${total} 次探测`);
   const ispCities = ISP_POINTS.map(({ city, isp, type }) => ({ city, isp, type }));
   const tasks = [];
-  for (const n of NODES) {
+  for (const n of targets) {
     const r = await call("CreateInstantSiteMonitor", {
       TaskName: `fg-isp-${n.host.split(".")[0]}`,
-      Address: `https://${n.host}/ping`,
+      Address: n.url,
       TaskType: "HTTP",
       IspCities: JSON.stringify(ispCities),
       // 注意：不要传 OptionsJson——实测带 response_content/match_rule 的任务会静默不执行
@@ -144,14 +155,15 @@ async function probeIsp() {
   }
 }
 
-async function probe(points = 3) {
-  console.log(`将创建 ${NODES.length} 任务 × ${points} 探测点 = ${NODES.length * points} 次探测，预计 ¥${(NODES.length * points * 0.001).toFixed(3)}`);
-  // 1. 为每个节点建一次性 HTTP 拨测任务：GET /ping，响应含 pong 判成功
+async function probe(points = 3, legacyNodes = false) {
+  const targets = legacyNodes ? NODES : [SITE_ENTRY];
+  console.log(`将创建 ${targets.length} 任务 × ${points} 探测点 = ${targets.length * points} 次探测，预计 ¥${(targets.length * points * 0.001).toFixed(3)}`);
+  // 1. 建一次性 HTTP 拨测任务：GET /ping，响应含 pong 判成功
   const tasks = [];
-  for (const n of NODES) {
+  for (const n of targets) {
     const r = await call("CreateInstantSiteMonitor", {
       TaskName: `fg-${n.host.split(".")[0]}`,
-      Address: `https://${n.host}/ping`,
+      Address: `https://${n.host}${n.path ?? "/ping"}`,
       TaskType: "HTTP",
       RandomIspCity: String(points),
       // 注意：不要传 OptionsJson——实测带 response_content/match_rule 的任务会静默不执行
@@ -209,11 +221,12 @@ async function result(taskId) {
   if (!items.length) console.log("（暂无数据，探测点可能仍在执行，稍后重试）");
 }
 
-const [cmd, arg] = process.argv.slice(2);
-if (cmd === "probe") await probe(parseInt(arg, 10) || 3);
-else if (cmd === "probe-isp") await probeIsp();
+const [cmd, arg, arg2] = process.argv.slice(2);
+// probe / probe-isp 默认测 sub 入口（用户真实链路）；加 nodes 参数怀旧测六节点 CF 域名
+if (cmd === "probe") await probe(parseInt(arg2 ?? arg, 10) || 3, arg === "nodes" || arg2 === "nodes");
+else if (cmd === "probe-isp") await probeIsp(arg);
 else if (cmd === "result" && arg) await result(arg);
 else {
-  console.error("用法: node scripts/ali-sitemonitor.mjs probe [点数] | probe-isp | result <TaskId>");
+  console.error("用法: node scripts/ali-sitemonitor.mjs probe [点数|nodes] | probe-isp [URL|nodes] | result <TaskId>");
   process.exit(1);
 }

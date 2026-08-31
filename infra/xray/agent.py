@@ -15,16 +15,14 @@ vpn-agent: 多节点 Xray 配置同步 + 流量结算上报 Agent
 用户(uuid)增删通过 Xray HandlerService 在线生效（xray api adu/rmu），
 只有配置结构变化时才整体重启 Xray，避免用户变动打断全节点连接。
 
-另在本机 127.0.0.1:8788 提供订阅服务（GET /api/sub?uuid=）：uuid 在最近一次
-同步的授权名单内就直接用缓存的节点列表渲染 Clash YAML 返回，不依赖中心可达；
-中心宕机时已授权用户的订阅更新与使用不受影响（激活/计量仍需中心）。
+另在本机 127.0.0.1:8788 提供控制服务：/api/agent/refresh 接收中心的配置刷新
+推送，/api/metrics 暴露本节点监控指标（均需 x-node-key 鉴权）。
 """
 import copy
 import hmac
 import json
 import os
 import re
-import socket
 import subprocess
 import sys
 import tempfile
@@ -32,7 +30,7 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlparse, parse_qs
+from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 from urllib.error import URLError
 
@@ -42,7 +40,7 @@ DEFAULT_XRAY_CONFIG = "/usr/local/etc/xray/config.json"
 DEFAULT_XRAY_BIN = "/usr/local/bin/xray"
 DEFAULT_XRAY_API = "127.0.0.1:10085"
 DEFAULT_ACCESS_LOG = "/var/log/xray/access.log"
-DEFAULT_SUB_LISTEN = "127.0.0.1:8788"
+DEFAULT_AGENT_LISTEN = "127.0.0.1:8788"
 DEFAULT_LEDGER_FILE = "/var/lib/vpn-agent/ledger.json"
 INBOUND_TAG = "vless-in"
 INTERVAL = 30               # 本地轮询周期（秒）：只读本机 Xray，不联网
@@ -53,7 +51,7 @@ TRAFFIC_GRACE_S = 48 * 3600 # 与中心 TRAFFIC_GRACE_MS 一致：耗尽后的�
 FORCE_SETTLE_AGE_S = 24 * 3600  # 长期在线用户兜底：距上次上报超 24h 强制结算一次
 FORCE_SETTLE_IP_CONNS = 50      # 或 ip_conns 条目数超过该值时强制结算（防账本无限增长）
 
-# 中心推送的配置刷新请求标志（SubHandler 写、主循环读）
+# 中心推送的配置刷新请求标志（AgentHandler 写、主循环读）
 _refresh_requested = False
 _refresh_lock = threading.Lock()
 
@@ -141,12 +139,9 @@ def fetch_config(api_url: str, node_key: str):
         return json.loads(resp.read().decode("utf-8"))
 
 
-# ---------- 本地订阅服务（去中心化：中心不可达时节点仍可应答 /api/sub） ----------
+# ---------- 本地控制服务（/api/agent/refresh 推送接收 + /api/metrics 指标） ----------
 
-# 最近一次成功同步的授权名单与节点列表；整体替换赋值，读写线程安全（CPython 引用赋值原子）
-sub_state = {"uuids": set(), "nodes": []}
-
-# 本节点监控指标（/api/metrics 应答内容），同样整体替换
+# 本节点监控指标（/api/metrics 应答内容）；整体替换赋值，读写线程安全（CPython 引用赋值原子）
 metrics_state = {
     "ts": 0,
     "node_total_bytes": 0,
@@ -162,172 +157,8 @@ metrics_state = {
 NODE_KEY = ""
 
 
-REGION_META = [
-    ("HK", "🇭🇰", "香港"),
-    ("JP", "🇯🇵", "日本"),
-    ("MY", "🇲🇾", "马来西亚"),
-    ("SG", "🇸🇬", "新加坡"),
-    ("US", "🇺🇸", "美国"),
-]
-AUTO_GROUP = "♻️ 自动选择"
-MAIN_GROUP = "🚀 节点选择"
-TEST_URL = "http://www.gstatic.com/generate_204"
-
-
-def supports_geosite(ua: str) -> bool:
-    """mihomo 系（Verge/Meta/FlClash）与 Stash 支持 GEOSITE；Clash Premium 不支持。"""
-    import re
-    return bool(re.search(r"mihomo|verge|meta|stash|flclash", ua or "", re.I))
-
-
-_IPV4_RE = re.compile(r"^\d{1,3}(\.\d{1,3}){3}$")
-# 节点域名 → IP 缓存（host -> (ip, 过期时间)）：订阅渲染每次请求都会用，避免重复解析
-_IP_CACHE: dict[str, tuple[str, float]] = {}
-
-
-def resolve_host_ip(host: str) -> str | None:
-    """节点本地解析节点域名 → IP（境外节点查 CF 权威很快），10 分钟缓存。
-    与 clash.ts 的 nodeIps 同目的：客户端拿到 IP 后完全跳过节点域名解析。
-    解析失败回退过期缓存，再无则返回 None（调用方用域名兜底）。"""
-    if _IPV4_RE.match(host):
-        return None  # 本来就是 IP，无需替换
-    now = time.time()
-    hit = _IP_CACHE.get(host)
-    if hit and hit[1] > now:
-        return hit[0]
-    try:
-        ip = socket.getaddrinfo(host, 443, socket.AF_INET)[0][4][0]
-    except Exception:
-        return hit[0] if hit else None
-    _IP_CACHE[host] = (ip, now + 600)
-    return ip
-
-
-def build_clash_yaml(uuid: str, nodes: list, user_agent: str = "") -> str:
-    """与中心 workers/api/src/lib/clash.ts 的输出格式保持一致（按区域分组）。"""
-    geosite = supports_geosite(user_agent)
-    lines = ["mixed-port: 7890", "allow-lan: false", "mode: rule", "log-level: info", ""]
-    # DNS 分流：国内域名走阿里/腾讯 DNS，境外域名走代理解析（与 clash.ts 保持一致）
-    # 老内核 nameserver-policy 的 key 用 +.cn 域名后缀（不认识 geosite: 前缀）
-    lines += [
-        "dns:",
-        "  enable: true",
-        "  ipv6: false",
-        "  enhanced-mode: fake-ip",
-        "  fake-ip-range: 198.18.0.1/16",
-        # 阿里 DoH 放最前（防 UDP 53 被劫持/慢），纯 IP 递归做 bootstrap 兜底
-        "  nameserver:",
-        "    - https://dns.alidns.com/dns-query",
-        "    - 223.5.5.5",
-        "    - 119.29.29.29",
-        # 节点域名解析保持单路：节点 server 已直发 IP，这里仅兜底
-        "  proxy-server-nameserver:",
-        "    - 223.5.5.5",
-        "  nameserver-policy:",
-        f'    {"\"geosite:cn\"" if geosite else "\"+.cn\""}: 223.5.5.5',
-        *(['    "geosite:geolocation-!cn": https://1.1.1.1/dns-query'] if geosite else []),
-        "",
-    ]
-    # 区域元数据提前：节点显示名要用它拼中文地区名（后面区域分组也用它）
-    meta_by_code = {code: (flag, name) for code, flag, name in REGION_META}
-    proxies = []
-    for idx, n in enumerate(nodes):
-        ip = resolve_host_ip(n["host"])
-        proxies.append(
-            {
-                # 命名与 clash.ts 一致：区域代码 + 中文地区名 + 全局序号（如 "MY 马来西亚 01"）
-                "name": f"{n['region']} {meta_by_code.get(n['region'], (None, n['name']))[1]} {idx + 1:02d}",
-                "region": n["region"],
-                # IP 直发：客户端完全跳过节点域名解析（国内递归查 CF 权威不稳）；
-                # 解析失败回退域名
-                "server": ip or n["host"],
-                "host": n["host"],
-                "port": n["port"],
-                "tls": n["tls"],
-                "ws_path": n["ws_path"],
-            }
-        )
-    lines.append("proxies:")
-    for p in proxies:
-        lines.append(f'  - name: "{p["name"]}"')
-        lines.append("    type: vless")
-        lines.append(f"    server: {p['server']}")
-        lines.append(f"    port: {p['port']}")
-        lines.append(f"    uuid: {uuid}")
-        lines.append("    network: ws")
-        lines.append(f"    tls: {'true' if p['tls'] else 'false'}")
-        # UDP 中继（游戏/语音/QUIC 走代理依赖它），与 clash.ts 一致
-        lines.append("    udp: true")
-        if p["tls"]:
-            # server 是 IP 时 TLS SNI 仍用域名，证书校验不受影响
-            lines.append(f"    servername: {p['host']}")
-        lines.append("    ws-opts:")
-        lines.append(f'      path: "{p["ws_path"]}"')
-        if p["server"] != p["host"]:
-            # server 是 IP 时 WS Host 头必须显式带域名，否则 Caddy 按 IP 匹配不到站点
-            lines.append("      headers:")
-            lines.append(f"        Host: {p['host']}")
-
-    # 按区域归类：顺序跟随 REGION_META，未登记的区域排最后
-    def region_group_name(code: str) -> str:
-        meta = meta_by_code.get(code)
-        return f"{meta[0]} {meta[1]}" if meta else code
-
-    by_region: dict[str, list[str]] = {}
-    for p in proxies:
-        by_region.setdefault(p["region"], []).append(p["name"])
-    ordered_codes = [c for c, _, _ in REGION_META if c in by_region] + [
-        c for c in by_region if c not in meta_by_code
-    ]
-
-    lines.append("")
-    lines.append("proxy-groups:")
-    # 主分组：默认「自动选择」，可切区域（区域内自动测速）或手动指定单节点
-    lines.append(f'  - name: "{MAIN_GROUP}"')
-    lines.append("    type: select")
-    lines.append("    proxies:")
-    lines.append(f'      - "{AUTO_GROUP}"')
-    for code in ordered_codes:
-        lines.append(f'      - "{region_group_name(code)}"')
-    for p in proxies:
-        lines.append(f'      - "{p["name"]}"')
-    # 全局自动选择：url-test 覆盖全部节点
-    lines.append(f'  - name: "{AUTO_GROUP}"')
-    lines.append("    type: url-test")
-    lines.append("    proxies:")
-    for p in proxies:
-        lines.append(f'      - "{p["name"]}"')
-    lines.append(f"    url: {TEST_URL}")
-    lines.append("    interval: 300")
-    lines.append("    tolerance: 50")
-    # 每个区域一个 url-test 分组
-    for code in ordered_codes:
-        lines.append(f'  - name: "{region_group_name(code)}"')
-        lines.append("    type: url-test")
-        lines.append("    proxies:")
-        for name in by_region[code]:
-            lines.append(f'      - "{name}"')
-        lines.append(f"    url: {TEST_URL}")
-        lines.append("    interval: 300")
-        lines.append("    tolerance: 50")
-
-    lines.append("")
-    lines.append("rules:")
-    lines.append("  - DOMAIN-SUFFIX,fastergamer.cn,DIRECT")
-    lines.append("  - DOMAIN-SUFFIX,fastergamer.click,DIRECT")
-    lines.append("  - IP-CIDR,10.0.0.0/8,DIRECT,no-resolve")
-    lines.append("  - IP-CIDR,172.16.0.0/12,DIRECT,no-resolve")
-    lines.append("  - IP-CIDR,192.168.0.0/16,DIRECT,no-resolve")
-    lines.append("  - IP-CIDR,127.0.0.0/8,DIRECT,no-resolve")
-    if geosite:
-        lines.append("  - GEOSITE,CN,DIRECT")
-    lines.append("  - GEOIP,CN,DIRECT")
-    lines.append(f"  - MATCH,{MAIN_GROUP}")
-    return "\n".join(lines)
-
-
-class SubHandler(BaseHTTPRequestHandler):
-    """GET /api/sub?uuid= 订阅；/api/metrics 与 /api/agent/refresh 需 x-node-key 鉴权。
+class AgentHandler(BaseHTTPRequestHandler):
+    """/api/metrics 与 /api/agent/refresh，均需 x-node-key 鉴权。
     无日志（Caddy 侧已有访问日志）。"""
 
     def log_message(self, *args):
@@ -373,34 +204,14 @@ class SubHandler(BaseHTTPRequestHandler):
                 200, json.dumps({"ok": True, "data": metrics_state}, ensure_ascii=False),
                 content_type="application/json; charset=utf-8", head_only=head_only,
             )
-        if parsed.path != "/api/sub":
-            return self._reply(404, "not found", head_only=head_only)
-        uuid = (parse_qs(parsed.query).get("uuid") or [""])[0]
-        state = sub_state
-        if not uuid or uuid not in state["uuids"]:
-            return self._reply(403, "token 不可用（未激活/已过期/未同步到本节点）", head_only=head_only)
-        if not state["nodes"]:
-            return self._reply(503, "节点列表尚未同步，请稍后重试", head_only=head_only)
-        # 节点本地无法提供 per-token 用量，故不下发 subscription-userinfo 头
-        self.send_response(200)
-        data = build_clash_yaml(
-            uuid, state["nodes"], self.headers.get("user-agent", "")
-        ).encode("utf-8")
-        self.send_header("content-type", "text/yaml; charset=utf-8")
-        self.send_header("content-disposition", "attachment; filename=fastergamer.yaml")
-        # 客户端启动时距上次更新超过该间隔（小时）才拉取：24 = 打开客户端时更新
-        self.send_header("profile-update-interval", "24")
-        self.send_header("content-length", str(len(data)))
-        self.end_headers()
-        if not head_only:
-            self.wfile.write(data)
+        return self._reply(404, "not found", head_only=head_only)
 
 
-def start_sub_server(listen: str):
+def start_agent_server(listen: str):
     host, port = listen.rsplit(":", 1)
-    server = ThreadingHTTPServer((host, int(port)), SubHandler)
+    server = ThreadingHTTPServer((host, int(port)), AgentHandler)
     threading.Thread(target=server.serve_forever, daemon=True).start()
-    print(f"[info] sub server listening on {listen}")
+    print(f"[info] agent server listening on {listen}")
 
 
 def build_xray_config(uuids, listen_addr="127.0.0.1", api_addr="127.0.0.1", api_port=10085,
@@ -830,7 +641,7 @@ def main():
         print("[error] NODE_KEY not set in /etc/vpn-agent/env", file=sys.stderr)
         sys.exit(1)
 
-    global NODE_KEY, sub_state, metrics_state
+    global NODE_KEY, metrics_state
     NODE_KEY = node_key
 
     print(
@@ -838,12 +649,13 @@ def main():
         f"listen={listen_addr}, xray_api={xray_api}"
     )
 
-    start_sub_server(env.get("SUB_LISTEN", DEFAULT_SUB_LISTEN))
+    start_agent_server(env.get("AGENT_LISTEN", env.get("SUB_LISTEN", DEFAULT_AGENT_LISTEN)))
 
     ledger = Ledger(env.get("LEDGER_FILE", DEFAULT_LEDGER_FILE))
     usage_map: dict[str, dict] = {}  # 快照下发的用量基数：uuid -> {used, limit, exhausted_at}
     quota_settled: set[str] = set()  # 已因触线结算过的 uuid（用量回落前不重复触发）
     allowed_list: list = []
+    nodes_cached = 0  # 最近一次同步快照里的节点数（仅用于 /api/metrics 展示）
     ever_synced = False  # 是否已完成过一次成功的配置拉取（未完成前 allowed 兜底读磁盘配置）
 
     cycle = 0
@@ -866,9 +678,7 @@ def main():
                         ever_synced = True
                         allowed_list = sanitize_uuids(resp["data"]["uuids"])
                         usage_map = resp["data"].get("usage", {})
-                        # 更新本地订阅服务状态（整体替换保证原子性；拉取失败时保留上次名单，
-                        # 中心宕机期间已授权用户的订阅照常可用）
-                        sub_state = {"uuids": set(allowed_list), "nodes": resp["data"].get("nodes", [])}
+                        nodes_cached = len(resp["data"].get("nodes", []))
                         new_config = build_xray_config(allowed_list, listen_addr, access_log=access_log)
                         # 同步用户自助封禁的 IP 到防火墙（与 Xray 配置变更无关）
                         sync_blocked_ips(resp["data"].get("blocked_ips", []))
@@ -946,7 +756,7 @@ def main():
             new_conns = tracker.collect()
             # 只统计白名单内的 uuid：rmu 后 Xray 会残留旧计数器，不过滤的话
             # 中心会对过期 token 做无效更新（last_active_at 被反复刷新）
-            allowed = sub_state["uuids"]
+            allowed = set(allowed_list)
             if not ever_synced:
                 # agent 重启后尚未完成过一次成功拉取：allowed 兜底用磁盘上 xray 配置
                 # 的 uuid 集合，避免首次 fetch 失败时 allowed 为空过滤掉所有计数器
@@ -1066,7 +876,7 @@ def main():
                 "node_total_bytes": node_total_bytes,
                 "online_count": online_count,
                 "whitelist_size": len(allowed),
-                "nodes_cached": len(sub_state["nodes"]),
+                "nodes_cached": nodes_cached,
                 "last_sync_ok": True,
                 "last_sync_at": int(now),
                 "users": {

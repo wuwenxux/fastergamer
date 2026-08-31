@@ -65,7 +65,7 @@ export const NODE_STAT_WRITE_MIN_INTERVAL_MS = 30 * 60_000;
  * GET /api/agent/config —— 节点 Agent 拉取本节点配置
  * 认证方式：header x-node-key
  * 返回：{ node: {...}, nodes: [...全部可用节点], uuids: [...active token uuid] }
- * nodes 供节点本地渲染订阅（中心不可达时节点仍能独立应答 /api/sub）
+ * nodes 仅用于节点侧 /api/metrics 的 nodes_cached 指标；订阅统一由中心 /api/sub 渲染
  */
 agentRoutes.get("/config", async (c) => {
   const key = c.req.header("x-node-key");

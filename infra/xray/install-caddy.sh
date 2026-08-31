@@ -32,9 +32,9 @@ ${DOMAIN} {
         }
     }
 
-    # 本地应答（去中心化）：订阅由 agent 按本地缓存的授权快照渲染，中心不可达也照常；
-    # /api/metrics 暴露本节点监控指标（需 x-node-key 鉴权）
-    @localapi path /api/sub* /api/metrics* /api/agent/refresh*
+    # 本地控制接口：/api/metrics 暴露本节点监控指标，/api/agent/refresh 接收中心推送
+    # （均需 x-node-key 鉴权）；/api/sub 不在此列，统一走下面 /api/* 反代到中心
+    @localapi path /api/metrics* /api/agent/refresh*
     handle @localapi {
         reverse_proxy 127.0.0.1:8788
     }
