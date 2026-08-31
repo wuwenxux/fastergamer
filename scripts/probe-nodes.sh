@@ -3,7 +3,7 @@ set -uo pipefail
 
 # 从国内视角（本机在阿里云）探测所有节点的用户链路可达性。
 # agent 已是事件驱动（断联/超量才上报），本脚本是节点在线状态的唯一周期数据源：
-# 探测结果通过 /api/admin/nodes/probe-state 写回（状态翻转或 30 分钟刷新才写，KV 写极少），
+# 探测结果通过 /api/admin/nodes/probe-state 写回（状态翻转或 60 分钟刷新才写，KV 写极少），
 # 状态页以此为准。探测覆盖 IP 被墙、证书过期、Caddy 挂掉等故障。
 # 连续 2 次失败 → 邮件告警（/api/admin/alert）；恢复后 → 恢复通知。
 # cron: */5 * * * * bash /home/wafer/cloudflare/scripts/probe-nodes.sh
@@ -55,13 +55,13 @@ for n in json.load(sys.stdin).get('data') or []:
   fi
 
   # 可达性写回中心（状态页数据源；agent 已事件驱动，不再提供周期心跳）。
-  # 写入时机：状态翻转，或状态没变但距上次写已超过 30 分钟（刷新时间戳，证明探测在跑）。
+  # 写入时机：状态翻转，或状态没变但距上次写已超过 60 分钟（刷新时间戳，证明探测在跑）。
   REPORTED=$(cat "$STATE.reported" 2>/dev/null || echo "|0")
   R_STATE="${REPORTED%%|*}"; R_AT="${REPORTED##*|}"; R_AT="${R_AT:-0}"
   NOW=$(date +%s)
   # 有效状态：成功=up；失败需连续 2 次（FAILS>=2）才算 down，单次抖动不改状态
   if [ "$OK" = 1 ]; then EFF=1; elif [ "$FAILS" -ge 2 ]; then EFF=0; else EFF="$R_STATE"; fi
-  if [ "$EFF" != "$R_STATE" ] || [ $((NOW - R_AT)) -gt 1800 ]; then
+  if [ "$EFF" != "$R_STATE" ] || [ $((NOW - R_AT)) -gt 3600 ]; then
     [ "$EFF" = 1 ] && ONLINE=true || ONLINE=false
     curl -s -o /dev/null --max-time 10 -X POST "$NODES_API/probe-state" \
       -H "x-admin-key: $ADMIN_KEY" -H "content-type: application/json" \

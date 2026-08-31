@@ -24,7 +24,7 @@ export const withinTrafficAllowance = (token: Token, now: number): boolean => {
   return !!token.traffic_exhausted_at && now - token.traffic_exhausted_at < TRAFFIC_GRACE_MS;
 };
 
-const AUTH_CACHE_TTL_MS = 300_000; // 5min：快照重建是 1 次写，≈288 写/天，免费版可承受
+const AUTH_CACHE_TTL_MS = 900_000; // 15min：快照重建是 1 次写，≈96 写/天；授权变更走 authpush 实时推送，TTL 只是兜底
 export const AUTH_SNAPSHOT_KEY = "authcache:snapshot";
 
 export interface AuthSnapshot {
@@ -51,7 +51,7 @@ export async function getAuthSnapshot(env: Env): Promise<AuthSnapshot> {
   if (cached && Date.now() - cached.ts < AUTH_CACHE_TTL_MS) return cached;
   try {
     const snap = await computeAuthSnapshot(env);
-    // 写快照也算一次 KV write；TTL 5min ≈ 288 写/天，免费版 1k/天 可承受
+    // 写快照也算一次 KV write；TTL 15min ≈ 96 写/天，免费版 1k/天 可承受
     await env.TOKENS.put(AUTH_SNAPSHOT_KEY, JSON.stringify(snap)).catch(() => {});
     return snap;
   } catch {

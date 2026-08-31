@@ -115,9 +115,9 @@ export const isNodeOnline = (
   node: Pick<Node, "probe_online" | "probe_at" | "last_seen_at">,
   now = Date.now()
 ): boolean => {
-  // 探测结果 45 分钟内有效（探测每 5 分钟一次，状态不变时每 30 分钟刷新一次时间戳）；
+  // 探测结果 90 分钟内有效（探测每 5 分钟一次，状态不变时每 60 分钟刷新一次时间戳）；
   // 更旧说明探测本身停了，回退到 last_seen 兜底
-  if (node.probe_at && now - node.probe_at < 45 * 60_000) return node.probe_online ?? false;
+  if (node.probe_at && now - node.probe_at < 90 * 60_000) return node.probe_online ?? false;
   return (node.last_seen_at ?? 0) > now - 40 * 60_000;
 };
 
