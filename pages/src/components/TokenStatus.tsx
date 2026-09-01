@@ -152,10 +152,10 @@ export default function TokenStatus({ token }: { token: Token }) {
     }
   };
 
-  // 免费重新生成订阅链接（每个 token 限一次）：旧 uuid 立即失效，页面切换到新链接
+  // 自助重新生成订阅链接（不限次数）：旧 uuid 立即失效，页面切换到新链接
   const onRotate = async () => {
     if (!window.confirm(
-      "确认重新生成订阅链接？\n旧链接将立即失效（全节点约 30 秒内生效），Clash 需要更新订阅或重新导入。每个 Token 仅可免费重新生成一次。"
+      "确认重新生成订阅链接？\n旧链接将立即失效（全节点约 30 秒内生效），Clash 需要更新订阅或重新导入。"
     )) return;
     setRotating(true);
     try {
@@ -320,7 +320,7 @@ export default function TokenStatus({ token }: { token: Token }) {
             current.multi_device_detected_at > now - 24 * 3_600_000 && (
             <p className="text-xs text-amber-400">
               ⚠️ 检测到该凭证在多个节点同时在线（{new Date(current.multi_device_detected_at).toLocaleString()}）。
-              如果是你自己多台设备同时使用可忽略；否则说明订阅链接可能已泄露，可点下方「重新生成订阅链接」免费更换（限 1 次），旧链接立即失效。
+              如果是你自己多台设备同时使用可忽略；否则说明订阅链接可能已泄露，可点下方「重新生成订阅链接」更换，旧链接立即失效。
             </p>
           )}
 
@@ -350,10 +350,10 @@ export default function TokenStatus({ token }: { token: Token }) {
 
           <button
             onClick={onRotate}
-            disabled={rotating || !!current.rotated_at}
+            disabled={rotating}
             className="w-full rounded-lg border border-amber-500/50 bg-amber-500/10 py-2 font-medium text-amber-400 hover:bg-amber-500/20 transition-colors disabled:opacity-60"
           >
-            {rotating ? "生成中…" : current.rotated_at ? "已用过免费重新生成" : "重新生成订阅链接（免费 1 次）"}
+            {rotating ? "生成中…" : "重新生成订阅链接"}
           </button>
 
           {verify?.valid ? (
