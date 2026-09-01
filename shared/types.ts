@@ -209,6 +209,17 @@ export interface Node {
   ws_path: string;
   /** 是否上线 */
   active: boolean;
+  /** Reality 直连入站（可选）：配置后订阅对支持的客户端（mihomo 系）额外下发
+   *  Reality 条目（名称加 ⚡ 后缀）；WS 条目始终保留作兜底 */
+  reality?: {
+    /** 公网监听端口，如 8444 */
+    port: number;
+    /** x25519 公钥（Xray 26 客户端字段名 password，旧称 publicKey；mihomo 用 public-key） */
+    password: string;
+    short_id: string;
+    /** 伪装目标 SNI，如 gateway.icloud.com（勿用 www.microsoft.com，证书链过大握手会失败） */
+    server_name: string;
+  };
   /** 最后一次心跳时间（unix 毫秒） */
   last_seen_at?: number;
   /** 节点累计总流量（bytes，部署以来） */

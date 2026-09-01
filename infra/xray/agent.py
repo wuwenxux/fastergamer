@@ -43,6 +43,9 @@ DEFAULT_ACCESS_LOG = "/var/log/xray/access.log"
 DEFAULT_AGENT_LISTEN = "127.0.0.1:8788"
 DEFAULT_LEDGER_FILE = "/var/lib/vpn-agent/ledger.json"
 INBOUND_TAG = "vless-in"
+# Reality 直连入站（可选）：节点 env 配了 REALITY_PRIVATE_KEY 才生成，
+# 与 WS 入站共用同一批 uuid，走 XTLS Vision（TCP+Reality，无域名/证书依赖）
+REALITY_INBOUND_TAG = "vless-reality-in"
 INTERVAL = 30               # 本地轮询周期（秒）：只读本机 Xray，不联网
 CONFIG_EVERY = 60           # 兜底配置拉取：每 60 个周期（=30min）。授权变更由中心
                             # POST /api/agent/refresh 主动推送触发立即刷新，兜底只防丢
@@ -215,9 +218,54 @@ def start_agent_server(listen: str):
 
 
 def build_xray_config(uuids, listen_addr="127.0.0.1", api_addr="127.0.0.1", api_port=10085,
-                      access_log=DEFAULT_ACCESS_LOG):
+                      access_log=DEFAULT_ACCESS_LOG, reality=None):
     # email 用于 StatsService 按用户统计流量，这里用 uuid 本身作为 email
     clients = [{"id": u, "email": u, "flow": ""} for u in uuids]
+    inbounds = [
+        {
+            "tag": INBOUND_TAG,
+            "listen": listen_addr,
+            "port": 8443,
+            "protocol": "vless",
+            "settings": {"clients": clients, "decryption": "none"},
+            "streamSettings": {
+                "network": "ws",
+                "wsSettings": {"path": "/vless-ws"},
+                # 前置 Caddy 以 PROXY protocol v1 转发，Xray 日志可见真实客户端 IP
+                "sockopt": {"acceptProxyProtocol": True},
+            },
+        }
+    ]
+    if reality:
+        # Reality 入站直连公网（不走 Caddy）：客户端以借用域名的 SNI 建 TLS，
+        # 非认证流量被转发给 dest 真实站点，主动探测看到的是伪装站的证书与内容。
+        # 无 PROXY protocol 前置，access log 里的来源 IP 天然就是真实客户端 IP
+        dest = reality["dest"]
+        server_name = dest.rsplit(":", 1)[0]
+        inbounds.append({
+            "tag": REALITY_INBOUND_TAG,
+            "listen": "0.0.0.0",
+            "port": reality["port"],
+            "protocol": "vless",
+            "settings": {
+                "clients": [
+                    {"id": u, "email": u, "flow": "xtls-rprx-vision"} for u in uuids
+                ],
+                "decryption": "none",
+            },
+            "streamSettings": {
+                "network": "tcp",
+                "security": "reality",
+                "realitySettings": {
+                    "show": False,
+                    "dest": dest,
+                    "xver": 0,
+                    "serverNames": [server_name],
+                    "privateKey": reality["private_key"],
+                    "shortIds": [reality["short_id"]],
+                },
+            },
+        })
     return {
         # access log 记录每条连接的 来源IP + email(uuid)，agent 增量解析做接入 IP 统计
         "log": {"loglevel": "warning", "access": access_log},
@@ -242,21 +290,7 @@ def build_xray_config(uuids, listen_addr="127.0.0.1", api_addr="127.0.0.1", api_
                 "statsInboundDownlink": True,
             },
         },
-        "inbounds": [
-            {
-                "tag": "vless-in",
-                "listen": listen_addr,
-                "port": 8443,
-                "protocol": "vless",
-                "settings": {"clients": clients, "decryption": "none"},
-                "streamSettings": {
-                    "network": "ws",
-                    "wsSettings": {"path": "/vless-ws"},
-                    # 前置 Caddy 以 PROXY protocol v1 转发，Xray 日志可见真实客户端 IP
-                    "sockopt": {"acceptProxyProtocol": True},
-                },
-            }
-        ],
+        "inbounds": inbounds,
         "outbounds": [{"protocol": "freedom"}],
     }
 
@@ -296,10 +330,11 @@ def sanitize_uuids(uuids) -> list:
 
 
 def strip_clients(cfg: dict):
-    """去掉 inbound 用户列表后的配置副本，用于判断是否有结构性变化。"""
+    """去掉所有 inbound 用户列表后的配置副本，用于判断是否有结构性变化。"""
     c = copy.deepcopy(cfg)
     try:
-        c["inbounds"][0]["settings"]["clients"] = []
+        for ib in c["inbounds"]:
+            ib["settings"]["clients"] = []
     except Exception:
         pass
     return c
@@ -308,19 +343,25 @@ def strip_clients(cfg: dict):
 def api_add_users(xray_bin: str, xray_api: str, new_config: dict, uuids: set) -> bool:
     """
     通过 xray api adu 在线添加用户，无需重启。
-    adu 接受完整配置 JSON（取其中 inbounds 的用户列表），
-    这里基于新配置生成仅含待加用户的临时文件。
+    adu 接受完整配置 JSON（取其中每个 inbound 的 tag + 用户列表），
+    这里基于新配置生成仅含待加用户的临时文件：WS 与 Reality 入站共用同一批
+    uuid，但 flow 不同（WS 为空，Reality 必须 xtls-rprx-vision），按 tag 区分。
     """
-    inbound = copy.deepcopy(new_config["inbounds"][0])
-    inbound["settings"]["clients"] = [
-        {"id": u, "email": u, "flow": ""} for u in sorted(uuids)
-    ]
+    inbounds = []
+    for ib in new_config["inbounds"]:
+        ib2 = copy.deepcopy(ib)
+        flow = "xtls-rprx-vision" if ib2["tag"] == REALITY_INBOUND_TAG else ""
+        ib2["settings"]["clients"] = [
+            {"id": u, "email": u, "flow": flow} for u in sorted(uuids)
+        ]
+        inbounds.append(ib2)
+    expect = len(uuids) * len(inbounds)
     tmp_path = None
     try:
         with tempfile.NamedTemporaryFile(
             "w", suffix=".json", delete=False, encoding="utf-8"
         ) as f:
-            json.dump({"inbounds": [inbound]}, f)
+            json.dump({"inbounds": inbounds}, f)
             tmp_path = f.name
         result = subprocess.run(
             [xray_bin, "api", "adu", f"--server={xray_api}", tmp_path],
@@ -329,7 +370,7 @@ def api_add_users(xray_bin: str, xray_api: str, new_config: dict, uuids: set) ->
             timeout=15,
         )
         m = re.search(r"Added (\d+) user", result.stdout)
-        ok = result.returncode == 0 and m and int(m.group(1)) == len(uuids)
+        ok = result.returncode == 0 and m and int(m.group(1)) == expect
         if ok:
             print(f"[info] added {len(uuids)} user(s) online")
         else:
@@ -349,7 +390,7 @@ def api_add_users(xray_bin: str, xray_api: str, new_config: dict, uuids: set) ->
                 pass
 
 
-def api_remove_users(xray_bin: str, xray_api: str, uuids: set) -> bool:
+def api_remove_users(xray_bin: str, xray_api: str, uuids: set, tags=None) -> bool:
     """
     通过 xray api rmu 在线移除用户，无需重启。
     注意：rmu 会销毁该用户的流量计数器。调用方须先用 flush_counters_once
@@ -357,23 +398,27 @@ def api_remove_users(xray_bin: str, xray_api: str, uuids: set) -> bool:
     （计数器若再出现即按新基线全量计入），否则会漏算/误判。
     """
     try:
-        result = subprocess.run(
-            [xray_bin, "api", "rmu", f"--server={xray_api}", "-tag", INBOUND_TAG]
-            + sorted(uuids),
-            capture_output=True,
-            text=True,
-            timeout=15,
-        )
-        m = re.search(r"Removed (\d+) user", result.stdout)
-        ok = result.returncode == 0 and m and int(m.group(1)) == len(uuids)
-        if ok:
-            print(f"[info] removed {len(uuids)} user(s) online")
-        else:
-            print(
-                f"[warn] rmu incomplete: rc={result.returncode} out={result.stdout.strip()}",
-                file=sys.stderr,
+        # rmu 只接受单个 -tag：每个 inbound 各执行一次，全部成功才算成功
+        tags = tags or [INBOUND_TAG]
+        for tag in tags:
+            result = subprocess.run(
+                [xray_bin, "api", "rmu", f"--server={xray_api}", "-tag", tag]
+                + sorted(uuids),
+                capture_output=True,
+                text=True,
+                timeout=15,
             )
-        return bool(ok)
+            m = re.search(r"Removed (\d+) user", result.stdout)
+            ok = result.returncode == 0 and m and int(m.group(1)) == len(uuids)
+            if not ok:
+                print(
+                    f"[warn] rmu incomplete (tag={tag}): rc={result.returncode} "
+                    f"out={result.stdout.strip()}",
+                    file=sys.stderr,
+                )
+                return False
+        print(f"[info] removed {len(uuids)} user(s) online ({len(tags)} inbound(s))")
+        return True
     except Exception as e:
         print(f"[warn] rmu failed: {e}", file=sys.stderr)
         return False
@@ -637,6 +682,18 @@ def main():
     access_log = env.get("ACCESS_LOG", DEFAULT_ACCESS_LOG)
     tracker = AccessLogTracker(access_log)
 
+    # Reality 直连入站（可选）：配了 REALITY_PRIVATE_KEY 才启用。
+    # dest 默认借 gateway.icloud.com：TLS1.3+H2 大站、证书链适中；
+    # 注意别用 www.microsoft.com——其 8KB+ 证书链会导致 Reality 握手失败（26.3 实测）
+    reality = None
+    if env.get("REALITY_PRIVATE_KEY"):
+        reality = {
+            "port": int(env.get("REALITY_PORT", "8444")),
+            "dest": env.get("REALITY_DEST", "gateway.icloud.com:443"),
+            "private_key": env["REALITY_PRIVATE_KEY"],
+            "short_id": env.get("REALITY_SHORT_ID", ""),
+        }
+
     if not node_key:
         print("[error] NODE_KEY not set in /etc/vpn-agent/env", file=sys.stderr)
         sys.exit(1)
@@ -679,7 +736,7 @@ def main():
                         allowed_list = sanitize_uuids(resp["data"]["uuids"])
                         usage_map = resp["data"].get("usage", {})
                         nodes_cached = len(resp["data"].get("nodes", []))
-                        new_config = build_xray_config(allowed_list, listen_addr, access_log=access_log)
+                        new_config = build_xray_config(allowed_list, listen_addr, access_log=access_log, reality=reality)
                         # 同步用户自助封禁的 IP 到防火墙（与 Xray 配置变更无关）
                         sync_blocked_ips(resp["data"].get("blocked_ips", []))
                         new_text = json.dumps(new_config, indent=2, ensure_ascii=False)
@@ -719,7 +776,10 @@ def main():
                                 if to_remove:
                                     # rmu 会销毁这些用户的计数器：先把差值落进账本再移除
                                     flush_counters_once(xray_bin, xray_api, ledger, old_uuids, primed)
-                                    ok = api_remove_users(xray_bin, xray_api, to_remove) and ok
+                                    ok = api_remove_users(
+                                        xray_bin, xray_api, to_remove,
+                                        tags=[ib["tag"] for ib in new_config["inbounds"]],
+                                    ) and ok
                                     if ok:
                                         # 计数器已销毁：last_counter 置 None，
                                         # 下次见到即按「懒创建全量计入」的新基线处理

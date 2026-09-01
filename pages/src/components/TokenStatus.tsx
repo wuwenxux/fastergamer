@@ -312,6 +312,11 @@ export default function TokenStatus({ token }: { token: Token }) {
             这个链接不是用浏览器直接打开的，而是 Clash 用来下载配置的地址。复制链接 → 打开 Clash → 粘贴到「订阅/Profiles」里即可自动导入节点。
           </p>
 
+          <p className="text-xs text-emerald-300/90 rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-2.5">
+            ⚡ 使用新版客户端（Clash Verge Rev / FlClash / Stash 等）导入后，节点列表会出现带 ⚡ 后缀的直连节点：
+            延迟更低、不依赖域名解析、抗封锁更强。老客户端（Clash for Windows / ClashX）不受影响，可继续用原节点，但建议升级。
+          </p>
+
           <p className="text-xs text-rose-400">
             ⚠️ 请勿把订阅链接分享给他人：UUID 就是全部连接凭证，泄露后会被他人盗用并消耗你的流量额度。
           </p>

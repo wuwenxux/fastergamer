@@ -186,6 +186,11 @@ export default function ClashGuide() {
           <p className="mb-2">
             必须选择支持 <strong>VLESS + WebSocket</strong> 的客户端（iOS 见下方专属说明）：
           </p>
+          <p className="mb-2 rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-3 text-xs text-emerald-300">
+            ⚡ 下列客户端均为新内核（mihomo 系），导入订阅后会自动获得带 <strong>⚡</strong> 后缀的直连节点：
+            少一层握手延迟更低、不依赖域名解析更稳定、抗封锁能力更强。仍在用 Clash for Windows /
+            ClashX 等停更老客户端的用户，建议升级为 Clash Verge Rev 以获得 ⚡ 节点。
+          </p>
           <ul className="space-y-1.5 text-slate-400">
             {CLASH_DOWNLOADS.filter((d) => d.platform !== "iOS").map((d) => (
               <li key={d.name}>
@@ -257,7 +262,10 @@ export default function ClashGuide() {
       title: "选择节点",
       detail: (
         <p className="text-slate-400">
-          在「代理 / Proxies」页面，选择「🚀 选择节点」分组里的任意一个节点（例如「HK 香港 02」）。建议优先选择离你物理位置近的节点。
+          在「代理 / Proxies」页面，选择「🚀 选择节点」分组里的任意一个节点（例如「HK 香港 02」）。
+          优先选择带 <strong className="text-emerald-300">⚡</strong> 后缀的节点（如「HK 香港 ⚡07」）：
+          它是 Reality 直连通道，握手更快、更抗封锁；不带 ⚡ 的是兼容兜底节点，任何客户端都能用。
+          建议优先选择离你物理位置近的节点。
         </p>
       ),
       verify: "某个节点前方出现绿色延迟数字，表示连通。",

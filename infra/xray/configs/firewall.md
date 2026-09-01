@@ -3,6 +3,10 @@
 直连架构下，**用户的 Clash 直接连本机**，所以 443（TLS 入口）必须对公网开放；
 Xray 本体监听在 127.0.0.1:8443，不应对外暴露。
 
+启用 Reality 直连入站（`/etc/vpn-agent/env` 配了 `REALITY_PRIVATE_KEY`）的节点，
+额外开放 `REALITY_PORT`（默认 8444）——该端口由 Xray 直接监听公网，
+未通过认证的流量被转发给伪装站点（fallback），探测者看到的是伪装站证书。
+
 ## 用 ufw 配置
 
 ```bash

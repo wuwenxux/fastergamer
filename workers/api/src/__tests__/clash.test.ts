@@ -142,6 +142,42 @@ describe("节点 IP 直发（nodeIps）", () => {
   });
 });
 
+describe("Reality 直连条目（⚡）", () => {
+  const R_NODES: Node[] = [
+    { ...NODES[0], reality: { port: 8444, password: "PUBKEY", short_id: "abcd1234", server_name: "gateway.icloud.com" } },
+    NODES[2], // 无 reality 的节点不出 ⚡ 条目
+  ];
+
+  it("mihomo UA：带 reality 的节点生成 ⚡ 条目，字段完整", () => {
+    const config = buildClashConfig({ uuid: UUID, nodes: R_NODES, userAgent: NEW_UA });
+    expect(config).toContain('"HK 香港 ⚡03"'); // 序号接在 WS 条目（2 个）之后
+    expect(config).toContain("flow: xtls-rprx-vision");
+    expect(config).toContain("client-fingerprint: chrome");
+    expect(config).toContain("reality-opts:");
+    expect(config).toContain("public-key: PUBKEY");
+    expect(config).toContain("short-id: abcd1234");
+    // Reality 的 SNI 是伪装站，不是节点域名
+    expect(config).toContain("servername: gateway.icloud.com");
+    // 无 reality 的节点不生成 ⚡
+    expect(config).not.toContain("JP 日本 ⚡");
+  });
+
+  it("⚡ 条目与 WS 条目进同样的分组", () => {
+    const config = buildClashConfig({ uuid: UUID, nodes: R_NODES, userAgent: NEW_UA });
+    expect(groupBlock(config, "🚀 节点选择")).toContain('"HK 香港 ⚡03"');
+    expect(groupBlock(config, "♻️ 自动选择")).toContain('"HK 香港 ⚡03"');
+    expect(groupBlock(config, "🇭🇰 香港")).toContain('"HK 香港 ⚡03"');
+    expect(groupBlock(config, "🇭🇰 香港")).toContain('"HK 香港 01"'); // WS 兜底仍在
+  });
+
+  it("老内核 UA：不下发 ⚡ 条目，WS 兜底不受影响", () => {
+    const config = buildClashConfig({ uuid: UUID, nodes: R_NODES, userAgent: OLD_UA });
+    expect(config).not.toContain("⚡");
+    expect(config).not.toContain("reality-opts");
+    expect(config).toContain('"HK 香港 01"');
+  });
+});
+
 describe("DNS 解析", () => {
   it("nameserver 含阿里 DoH 加速，proxy-server-nameserver 保持单路兜底", () => {
     const config = buildClashConfig({ uuid: UUID, nodes: NODES, userAgent: NEW_UA });

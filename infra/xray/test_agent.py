@@ -130,5 +130,65 @@ class FlushCountersOnceTest(unittest.TestCase):
         self.assertEqual(self.ledger.users[UUID_B]["accum"], 20)
 
 
+class RealityConfigTest(unittest.TestCase):
+    REALITY = {
+        "port": 8444, "dest": "www.microsoft.com:443",
+        "private_key": "PRIV", "short_id": "abcd1234",
+    }
+
+    def test_no_reality_by_default(self):
+        cfg = agent.build_xray_config([UUID_A])
+        self.assertEqual(len(cfg["inbounds"]), 1)
+        self.assertEqual(cfg["inbounds"][0]["tag"], agent.INBOUND_TAG)
+
+    def test_reality_inbound_appended(self):
+        cfg = agent.build_xray_config([UUID_A], reality=self.REALITY)
+        self.assertEqual(len(cfg["inbounds"]), 2)
+        ws, rt = cfg["inbounds"]
+        self.assertEqual(rt["tag"], agent.REALITY_INBOUND_TAG)
+        self.assertEqual(rt["listen"], "0.0.0.0")       # 直连公网，不走 Caddy
+        self.assertEqual(rt["port"], 8444)
+        self.assertEqual(rt["streamSettings"]["network"], "tcp")
+        self.assertEqual(rt["streamSettings"]["security"], "reality")
+        rs = rt["streamSettings"]["realitySettings"]
+        self.assertEqual(rs["dest"], "www.microsoft.com:443")
+        self.assertEqual(rs["serverNames"], ["www.microsoft.com"])
+        self.assertEqual(rs["privateKey"], "PRIV")
+        self.assertEqual(rs["shortIds"], ["abcd1234"])
+        # 同一批 uuid 进两个入站，flow 按协议区分
+        self.assertEqual(ws["settings"]["clients"][0]["flow"], "")
+        self.assertEqual(rt["settings"]["clients"][0]["flow"], "xtls-rprx-vision")
+        self.assertEqual(rt["settings"]["clients"][0]["id"], UUID_A)
+
+    def test_strip_clients_clears_all_inbounds(self):
+        cfg = agent.build_xray_config([UUID_A], reality=self.REALITY)
+        stripped = agent.strip_clients(cfg)
+        for ib in stripped["inbounds"]:
+            self.assertEqual(ib["settings"]["clients"], [])
+
+    def test_adu_covers_all_inbounds(self):
+        cfg = agent.build_xray_config([UUID_A], reality=self.REALITY)
+        captured = {}
+
+        class R:
+            returncode = 0
+            stdout = "Added 2 user(s)"
+            stderr = ""
+
+        def fake_run(cmd, **kw):
+            with open(cmd[-1], encoding="utf-8") as f:
+                captured["payload"] = json.load(f)
+            return R()
+
+        with mock.patch.object(agent.subprocess, "run", fake_run):
+            ok = agent.api_add_users("xray", "api", cfg, {UUID_A})
+        self.assertTrue(ok)
+        tags = [ib["tag"] for ib in captured["payload"]["inbounds"]]
+        self.assertEqual(tags, [agent.INBOUND_TAG, agent.REALITY_INBOUND_TAG])
+        flows = [ib["settings"]["clients"][0]["flow"]
+                 for ib in captured["payload"]["inbounds"]]
+        self.assertEqual(flows, ["", "xtls-rprx-vision"])
+
+
 if __name__ == "__main__":
     unittest.main()

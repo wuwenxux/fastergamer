@@ -14,3 +14,6 @@ prod/
 # Python 缓存
 __pycache__/
 .kimi-code/
+
+# 拨测原始数据
+scripts/.probe/

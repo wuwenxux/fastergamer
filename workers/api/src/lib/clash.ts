@@ -1,5 +1,7 @@
 /**
- * Clash 订阅配置生成：每个 active 节点生成一个代理。
+ * Clash 订阅配置生成：每个 active 节点生成一个 WS 代理；节点配了 reality 字段
+ * 且客户端是 mihomo 系内核时，额外生成对应的 Reality 直连代理（名称加 ⚡ 后缀），
+ * 与 WS 条目进同样的分组，由 url-test 自动择优，WS 作为兜底链路保留。
  * 节点显示名统一为「区域代码 中文地区名 全局序号」，如 "MY 马来西亚 01"（序号按节点列表顺序全局递增）。
  * 分组结构（按区域）：
  *   🚀 节点选择（select）→ ♻️ 自动选择（全部节点 url-test，gstatic 端到端）
@@ -10,6 +12,8 @@
  */
 
 import type { Node } from "../../../../shared/types";
+
+type NodeReality = NonNullable<Node["reality"]>;
 
 export interface ClashRegion {
   code: string; // 国家/地区代码，如 HK、JP
@@ -98,6 +102,8 @@ export const buildClashConfig = ({ uuid, nodes, regions, userAgent, nodeIps }: B
     port: number;
     tls: boolean;
     wsPath: string;
+    /** 节点开了 Reality 直连时携带；仅对 mihomo 系内核下发 ⚡ 条目 */
+    reality?: NodeReality;
   }[] = [];
 
   // 显示名统一为「区域代码 中文地区名 全局序号」，如 "MY 马来西亚 01"、"HK 香港 02"，
@@ -114,6 +120,7 @@ export const buildClashConfig = ({ uuid, nodes, regions, userAgent, nodeIps }: B
       port: node.port,
       tls: node.tls,
       wsPath: node.ws_path,
+      reality: node.reality,
     });
   }
 
@@ -133,14 +140,49 @@ export const buildClashConfig = ({ uuid, nodes, regions, userAgent, nodeIps }: B
       ...(p.tls ? [`    servername: ${p.host}`] : []),
       "    ws-opts:",
       `      path: "${p.wsPath}"`,
+      // Early Data：WS 升级请求直接携带首包数据（经 Sec-WebSocket-Protocol 头，Xray 服务端默认识别），
+      // 每条新连接省掉 WS Upgrade 的 1 个 RTT；老内核（Premium）会忽略未知字段，无副作用
+      "      max-early-data: 2048",
+      '      early-data-header-name: "Sec-WebSocket-Protocol"',
       // server 是 IP 时 WS Host 头必须显式带域名，否则 Caddy 按 IP 匹配不到站点
       ...(p.server !== p.host ? ["      headers:", `        Host: ${p.host}`] : [])
     );
   }
 
+  // Reality 直连条目（⚡ 后缀）：仅对 mihomo 系内核下发（Premium 不支持 reality-opts）。
+  // 与 WS 条目并存进同样的分组：Reality 少 WS Upgrade 一层握手、无域名/解析依赖，
+  // url-test 实测更快会自动选中；Reality 端口异常时自动落回 WS 兜底。
+  // 命名在 WS 序号基础上递增，避免与 WS 条目重号
+  const realityProxies = geosite
+    ? proxies
+        .filter((p) => p.reality)
+        .map((p, i) => ({ ...p, name: `${p.region} ${p.name.split(" ")[1]} ⚡${String(proxies.length + i + 1).padStart(2, "0")}` }))
+    : [];
+  for (const p of realityProxies) {
+    const r = p.reality!;
+    lines.push(
+      `  - name: "${p.name}"`,
+      "    type: vless",
+      `    server: ${p.server}`,
+      `    port: ${r.port}`,
+      `    uuid: ${uuid}`,
+      "    network: tcp",
+      "    tls: true",
+      "    udp: true",
+      "    flow: xtls-rprx-vision",
+      "    client-fingerprint: chrome",
+      // Reality 的 SNI 是借用伪装站的域名（如 gateway.icloud.com），与节点自身域名无关
+      `    servername: ${r.server_name}`,
+      "    reality-opts:",
+      `      public-key: ${r.password}`,
+      `      short-id: ${r.short_id}`
+    );
+  }
+  const allProxies = [...proxies, ...realityProxies];
+
   // 按区域归类：区域顺序跟随 CLASH_REGIONS，未登记的区域排在最后
   const byRegion = new Map<string, string[]>(); // region code -> proxy names
-  for (const p of proxies) {
+  for (const p of allProxies) {
     const list = byRegion.get(p.region) ?? [];
     list.push(p.name);
     byRegion.set(p.region, list);
@@ -159,12 +201,12 @@ export const buildClashConfig = ({ uuid, nodes, regions, userAgent, nodeIps }: B
   lines.push(`  - name: "${MAIN_GROUP}"`, "    type: select", "    proxies:");
   lines.push(`      - "${AUTO_GROUP}"`);
   for (const code of orderedCodes) lines.push(`      - "${regionGroupName(code)}"`);
-  for (const p of proxies) lines.push(`      - "${p.name}"`);
+  for (const p of allProxies) lines.push(`      - "${p.name}"`);
 
   // 全局自动选择：url-test 覆盖全部节点，单节点故障无需手动干预。
   // 测速目标保持 gstatic 端到端——它决定实际用哪个节点，必须反映真实上网链路
   lines.push(`  - name: "${AUTO_GROUP}"`, "    type: url-test", "    proxies:");
-  for (const p of proxies) lines.push(`      - "${p.name}"`);
+  for (const p of allProxies) lines.push(`      - "${p.name}"`);
   lines.push(`    url: ${TEST_URL}`, "    interval: 300", "    tolerance: 50");
 
   // 每个区域一个 url-test 分组：锁定区域时仍享受区域内故障切换。

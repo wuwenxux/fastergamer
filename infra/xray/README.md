@@ -35,6 +35,23 @@ bash scripts/test-node.sh [过滤词]
 
 用户 → Clash → **直连本机**（VLESS + WS + TLS，域名:443）→ 本机 Xray → 目标网站
 
+**Reality 直连（可选，双协议并存）**：节点 env 配置 `REALITY_PRIVATE_KEY` 后，
+agent 额外生成 `vless-reality-in` 入站（默认 `0.0.0.0:8444`，VLESS+RAW+Reality+
+Vision），与 WS 入站共用同一批 uuid（flow 按入站区分，在线 adu/rmu 同步覆盖两个入站）。
+客户端直连 IP:8444、SNI 借用伪装站（默认 `gateway.icloud.com`，勿用
+www.microsoft.com——其 8KB+ 证书链会致握手失败），无域名/证书依赖；
+未认证流量转发给伪装站，主动探测免疫。启用节点需 ufw 放行 8444。
+
+### 一键开启（推荐）
+
+```bash
+NODE_SUDO_PASS=<节点sudo密码> bash infra/xray/enable-reality.sh <节点IP> <节点host> [端口=8444]
+# 例：NODE_SUDO_PASS=xxx bash infra/xray/enable-reality.sh 154.64.250.144 hk03.fastergamer.click
+```
+
+幂等完成：生成/复用密钥 → 部署最新 agent → ufw 放行 → 注册中心（订阅自动生成
+`⚡` 条目，仅 mihomo 系内核下发）→ 伪装证书验证。已有密钥的节点重复执行不会换钥。
+
 - 本机的 `vpn-agent` 平时不轮询中心：授权变更由中心 POST `/api/agent/refresh` 主动推送（立即拉配置生效），仅保留 30 分钟兜底拉取防丢；用户(uuid)增删通过 Xray HandlerService 在线生效（`xray api adu/rmu`，不重启），仅配置结构变化时整体重启 Xray。**流量结算事件驱动**：本地账本按周期比对 Xray 计数器，只在断联（连续 3 周期无增量且离线）、配额触线或计数器消失时才上报中心，连接活着且未触线 = 完全静默；账本落盘 `/var/lib/vpn-agent/ledger.json`，上报失败不丢账
 - **接入 IP 统计**：Caddy 以 PROXY protocol v1 把真实客户端 IP 透传给 Xray（Xray inbound 开 `acceptProxyProtocol`），access log 记录 `来源IP + email(uuid)`；agent 增量解析日志，把每个上报周期内「uuid → 来源IP → 连接次数」上报中心，中心按连接数比例把流量增量分摊到各 IP（估算口径，Xray 不提供逐连接字节数）。用户在 Token 页可见自己的接入 IP 统计
 - token 校验在 Xray 层完成：UUID 不在 clients 列表里的连接会被直接拒绝
