@@ -113,6 +113,8 @@ export interface Token {
   purchased_at: number;
   activated_at?: number;
   expires_at?: number;
+  /** 已用过「免费重新生成订阅链接」的时间（unix 毫秒）；每个 token 限一次 */
+  rotated_at?: number;
 }
 
 /**

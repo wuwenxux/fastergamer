@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import { KV } from "../../../../shared/types";
 import type { Device, Token } from "../../../../shared/types";
-import { deleteDeviceIndex, getPlans, getTokenById, getTokenPresence, listTokensByContact, saveDeviceIndex, saveToken } from "../lib/kv";
+import { deleteDeviceIndex, getPlans, getTokenById, getTokenPresence, listTokensByContact, rotateTokenUuid, saveDeviceIndex, saveToken } from "../lib/kv";
 import { isEmail, sendMail, sendTokenEmail, shouldSendEmail } from "../lib/email-aliyun";
 import { createMagicTicket, consumeMagicTicket, createSession, getSessionAccount } from "../lib/accounts";
 import { recordReferral } from "../lib/referral";
@@ -291,6 +291,27 @@ tokensRoutes.delete("/:id/devices/:deviceId", async (c) => {
   await deleteDeviceIndex(c.env, device.uuid);
   c.executionCtx.waitUntil(pushAuthRefresh(c.env)); // 解绑的设备 uuid 立即从白名单摘除
   return c.json({ ok: true, data: { id: deviceId } });
+});
+
+/**
+ * POST /api/tokens/:id/rotate-uuid —— 免费重新生成订阅链接（每个 token 限一次）
+ * 仅本人可操作。旧 UUID 立即从全节点失效；套餐、到期时间、已用流量不变。
+ * 用于订阅域名迁移、链接泄露等自助场景，免找售后人工 rotate。
+ */
+tokensRoutes.post("/:id/rotate-uuid", async (c) => {
+  const token = await getTokenById(c.env, c.req.param("id"));
+  if (!token) return c.json({ ok: false, error: "token not found" }, 404);
+  if (!(await isOwner(c.env, c.req.header("authorization"), token))) {
+    return c.json({ ok: false, error: "请先通过邮箱登录链接进入后再操作" }, 401);
+  }
+  if (token.rotated_at) {
+    return c.json({ ok: false, error: "该 Token 已用过免费重新生成，如需再次更换请联系售后" }, 409);
+  }
+
+  token.rotated_at = Date.now();
+  await rotateTokenUuid(c.env, token);
+  c.executionCtx.waitUntil(pushAuthRefresh(c.env)); // 旧 uuid 立即失效、新 uuid 立即生效
+  return c.json({ ok: true, data: { id: token.id, uuid: token.uuid } });
 });
 
 const IPV4_RE = /^((25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)$/;

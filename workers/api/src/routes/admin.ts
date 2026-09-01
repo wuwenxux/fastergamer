@@ -2,7 +2,7 @@ import { Hono } from "hono";
 import { KV } from "../../../../shared/types";
 import type { Order, Plan, Presence, Registration, Token } from "../../../../shared/types";
 import { adminAuth } from "../middleware/admin";
-import { deleteDeviceIndex, deleteTokenByUuid, getOrder, getPlans, getTicket, getTokenById, getTokenPresence, listKeys, listOrders, listTickets, listTokensByContact, mergeTokenSettlement, saveOrder, savePlans, savePresenceIfChanged, saveTicket, saveToken } from "../lib/kv";
+import { deleteDeviceIndex, deleteTokenByUuid, getOrder, getPlans, getTicket, getTokenById, getTokenPresence, listKeys, listOrders, listTickets, listTokensByContact, mergeTokenSettlement, rotateTokenUuid, saveOrder, savePlans, savePresenceIfChanged, saveTicket, saveToken } from "../lib/kv";
 import { checkExpiringToken, notifyAdmin } from "../lib/risk-notify";
 import { getNodes } from "../lib/nodes";
 import { isEmail, sendMail, shouldSendEmail } from "../lib/email-aliyun";
@@ -332,18 +332,7 @@ adminRoutes.post("/tokens/:id/rotate-uuid", async (c) => {
   const token = await getTokenById(c.env, c.req.param("id"));
   if (!token) return c.json({ ok: false, error: "token not found" }, 404);
 
-  const oldUuid = token.uuid;
-  token.uuid = crypto.randomUUID();
-  // 重置凭证后旧的多设备标记/在线状态失去意义，一并清掉
-  delete token.multi_device_detected_at;
-  delete token.online_by_node;
-  token.online = false;
-  delete token.notify_log?.multi_device;
-
-  await deleteTokenByUuid(c.env, oldUuid);
-  // 在线状态存 presence:{uuid}（按旧 uuid 索引），随旧凭证一并清理
-  await c.env.TOKENS.delete(KV.PRESENCE + oldUuid);
-  await saveToken(c.env, token);
+  await rotateTokenUuid(c.env, token);
   c.executionCtx.waitUntil(pushAuthRefresh(c.env)); // 旧 uuid 立即失效、新 uuid 立即生效
   return c.json({ ok: true, data: { id: token.id, uuid: token.uuid } });
 });

@@ -37,6 +37,7 @@ export default function TokenStatus({ token }: { token: Token }) {
   const [monthlyQuotaGb, setMonthlyQuotaGb] = useState<number | null>(null);
   // 非本人激活时后端只返回概要（无 uuid），置此标记展示登录引导
   const [activatedRestricted, setActivatedRestricted] = useState(false);
+  const [rotating, setRotating] = useState(false);
 
   // 套餐带月度配额时拉取配额值用于展示
   useEffect(() => {
@@ -148,6 +149,25 @@ export default function TokenStatus({ token }: { token: Token }) {
       setVerify({ valid: false, error: (e as Error).message });
     } finally {
       setVerifying(false);
+    }
+  };
+
+  // 免费重新生成订阅链接（每个 token 限一次）：旧 uuid 立即失效，页面切换到新链接
+  const onRotate = async () => {
+    if (!window.confirm(
+      "确认重新生成订阅链接？\n旧链接将立即失效（全节点约 30 秒内生效），Clash 需要更新订阅或重新导入。每个 Token 仅可免费重新生成一次。"
+    )) return;
+    setRotating(true);
+    try {
+      const res = await api.rotateUuid(current.id);
+      setCurrent({ ...current, uuid: res.uuid, rotated_at: Date.now(), online: false });
+      setVerify(null);
+      setPreview("");
+      setShowPreview(false);
+    } catch (e) {
+      alert((e as Error).message);
+    } finally {
+      setRotating(false);
     }
   };
 
@@ -300,7 +320,7 @@ export default function TokenStatus({ token }: { token: Token }) {
             current.multi_device_detected_at > now - 24 * 3_600_000 && (
             <p className="text-xs text-amber-400">
               ⚠️ 检测到该凭证在多个节点同时在线（{new Date(current.multi_device_detected_at).toLocaleString()}）。
-              如果是你自己多台设备同时使用可忽略；否则说明订阅链接可能已泄露，请联系售后更换。
+              如果是你自己多台设备同时使用可忽略；否则说明订阅链接可能已泄露，可点下方「重新生成订阅链接」免费更换（限 1 次），旧链接立即失效。
             </p>
           )}
 
@@ -326,6 +346,14 @@ export default function TokenStatus({ token }: { token: Token }) {
             className="w-full rounded-lg border border-emerald-500/50 bg-emerald-500/10 py-2 font-medium text-emerald-400 hover:bg-emerald-500/20 transition-colors disabled:opacity-60"
           >
             {verifying ? "诊断中…" : "Clash 导入失败？一键诊断"}
+          </button>
+
+          <button
+            onClick={onRotate}
+            disabled={rotating || !!current.rotated_at}
+            className="w-full rounded-lg border border-amber-500/50 bg-amber-500/10 py-2 font-medium text-amber-400 hover:bg-amber-500/20 transition-colors disabled:opacity-60"
+          >
+            {rotating ? "生成中…" : current.rotated_at ? "已用过免费重新生成" : "重新生成订阅链接（免费 1 次）"}
           </button>
 
           {verify?.valid ? (

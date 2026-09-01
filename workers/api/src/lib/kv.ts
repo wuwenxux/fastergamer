@@ -67,6 +67,25 @@ export const saveTokenValue = (env: Env, token: Token): Promise<void> =>
 export const deleteTokenByUuid = (env: Env, uuid: string): Promise<void> =>
   env.TOKENS.delete(KV.TOKEN + uuid);
 
+/**
+ * 重置 token 的连接凭证（UUID）：旧 uuid 立即失效（主键 + presence 一并删除），
+ * 新 uuid 落库；多设备标记/在线状态随旧凭证清掉。套餐、到期时间、已用流量不变。
+ * 调用方负责鉴权与 pushAuthRefresh。
+ */
+export const rotateTokenUuid = async (env: Env, token: Token): Promise<void> => {
+  const oldUuid = token.uuid;
+  token.uuid = crypto.randomUUID();
+  // 重置凭证后旧的多设备标记/在线状态失去意义，一并清掉
+  delete token.multi_device_detected_at;
+  delete token.online_by_node;
+  token.online = false;
+  delete token.notify_log?.multi_device;
+  await deleteTokenByUuid(env, oldUuid);
+  // 在线状态存 presence:{uuid}（按旧 uuid 索引），随旧凭证一并清理
+  await env.TOKENS.delete(KV.PRESENCE + oldUuid);
+  await saveToken(env, token);
+};
+
 // ---------- Presence（高频动态状态，与 token 主键解耦） ----------
 export const getPresence = async (env: Env, uuid: string): Promise<Presence | null> => {
   const raw = await env.TOKENS.get(KV.PRESENCE + uuid);

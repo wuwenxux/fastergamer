@@ -134,6 +134,13 @@ export const api = {
   /** Clash 订阅链接（需 token 处于 active）；走主域 fastergamer.click，由 CF Worker 渲染 */
   subUrl: (uuid: string) => `https://fastergamer.click/api/sub?uuid=${encodeURIComponent(uuid)}`,
 
+  /** 免费重新生成订阅链接（每个 token 限一次；旧链接立即失效）；需本人登录，否则 401 */
+  rotateUuid: (tokenId: string) =>
+    request<{ id: string; uuid: string }>(`/api/tokens/${tokenId}/rotate-uuid`, {
+      method: "POST",
+      headers: sessionHeaders(),
+    }),
+
   /** 凭联系方式找回 token（返回概要列表，不含 uuid） */
   recoverTokens: (contact: string) =>
     request<

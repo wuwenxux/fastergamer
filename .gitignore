@@ -13,3 +13,4 @@ prod/
 
 # Python 缓存
 __pycache__/
+.kimi-code/
