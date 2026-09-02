@@ -51,13 +51,19 @@ npm run dev:pages
 
 整套系统（前端静态站 + API + KV 数据）跑在 Cloudflare 免费版：
 `fastergamer.click`（CF Worker + Static Assets，前后端同源）是唯一的生产中心；
-`fastergamer.cn` 是纯静态门面（本机 nginx + `pages/dist`），前端跨域调 `fastergamer.click` 的 API。
+`fastergamer.cn` 已退役为纯跳转（本机 nginx 整站 301 到 `.click`，URI 保留，
+`/api/sub` 老订阅链接由客户端跟随 301）。
 
 - 配置：`workers/api/wrangler.cf.toml`（真实 CF KV 命名空间 + Static Assets 托管 `pages/dist`）
 - 入口差异：`src/index.ts` 检测 `env.ASSETS` 绑定存在时把非 `/api` 请求转给静态资产（SPA 回退 `index.html`）
 - 注意：`*.workers.dev` 在大陆被封锁，用户入口是自定义域名；管理 API（api.cloudflare.com）大陆可直连，部署/数据操作不受影响
 
 ```bash
+# 推荐：一键脚本（经 hk02 跳板，避开本机到 CF 上传的不稳定；token 自动取 .dev.vars）
+bash scripts/deploy-cf.sh           # 仅 API/配置改动
+bash scripts/deploy-cf.sh --build   # 前端有改动，先构建 pages/dist
+
+# 手动方式（直连 CF 可用时）：
 # 1. 构建前端（CF 版：API 同源，无需 VITE_API_BASE）
 cd pages && npm run build
 
@@ -66,10 +72,9 @@ cd workers/api && npx wrangler deploy --config wrangler.cf.toml
 
 # 密钥管理（ADMIN_KEY / ALIYUN_* / ADMIN_NOTIFY_EMAIL / ALIPAY_PRIVATE_KEY）
 npx wrangler secret put <KEY> --config wrangler.cf.toml
-
-# 3. 部署 cn 门面站（前端 API 指向 fastergamer.click，rsync 到本机 nginx）
-bash scripts/deploy-site-local.sh
 ```
+
+注：`scripts/deploy-site-local.sh`（cn 静态门面部署）随整站 301 退役，仅留档。
 
 ### 初始化套餐
 
