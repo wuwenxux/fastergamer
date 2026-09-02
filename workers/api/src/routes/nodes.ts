@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import { KV, type Node } from "../../../../shared/types";
 import { getNodes, saveNodes, saveNodeStat, deleteNodeStat, isNodeOnline } from "../lib/nodes";
 import { pushAuthRefresh } from "../lib/authpush";
+import { invalidateNodeIpsCache } from "./sub";
 import { adminAuth } from "../middleware/admin";
 import type { Env } from "../types";
 
@@ -81,6 +82,7 @@ nodesRoutes.post("/", async (c) => {
 
   nodes.push(node);
   await saveNodes(c.env, nodes);
+  invalidateNodeIpsCache(); // 新节点 host 可能复用旧解析缓存
   c.executionCtx.waitUntil(pushAuthRefresh(c.env)); // 新节点进订阅/快照
   return c.json({ ok: true, data: { node: { ...node, key: node.key } } });
 });
@@ -101,6 +103,7 @@ nodesRoutes.put("/:id", async (c) => {
   await saveNodes(c.env, nodes);
   // body 里若含动态字段（billing_mode / 月配额重置等），同步到 nodestat 单键
   await saveNodeStat(c.env, nodes[idx]);
+  invalidateNodeIpsCache(); // host 复指新 IP（VPS 重建）时清订阅解析缓存
   c.executionCtx.waitUntil(pushAuthRefresh(c.env)); // 节点信息（host/port/active 等）变更进快照
   return c.json({ ok: true, data: nodes[idx] });
 });
@@ -115,6 +118,7 @@ nodesRoutes.delete("/:id", async (c) => {
   }
   await saveNodes(c.env, filtered);
   await deleteNodeStat(c.env, id);
+  invalidateNodeIpsCache();
   c.executionCtx.waitUntil(pushAuthRefresh(c.env)); // 节点摘除进快照
   return c.json({ ok: true });
 });

@@ -14,11 +14,29 @@ const IPV4_RE = /^\d{1,3}(\.\d{1,3}){3}$/;
  * 订阅下发前把节点域名解析成 IP（DoH 查询，3s 超时，失败静默回退域名）。
  * 背景：节点域名挂在 Cloudflare 权威 DNS，国内递归解析不稳定；
  * 配置里 server 直接写 IP 后客户端完全跳过节点域名解析。
+ * 结果按 host 在 isolate 内存缓存 1h：节点 IP 极少变化，每次拉订阅都打 6 次 DoH
+ * 是子请求的主要来源；host 复指新 IP 时调用 invalidateNodeIpsCache 主动失效。
  */
+const NODE_IP_TTL = 3600_000;
+const nodeIpCache = new Map<string, { ip: string; at: number }>();
+
+/** 节点 host 复指到新 IP（如 VPS 重建）后调用，清本 isolate 的解析缓存 */
+export const invalidateNodeIpsCache = (): void => {
+  nodeIpCache.clear();
+};
+
 const resolveNodeIps = async (hosts: string[]): Promise<Record<string, string>> => {
-  const uniq = [...new Set(hosts.filter((h) => h && !IPV4_RE.test(h)))];
+  const now = Date.now();
+  const result: Record<string, string> = {};
+  const stale: string[] = [];
+  for (const h of [...new Set(hosts.filter((x) => x && !IPV4_RE.test(x)))]) {
+    const hit = nodeIpCache.get(h);
+    if (hit && now - hit.at < NODE_IP_TTL) result[h] = hit.ip;
+    else stale.push(h);
+  }
+  if (!stale.length) return result;
   const entries = await Promise.all(
-    uniq.map(async (h): Promise<[string, string] | null> => {
+    stale.map(async (h): Promise<[string, string] | null> => {
       try {
         const res = await fetch(
           `https://cloudflare-dns.com/dns-query?name=${encodeURIComponent(h)}&type=A`,
@@ -32,7 +50,12 @@ const resolveNodeIps = async (hosts: string[]): Promise<Record<string, string>> 
       }
     })
   );
-  return Object.fromEntries(entries.filter((e): e is [string, string] => e !== null));
+  for (const e of entries) {
+    if (!e) continue;
+    nodeIpCache.set(e[0], { ip: e[1], at: now });
+    result[e[0]] = e[1];
+  }
+  return result;
 };
 
 /**

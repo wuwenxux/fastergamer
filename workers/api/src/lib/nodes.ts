@@ -30,7 +30,26 @@ const STAT_FIELDS = [
 
 const statKey = (id: string): string => `nodestat:${id}`;
 
+/**
+ * getNodes 的 isolate 内存缓存（TTL 60s）：/api/sub、agent 鉴权快照、authpush
+ * 都是读高频路径，每次 1+N 次 KV get；节点注册表是低频单写者（管理接口），
+ * 动态状态（心跳/流量）60s 内的滞后对订阅与配额判定无影响。
+ * 注意多 isolate 各有缓存，saveNodes 的失效只清本 isolate，其余最晚 TTL 到期收敛。
+ */
+const NODES_CACHE_TTL = 60_000;
+let nodesCache: { at: number; nodes: Node[] } | null = null;
+
+/** 注册表变更后调用：清本 isolate 的节点缓存（其他 isolate 最晚 60s 后收敛） */
+export const invalidateNodesCache = (): void => {
+  nodesCache = null;
+};
+
 export const getNodes = async (env: Env): Promise<Node[]> => {
+  // 返回深拷贝：多个调用方（probe-state / POST / PUT）会原地改数组与节点对象，
+  // 直接给缓存引用会污染后续命中者
+  if (nodesCache && Date.now() - nodesCache.at < NODES_CACHE_TTL) {
+    return structuredClone(nodesCache.nodes);
+  }
   const raw = await env.NODES.get(KV.NODES);
   let registry: Node[] = [];
   if (raw) {
@@ -56,12 +75,14 @@ export const getNodes = async (env: Env): Promise<Node[]> => {
     })
   );
   const statsById = new Map(entries);
-  return registry.map((n) => ({ ...n, ...(statsById.get(n.id) ?? {}) }));
+  const merged = registry.map((n) => ({ ...n, ...(statsById.get(n.id) ?? {}) }));
+  nodesCache = { at: Date.now(), nodes: merged };
+  return structuredClone(merged);
 };
 
 /** 保存注册表（静态配置）。动态字段会被剥离，由 saveNodeStat 单独持久化 */
-export const saveNodes = (env: Env, nodes: Node[]): Promise<void> =>
-  env.NODES.put(
+export const saveNodes = async (env: Env, nodes: Node[]): Promise<void> => {
+  await env.NODES.put(
     KV.NODES,
     JSON.stringify(
       nodes.map((n) => {
@@ -71,6 +92,8 @@ export const saveNodes = (env: Env, nodes: Node[]): Promise<void> =>
       })
     )
   );
+  invalidateNodesCache();
+};
 
 /** 保存单节点动态状态（合并写，单键单写者，无整表竞争） */
 export const saveNodeStat = async (env: Env, node: Node): Promise<void> => {
