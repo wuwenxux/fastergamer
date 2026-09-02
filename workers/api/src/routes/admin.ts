@@ -560,9 +560,9 @@ adminRoutes.post("/orders/:id/confirm", async (c) => {
 });
 
 /**
- * GET /api/admin/orders/:id/confirm?key=... —— 邮件里的一键确认链接（浏览器直接打开）
- * 只返回落地页，不直接发货：企业邮箱安全网关会预取邮件 URL，
- * 真正的确认发货由页面按钮 JS 发 POST 到同路径完成（幂等，见上方 POST 路由）。
+ * GET /api/admin/orders/:id/confirm?ticket=... —— 邮件里的一键确认链接（浏览器直接打开）
+ * 只返回落地页，不直接发货：企业邮箱安全网关会预取邮件 URL（预取只验票不焚票），
+ * 真正的确认发货由页面按钮 JS 发 POST 到同路径完成（POST 验票后焚票；幂等，见上方 POST 路由）。
  */
 adminRoutes.get("/orders/:id/confirm", async (c) => {
   const id = escapeHtml(c.req.param("id"));

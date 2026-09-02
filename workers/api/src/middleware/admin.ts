@@ -1,14 +1,24 @@
 import type { MiddlewareHandler } from "hono";
+import { validateOrderConfirmTicket } from "../lib/kv";
 import type { Env } from "../types";
 
-/** 管理接口鉴权：请求携带 x-admin-key header；仅订单确认（/orders/）允许 ?key= 查询参数（邮件一键链接），
- *  其他 admin 路由只认 header，降低管理 key 出现在 URL/访问日志里的暴露面 */
+/** 管理接口鉴权：请求携带 x-admin-key header。
+ *  例外：订单一键确认链接（/orders/:id/confirm）接受 ?ticket= 一次性票据
+ *  （GET 落地页只验不焚——邮箱网关会预取；POST 发货验后焚毁），
+ *  不再接受 ?key= 主 key——主 key 进邮件/URL 的暴露面过大 */
 export const adminAuth: MiddlewareHandler<{ Bindings: Env }> = async (c, next) => {
   const headerKey = c.req.header("x-admin-key");
-  const queryKey = c.req.path.startsWith("/api/admin/orders/") ? c.req.query("key") : undefined;
-  const key = headerKey ?? queryKey;
-  if (!key || key !== c.env.ADMIN_KEY) {
-    return c.json({ ok: false, error: "unauthorized" }, 401);
+  if (headerKey && headerKey === c.env.ADMIN_KEY) {
+    await next();
+    return;
   }
-  await next();
+  const m = c.req.path.match(/^\/api\/admin\/orders\/([^/]+)\/confirm$/);
+  if (m) {
+    const ticket = c.req.query("ticket");
+    if (ticket && (await validateOrderConfirmTicket(c.env, m[1], ticket, c.req.method === "POST"))) {
+      await next();
+      return;
+    }
+  }
+  return c.json({ ok: false, error: "unauthorized" }, 401);
 };

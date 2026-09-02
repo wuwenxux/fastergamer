@@ -4,7 +4,7 @@ import { getSessionAccount } from "../lib/accounts";
 import { getAlipayConfig, precreate, verifyNotify } from "../lib/alipay";
 import { isEmail, sendMail } from "../lib/email-aliyun";
 import { escapeHtml } from "../lib/escape-html";
-import { getOrder, getPlans, saveOrder } from "../lib/kv";
+import { getOrCreateOrderConfirmTicket, getOrder, getPlans, saveOrder } from "../lib/kv";
 import { newOrderId, newPaymentRef } from "../lib/ids";
 import { fulfillOrder } from "../lib/issue-token";
 import { availableDiscount, consumeCredit, orderDiscount, recordReferral } from "../lib/referral";
@@ -104,7 +104,9 @@ ordersRoutes.post("/", async (c) => {
   if (!order.alipay_qr_code && c.env.ADMIN_NOTIFY_EMAIL) {
     const adminEmail = c.env.ADMIN_NOTIFY_EMAIL;
     const site = (c.env.SITE_URL ?? "").trim().replace(/\/$/, "");
-    const confirmUrl = `${site}/api/admin/orders/${order.id}/confirm?key=${c.env.ADMIN_KEY}`;
+    // 一键确认链接带一次性票据（scoped 到本订单），不再携带主 ADMIN_KEY
+    const ticket = await getOrCreateOrderConfirmTicket(c.env, order.id);
+    const confirmUrl = `${site}/api/admin/orders/${order.id}/confirm?ticket=${ticket}`;
     c.executionCtx.waitUntil(
       sendMail(
         c.env,
@@ -173,7 +175,8 @@ ordersRoutes.post("/:id/claim-paid", async (c) => {
     const plan = plans.find((p) => p.id === order.plan_id);
     const payable = order.payable_cny ?? plan?.price_cny ?? 0;
     const site = (c.env.SITE_URL ?? "").trim().replace(/\/$/, "");
-    const confirmUrl = `${site}/api/admin/orders/${order.id}/confirm?key=${c.env.ADMIN_KEY}`;
+    const ticket = await getOrCreateOrderConfirmTicket(c.env, order.id);
+    const confirmUrl = `${site}/api/admin/orders/${order.id}/confirm?ticket=${ticket}`;
     const claimInfo = [
       amount !== undefined ? `自述转账金额 ¥${amount}` : null,
       note ? `付款账号：${note}` : null,

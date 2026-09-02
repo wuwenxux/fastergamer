@@ -133,6 +133,10 @@ export interface TokenSettlementPatch extends Partial<Token> {
  * 结算字段的「重读-合并」写：重新读取 token 最新副本，只把补丁里的结算字段覆盖上去再写回，
  * 并发用户操作（加设备/封 IP 等）改过的其他字段不丢。
  * - notify_log 按键级合并：并发路径（结算/notify-scan）各自新增的提醒记录互不覆盖；
+ * - traffic_by_node / traffic_total_by_node / billing_by_node 同样按键级合并：
+ *   每个结算写者只动自己节点的键，整 map 覆盖会让并发跨节点结算互相顶回旧值
+ *   （丢量 + 基线回滚导致下轮重复计）；这些字段不存在"清空"语义（重置走
+ *   traffic_offset_bytes 偏移），逐键合并安全；
  * - patch 里值为 undefined 的键会被忽略（不会误删最新副本上的既有字段）；
  * - token 已不存在（删除/rotate）时直接丢弃本次结算。
  */
@@ -147,6 +151,14 @@ export const mergeTokenSettlement = async (
   if (fields.notify_log) {
     fresh.notify_log = { ...fresh.notify_log, ...fields.notify_log };
     delete fields.notify_log;
+  }
+  for (const f of ["traffic_by_node", "traffic_total_by_node", "billing_by_node"] as const) {
+    const m = fields[f] as Record<string, unknown> | undefined;
+    if (m) {
+      const bag = fresh as unknown as Record<string, Record<string, unknown> | undefined>;
+      bag[f] = { ...(bag[f] ?? {}), ...m };
+      delete fields[f];
+    }
   }
   for (const [k, v] of Object.entries(fields)) {
     if (v !== undefined) (fresh as unknown as Record<string, unknown>)[k] = v;
@@ -244,3 +256,52 @@ export const listOrders = async (env: Env): Promise<Order[]> => {
 
 export const saveOrder = (env: Env, order: Order): Promise<void> =>
   env.ORDERS.put(KV.ORDER + order.id, JSON.stringify(order));
+
+// ---------- 订单确认票据（邮件一键发货链接用，替代 URL 携带主 ADMIN_KEY） ----------
+const CONFIRM_TICKET_KEY = "orderconfirm:";
+/** 票据有效期 7 天（静态转账订单可能挂起数天才确认） */
+const CONFIRM_TICKET_TTL_S = 7 * 86400;
+
+/**
+ * 取（或创建）某订单的一键确认票据：同一订单复用同一票据，
+ * 新订单邮件与买家声明邮件里的链接保持一致。
+ */
+export const getOrCreateOrderConfirmTicket = async (env: Env, orderId: string): Promise<string> => {
+  const key = CONFIRM_TICKET_KEY + orderId;
+  const raw = await env.ORDERS.get(key);
+  if (raw) {
+    try {
+      return (JSON.parse(raw) as { ticket: string }).ticket;
+    } catch {
+      /* 损坏则重建 */
+    }
+  }
+  const ticket = crypto.randomUUID() + crypto.randomUUID();
+  await env.ORDERS.put(key, JSON.stringify({ ticket }), { expirationTtl: CONFIRM_TICKET_TTL_S });
+  return ticket;
+};
+
+/**
+ * 校验订单确认票据。consume=true（POST 确认发货）时验后即焚（一次性）；
+ * GET 落地页只验不焚——企业邮箱安全网关会预取链接，预取不得消耗票据。
+ * 读用 cacheTtl:0 绕边缘缓存，缩小焚毁后的重放窗口（KV 最终一致，为 best-effort）。
+ */
+export const validateOrderConfirmTicket = async (
+  env: Env,
+  orderId: string,
+  ticket: string,
+  consume: boolean
+): Promise<boolean> => {
+  const key = CONFIRM_TICKET_KEY + orderId;
+  const raw = await env.ORDERS.get(key, { cacheTtl: 0 });
+  if (!raw) return false;
+  let stored: string;
+  try {
+    stored = (JSON.parse(raw) as { ticket: string }).ticket;
+  } catch {
+    return false;
+  }
+  if (stored !== ticket) return false;
+  if (consume) await env.ORDERS.delete(key);
+  return true;
+};

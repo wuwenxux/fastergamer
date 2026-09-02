@@ -179,4 +179,27 @@ describe("mergeTokenSettlement 重读-合并", () => {
     await mergeTokenSettlement(mockEnv(ns), "uuid-gone", { traffic_used_gb: 1 });
     expect(ns.put).not.toHaveBeenCalled();
   });
+
+  it("跨节点并发结算按键级合并：后到补丁不顶回先写节点的增量", async () => {
+    const { store, ns } = mockTokensNs();
+    const uuid = "uuid-1";
+    // 初始：hk 节点已累计 100
+    store.set(
+      KV.TOKEN + uuid,
+      JSON.stringify(makeToken({ uuid, traffic_total_by_node: { hk: 100 } }))
+    );
+
+    // 节点 B（jp）基于含 hk:100 的副本算出补丁；节点 A（hk）并发又结算了 10
+    // 顺序无所谓：B 的补丁先到，A 的后到——旧实现 A 的整 map {hk:110} 会把
+    // B 刚写入的 jp:5 抹掉；按键级合并后两边的键都保留
+    await mergeTokenSettlement(mockEnv(ns), uuid, {
+      traffic_total_by_node: { hk: 100, jp: 5 },
+    });
+    await mergeTokenSettlement(mockEnv(ns), uuid, {
+      traffic_total_by_node: { hk: 110 },
+    });
+
+    const saved = JSON.parse(store.get(KV.TOKEN + uuid)!) as Token;
+    expect(saved.traffic_total_by_node).toEqual({ hk: 110, jp: 5 });
+  });
 });
