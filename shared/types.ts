@@ -107,6 +107,8 @@ export interface Token {
   rate_window_bytes?: number;
   /** 绑定的设备槽位（不含主设备 uuid），每个设备独立 uuid 做流量审计 */
   devices?: Device[];
+  /** 设备数上限（含主设备）：设置后覆盖套餐的 max_devices，管理员售后调整用 */
+  max_devices?: number;
   /** 最后一次产生流量的时间（unix 毫秒）。已迁移至 presence:{uuid}，仅为存量兼容保留 */
   last_active_at?: number;
   /** unix 毫秒时间戳 */

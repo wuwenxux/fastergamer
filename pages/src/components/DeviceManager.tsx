@@ -31,10 +31,11 @@ export default function DeviceManager({
       .plans()
       .then((plans) => {
         const plan = plans.find((p) => p.id === token.plan_id);
-        if (plan?.max_devices) setMaxDevices(plan.max_devices);
+        // token 级 max_devices 优先（管理员单独放宽），否则套餐值
+        setMaxDevices(token.max_devices ?? plan?.max_devices ?? 2);
       })
       .catch(() => {});
-  }, [token.plan_id]);
+  }, [token.plan_id, token.max_devices]);
 
   const devices = token.devices ?? [];
   const used = 1 + devices.length; // 含主设备

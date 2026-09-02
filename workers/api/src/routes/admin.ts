@@ -338,6 +338,68 @@ adminRoutes.post("/tokens/:id/rotate-uuid", async (c) => {
 });
 
 /**
+ * DELETE /api/admin/tokens/:id/devices/:deviceId —— 管理员解绑设备
+ * 与用户自助解绑同逻辑（设备 uuid 从白名单摘除，全节点约 30s 失效），
+ * 区别在于走 x-admin-key 免用户 session，用于售后场景（设备丢失/外借/异常占用槽位）。
+ */
+adminRoutes.delete("/tokens/:id/devices/:deviceId", async (c) => {
+  const token = await getTokenById(c.env, c.req.param("id"));
+  if (!token) return c.json({ ok: false, error: "token not found" }, 404);
+
+  const deviceId = c.req.param("deviceId");
+  const device = token.devices?.find((d) => d.id === deviceId);
+  if (!device) return c.json({ ok: false, error: "device not found" }, 404);
+
+  token.devices = (token.devices ?? []).filter((d) => d.id !== deviceId);
+  await saveToken(c.env, token);
+  await deleteDeviceIndex(c.env, device.uuid);
+  c.executionCtx.waitUntil(pushAuthRefresh(c.env)); // 设备 uuid 立即从全节点白名单摘除
+  return c.json({ ok: true, data: { id: deviceId, uuid: device.uuid } });
+});
+
+/**
+ * PUT /api/admin/tokens/:id —— 管理员调整 token 属性（售后用）
+ * body: { max_devices?: number, extend_days?: number }
+ * - max_devices：token 级设备上限，覆盖套餐值（不影响同套餐其他用户）
+ * - extend_days：有效期设为 当前时间 + N 天（base_expires_at 同步；months_borrowed 不动）
+ */
+adminRoutes.put("/tokens/:id", async (c) => {
+  const token = await getTokenById(c.env, c.req.param("id"));
+  if (!token) return c.json({ ok: false, error: "token not found" }, 404);
+
+  const body = (await c.req.json().catch(() => null)) as {
+    max_devices?: number;
+    extend_days?: number;
+  } | null;
+  if (!body) return c.json({ ok: false, error: "invalid body" }, 400);
+
+  let changed = false;
+  if (body.max_devices !== undefined) {
+    if (!Number.isInteger(body.max_devices) || body.max_devices < 1 || body.max_devices > 50) {
+      return c.json({ ok: false, error: "max_devices 需为 1-50 的整数" }, 400);
+    }
+    token.max_devices = body.max_devices;
+    changed = true;
+  }
+  if (body.extend_days !== undefined) {
+    if (!Number.isFinite(body.extend_days) || body.extend_days <= 0 || body.extend_days > 3650) {
+      return c.json({ ok: false, error: "extend_days 需为 1-3650 的数字" }, 400);
+    }
+    const to = Date.now() + body.extend_days * 86_400_000;
+    token.expires_at = to;
+    if (token.base_expires_at) token.base_expires_at = to;
+    changed = true;
+  }
+  if (!changed) return c.json({ ok: false, error: "nothing to update" }, 400);
+
+  await saveToken(c.env, token);
+  return c.json({
+    ok: true,
+    data: { id: token.id, max_devices: token.max_devices, expires_at: token.expires_at },
+  });
+});
+
+/**
  * POST /api/admin/notify-scan —— 定时风险扫描（cron 每 15 分钟调用）
  * 做两件事：24h 内到期提醒；清理过期 90 天的 token 与已结工单
  * （节点失联告警由 probe-nodes.sh 主动探测承担，agent 事件驱动后 last_seen 不再可靠）

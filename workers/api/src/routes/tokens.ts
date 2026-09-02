@@ -251,7 +251,8 @@ tokensRoutes.post("/:id/devices", async (c) => {
 
   const plans = await getPlans(c.env);
   const plan = plans.find((p) => p.id === token.plan_id);
-  const maxDevices = plan?.max_devices ?? 2;
+  // token 级 max_devices 优先（管理员售后单独放宽），否则按套餐，缺省 2
+  const maxDevices = token.max_devices ?? plan?.max_devices ?? 2;
   const current = 1 + (token.devices?.length ?? 0); // 主设备 + 已绑定槽位
   if (current >= maxDevices) {
     return c.json(
