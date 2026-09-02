@@ -5,9 +5,10 @@
  * 用法：
  *   node scripts/ali-node-eval.mjs "HK-候选A=1.2.3.4" "JP-候选B=5.6.7.8" [更多 NAME=IP 或裸 IP]
  *   node scripts/ali-node-eval.mjs --points 6 "HK-候选A=1.2.3.4"   # 少量点快速验证
+ *   node scripts/ali-node-eval.mjs "hk01-reality=1.2.3.4:8444:TCP" "hk01-hy2=1.2.3.4:8445:UDP"  # 协议级对比
  *
  * 流程：DescribeSiteMonitorISPCityList 拉全国 IDC 三网探测点（约 134 个）
- *   → 每个 IP 建 PING 一次性拨测任务（每任务最多 50 点，自动分批）
+ *   → 每个目标建一次性拨测任务（PING/TCP/UDP，每任务最多 50 点，自动分批）
  *   → 轮询收结果 → 原始 JSON 存 scripts/.probe/ → 打印分析报告
  *
  * 计费：境内 IDC 点 0.001 元/次，全量 ≈ 0.001 × 134 × IP 数（6 个 IP ≈ 0.8 元）。
@@ -31,12 +32,12 @@ let maxPoints = Infinity;
 const targets = [];
 for (let i = 0; i < args.length; i++) {
   if (args[i] === "--points") { maxPoints = Number(args[++i]); continue; }
-  const m = args[i].match(/^([^=]+)=([\d.]+)$/);
-  if (m) targets.push({ name: m[1], ip: m[2] });
-  else if (/^[\d.]+$/.test(args[i])) targets.push({ name: args[i], ip: args[i] });
+  const m = args[i].match(/^([^=]+)=([\d.]+)(?::(\d+)(?::(PING|TCP|UDP))?)?$/i);
+  if (m) targets.push({ name: m[1], ip: m[2], port: m[3] ? Number(m[3]) : null, type: (m[4] ?? (m[3] ? "TCP" : "PING")).toUpperCase() });
+  else if (/^[\d.]+$/.test(args[i])) targets.push({ name: args[i], ip: args[i], port: null, type: "PING" });
 }
 if (!targets.length) {
-  console.error('用法: node scripts/ali-node-eval.mjs [--points N] "名称=IP" [更多...]');
+  console.error('用法: node scripts/ali-node-eval.mjs [--points N] "名称=IP[:端口[:PING|TCP|UDP]]" [更多...]');
   process.exit(1);
 }
 
@@ -81,20 +82,27 @@ const chunks = [];
 for (let i = 0; i < points.length; i += CHUNK) chunks.push(points.slice(i, i + CHUNK));
 console.log(`探测点 ${points.length} 个 × ${targets.length} IP = ${points.length * targets.length} 次（约 ${(points.length * targets.length * 0.001).toFixed(2)} 元）`);
 
+// QUIC Initial（不支持的版本 0xFFFFFFFF + 填充到 1200B）：触发服务器版本协商响应，
+// 让 UDP 探测能真实打到 Hy2 端口并测出往返延迟（裸 UDP 探测对 QUIC 服务全部超时）。
+const QUIC_INIT_HEX = ("c0ffffffff08" + "1122334455667788" + "00").padEnd(2400, "0");
+
 // ---------- 建任务 ----------
 const tasks = [];
 for (const t of targets) {
   for (let c = 0; c < chunks.length; c++) {
+    const opts = t.port ? { port: t.port } : null;
+    if (opts && t.type === "UDP") Object.assign(opts, { request_format: "hex", request_content: QUIC_INIT_HEX });
     const r = await call("CreateInstantSiteMonitor", {
-      TaskName: `eval-${t.ip}-${c}`,
+      TaskName: `eval-${t.name}-${t.ip}${t.port ? `-${t.port}-${t.type}` : ""}-${c}`,
       Address: t.ip,
-      TaskType: "PING",
+      TaskType: t.type,
+      ...(opts ? { OptionsJson: JSON.stringify(opts) } : {}),
       IspCities: JSON.stringify(chunks[c].map(({ city, isp }) => ({ city, isp, type: "IDC" }))),
     });
     const id = r.CreateResultList?.[0]?.TaskId ?? r.TaskId;
     tasks.push({ ...t, expect: chunks[c].length, id });
   }
-  console.log(`✓ ${t.name} (${t.ip}) ${chunks.length} 个任务`);
+  console.log(`✓ ${t.name} (${t.ip}${t.port ? `:${t.port}/${t.type}` : "/PING"}) ${chunks.length} 个任务`);
 }
 
 // ---------- 收结果 ----------
