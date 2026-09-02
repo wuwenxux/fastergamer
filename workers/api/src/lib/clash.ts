@@ -69,12 +69,14 @@ export const buildClashConfig = ({ uuid, nodes, regions, userAgent, nodeIps }: B
   const lines: string[] = [];
   lines.push("mixed-port: 7890", "allow-lan: false", "mode: rule", "log-level: info", "");
 
-  // DNS 分流：国内域名走阿里/腾讯 DNS（结果真实、指向国内 CDN），境外域名走代理解析。
-  // 没有这段时 GEOIP/GEOSITE 依赖系统 DNS，被污染或解析到境外 CDN 会导致国内站误判走代理。
+  // DNS 分流：国内域名走阿里/腾讯 DNS（结果真实、指向国内 CDN）；境外域名由
+  // GEOSITE,geolocation-!cn 规则直接代理、不触发本地解析（实测国内访问 1.1.1.1 DoH
+  // 全部超时，挂在这里会拖慢每个境外域名首连 5s+）。未分类域名用默认国内 DNS 解析
+  // 后交给 GEOIP,CN 兜底判定。没有这段时 GEOIP/GEOSITE 依赖系统 DNS，被污染或解析
+  // 到境外 CDN 会导致国内站误判走代理。
   const geosite = supportsGeosite(userAgent);
   // nameserver-policy 的 key：新内核用 geosite 分类；老内核（Premium）用 +.cn 域名后缀
   const cnPolicyKey = geosite ? '"geosite:cn"' : '"+.cn"';
-  const gfwPolicyKey = '"geosite:geolocation-!cn"';
   lines.push(
     "dns:",
     "  enable: true",
@@ -91,7 +93,6 @@ export const buildClashConfig = ({ uuid, nodes, regions, userAgent, nodeIps }: B
     "    - 223.5.5.5",
     "  nameserver-policy:",
     `    ${cnPolicyKey}: 223.5.5.5`,
-    ...(geosite ? [`    ${gfwPolicyKey}: https://1.1.1.1/dns-query`] : []),
     ""
   );
   // 区域元数据提前解析：节点显示名要用它拼中文地区名
@@ -290,8 +291,13 @@ export const buildClashConfig = ({ uuid, nodes, regions, userAgent, nodeIps }: B
   // 国内站点直连：
   // 1) GEOSITE,CN 按域名匹配（cn 域名列表），fake-ip / 域名先行场景也能命中——
   //    仅 mihomo/Stash 等新内核支持，老内核（Premium）下发会整个配置加载失败，按 UA 降级
-  // 2) GEOIP,CN 按解析结果 IP 兜底（DNS 已分流到国内 DNS，判定可靠）
-  if (geosite) lines.push("  - GEOSITE,CN,DIRECT");
+  // 2) GEOSITE,geolocation-!cn 已知境外域名直接进代理：抢在 GEOIP 之前，避免为判
+  //    GEOIP 而对根本不需要本地真实 IP 的域名做一次解析（fake-ip 下代理解析在节点侧完成）
+  // 3) GEOIP,CN 按解析结果 IP 兜底（只剩未分类域名走到这，默认国内 DNS 判定可靠）
+  if (geosite) {
+    lines.push("  - GEOSITE,CN,DIRECT");
+    lines.push(`  - GEOSITE,geolocation-!cn,${MAIN_GROUP}`);
+  }
   lines.push("  - GEOIP,CN,DIRECT");
   lines.push(`  - MATCH,${MAIN_GROUP}`);
 

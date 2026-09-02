@@ -93,6 +93,21 @@ describe("GEOSITE 规则按 UA 降级", () => {
     expect(config).toContain('"geosite:cn": 223.5.5.5');
   });
 
+  it("新 UA：geolocation-!cn 直接代理抢在 GEOIP 前，且不再下发 1.1.1.1 DoH policy", () => {
+    const config = buildClashConfig({ uuid: UUID, nodes: NODES, userAgent: NEW_UA });
+    const gfwRule = config.indexOf("GEOSITE,geolocation-!cn,🚀 节点选择");
+    expect(gfwRule).toBeGreaterThan(-1);
+    // 必须在 GEOIP,CN 之前，否则境外域名仍会为判 GEOIP 触发一次本地解析
+    expect(gfwRule).toBeLessThan(config.indexOf("GEOIP,CN,DIRECT"));
+    // 1.1.1.1 DoH 在国内实测不可达，且规则前置后该 policy 已是死代码
+    expect(config).not.toContain("1.1.1.1");
+  });
+
+  it("老 UA：不下发 geolocation-!cn 规则", () => {
+    const config = buildClashConfig({ uuid: UUID, nodes: NODES, userAgent: OLD_UA });
+    expect(config).not.toContain("geolocation-!cn");
+  });
+
   it("缺省 UA 按老内核处理", () => {
     const config = buildClashConfig({ uuid: UUID, nodes: NODES });
     expect(config).not.toContain("GEOSITE,CN");
