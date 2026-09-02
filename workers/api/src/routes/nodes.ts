@@ -76,6 +76,7 @@ nodesRoutes.post("/", async (c) => {
     ws_path: body.ws_path ?? "/vless-ws",
     active: body.active ?? true,
     ...(body.reality ? { reality: body.reality } : {}),
+    ...(body.hy2 ? { hy2: body.hy2 } : {}),
   };
 
   nodes.push(node);

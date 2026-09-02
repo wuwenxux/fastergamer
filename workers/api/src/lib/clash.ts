@@ -1,14 +1,19 @@
 /**
  * Clash 订阅配置生成：每个 active 节点生成一个 WS 代理；节点配了 reality 字段
- * 且客户端是 mihomo 系内核时，额外生成对应的 Reality 直连代理（名称加 ⚡ 后缀），
- * 与 WS 条目进同样的分组，由 url-test 自动择优，WS 作为兜底链路保留。
+ * 且客户端是 mihomo 系内核时，额外生成对应的 Reality 直连代理（名称加 ⚡ 后缀）；
+ * 节点配了 hy2 字段（Hysteria2 UDP 入站）时同样仅对 mihomo 系内核追加 🚀 后缀的
+ * hysteria2 条目（序号接在 ⚡ 条目之后），密码固定为 "<uuid>:x"，sni 为节点域名。
+ * 三协议条目都进主 select 组与自动分组，自动分组内顺序固定为
+ * 🚀Hy2 → ⚡Reality → WS（延迟实测递增，配合 tolerance 粘滞，UDP 异常时
+ * 自动落 ⚡/WS 三层兜底）。老内核（Premium）只收 WS 条目。
  * 节点显示名统一为「区域代码 中文地区名 全局序号」，如 "MY 马来西亚 01"（序号按节点列表顺序全局递增）。
  * 分组结构（按区域）：
  *   🚀 节点选择（select）→ ♻️ 自动选择（全部节点 url-test，gstatic 端到端）
  *                        → 🇭🇰 香港 / 🇯🇵 日本 …（各区域 url-test，测本区域节点 /generate_204，
  *                          显示值 ≈ 客户端→节点延迟）
  *                        → 各节点（手动指定）
- * 规则：局域网与国内流量（GEOIP CN）直连，其余走代理。
+ * 规则：OpenAI/ChatGPT 固定走日本区域组（OpenAI 封锁香港出口），局域网与国内流量
+ * （GEOIP CN）直连，其余走代理。
  */
 
 import type { Node } from "../../../../shared/types";
@@ -104,6 +109,8 @@ export const buildClashConfig = ({ uuid, nodes, regions, userAgent, nodeIps }: B
     wsPath: string;
     /** 节点开了 Reality 直连时携带；仅对 mihomo 系内核下发 ⚡ 条目 */
     reality?: NodeReality;
+    /** 节点开了 Hysteria2 UDP 入站时携带；仅对 mihomo 系内核下发 🚀 条目 */
+    hy2?: Node["hy2"];
   }[] = [];
 
   // 显示名统一为「区域代码 中文地区名 全局序号」，如 "MY 马来西亚 01"、"HK 香港 02"，
@@ -121,6 +128,7 @@ export const buildClashConfig = ({ uuid, nodes, regions, userAgent, nodeIps }: B
       tls: node.tls,
       wsPath: node.ws_path,
       reality: node.reality,
+      hy2: node.hy2,
     });
   }
 
@@ -178,11 +186,40 @@ export const buildClashConfig = ({ uuid, nodes, regions, userAgent, nodeIps }: B
       `      short-id: ${r.short_id}`
     );
   }
-  const allProxies = [...proxies, ...realityProxies];
+
+  // Hysteria2 条目（🚀 后缀）：仅对 mihomo 系内核下发，序号接在 ⚡ 条目之后。
+  // 节点跑 hysteria2 服务端（UDP，TLS 用节点域名的真实证书），auth userpass 为
+  // {uuid: "x"}，客户端 password 固定 "<uuid>:x"，sni 必须是节点域名
+  const hy2Proxies = geosite
+    ? proxies
+        .filter((p) => p.hy2)
+        .map((p, i) => ({
+          ...p,
+          name: `${p.region} ${p.name.split(" ")[1]} 🚀${String(proxies.length + realityProxies.length + i + 1).padStart(2, "0")}`,
+        }))
+    : [];
+  for (const p of hy2Proxies) {
+    lines.push(
+      `  - name: "${p.name}"`,
+      "    type: hysteria2",
+      `    server: ${p.server}`,
+      `    port: ${p.hy2!.port}`,
+      `    password: "${uuid}:x"`,
+      // TLS 证书是节点域名的真实证书，sni 与 server 是否为 IP 无关，始终用域名
+      `    sni: ${p.host}`
+    );
+  }
+  const allProxies = [...proxies, ...realityProxies, ...hy2Proxies];
+
+  // 自动分组协议池：三协议全放，顺序 🚀Hy2 → ⚡Reality → WS。
+  // 依据实测（杭州→HK 稳态延迟 Hy2 ~141ms / Reality ~184ms / WS ~232ms）：
+  // 排最前的协议配合 tolerance 粘滞成为默认链路；UDP 被 QoS 时 url-test
+  // 自动落 Reality，Reality 端口异常再落 WS，三层兜底
+  const autoPool = [...hy2Proxies, ...realityProxies, ...proxies];
 
   // 按区域归类：区域顺序跟随 CLASH_REGIONS，未登记的区域排在最后
   const byRegion = new Map<string, string[]>(); // region code -> proxy names
-  for (const p of allProxies) {
+  for (const p of autoPool) {
     const list = byRegion.get(p.region) ?? [];
     list.push(p.name);
     byRegion.set(p.region, list);
@@ -203,10 +240,10 @@ export const buildClashConfig = ({ uuid, nodes, regions, userAgent, nodeIps }: B
   for (const code of orderedCodes) lines.push(`      - "${regionGroupName(code)}"`);
   for (const p of allProxies) lines.push(`      - "${p.name}"`);
 
-  // 全局自动选择：url-test 覆盖全部节点，单节点故障无需手动干预。
+  // 全局自动选择：url-test 覆盖自动池全部条目，单节点故障无需手动干预。
   // 测速目标保持 gstatic 端到端——它决定实际用哪个节点，必须反映真实上网链路
   lines.push(`  - name: "${AUTO_GROUP}"`, "    type: url-test", "    proxies:");
-  for (const p of allProxies) lines.push(`      - "${p.name}"`);
+  for (const p of autoPool) lines.push(`      - "${p.name}"`);
   lines.push(`    url: ${TEST_URL}`, "    interval: 300", "    tolerance: 50");
 
   // 每个区域一个 url-test 分组：锁定区域时仍享受区域内故障切换。
@@ -235,6 +272,21 @@ export const buildClashConfig = ({ uuid, nodes, regions, userAgent, nodeIps }: B
     "  - IP-CIDR,192.168.0.0/16,DIRECT,no-resolve",
     "  - IP-CIDR,127.0.0.0/8,DIRECT,no-resolve"
   );
+  // OpenAI/Claude 固定走日本区域组：两家均不支持香港地区，HK 出口一律封锁
+  // （OpenAI 403 unsupported_country；Claude 302 到 app-unavailable-in-region），
+  // 与协议（WS/Reality）无关。仅当配置里存在日本组时下发；没有日本节点时保持默认走主分组。
+  // 用 DOMAIN-SUFFIX 而非 GEOSITE：新老内核都兼容
+  if (byRegion.has("JP")) {
+    const jp = regionGroupName("JP");
+    lines.push(
+      `  - DOMAIN-SUFFIX,chatgpt.com,${jp}`,
+      `  - DOMAIN-SUFFIX,openai.com,${jp}`,
+      `  - DOMAIN-SUFFIX,oaistatic.com,${jp}`,
+      `  - DOMAIN-SUFFIX,oaiusercontent.com,${jp}`,
+      `  - DOMAIN-SUFFIX,claude.ai,${jp}`,
+      `  - DOMAIN-SUFFIX,anthropic.com,${jp}`
+    );
+  }
   // 国内站点直连：
   // 1) GEOSITE,CN 按域名匹配（cn 域名列表），fake-ip / 域名先行场景也能命中——
   //    仅 mihomo/Stash 等新内核支持，老内核（Premium）下发会整个配置加载失败，按 UA 降级

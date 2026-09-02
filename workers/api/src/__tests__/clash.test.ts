@@ -110,6 +110,26 @@ describe("直连规则", () => {
   });
 });
 
+describe("OpenAI/Claude 定向规则", () => {
+  it("有日本节点时 OpenAI/Claude 域名固定走日本区域组（新老内核一致）", () => {
+    for (const ua of [NEW_UA, OLD_UA]) {
+      const config = buildClashConfig({ uuid: UUID, nodes: NODES, userAgent: ua });
+      expect(config).toContain("DOMAIN-SUFFIX,chatgpt.com,🇯🇵 日本");
+      expect(config).toContain("DOMAIN-SUFFIX,openai.com,🇯🇵 日本");
+      expect(config).toContain("DOMAIN-SUFFIX,oaistatic.com,🇯🇵 日本");
+      expect(config).toContain("DOMAIN-SUFFIX,oaiusercontent.com,🇯🇵 日本");
+      expect(config).toContain("DOMAIN-SUFFIX,claude.ai,🇯🇵 日本");
+      expect(config).toContain("DOMAIN-SUFFIX,anthropic.com,🇯🇵 日本");
+    }
+  });
+
+  it("无日本节点时不下发 OpenAI/Claude 定向规则", () => {
+    const config = buildClashConfig({ uuid: UUID, nodes: NODES.filter((n) => n.region !== "JP"), userAgent: NEW_UA });
+    expect(config).not.toContain("chatgpt.com");
+    expect(config).not.toContain("claude.ai");
+  });
+});
+
 describe("节点 IP 直发（nodeIps）", () => {
   it("命中时 server 用 IP，servername / WS Host 保留域名", () => {
     const config = buildClashConfig({
@@ -162,12 +182,15 @@ describe("Reality 直连条目（⚡）", () => {
     expect(config).not.toContain("JP 日本 ⚡");
   });
 
-  it("⚡ 条目与 WS 条目进同样的分组", () => {
+  it("⚡ 条目进全部分组，自动组里排在 WS 前", () => {
     const config = buildClashConfig({ uuid: UUID, nodes: R_NODES, userAgent: NEW_UA });
     expect(groupBlock(config, "🚀 节点选择")).toContain('"HK 香港 ⚡03"');
-    expect(groupBlock(config, "♻️ 自动选择")).toContain('"HK 香港 ⚡03"');
-    expect(groupBlock(config, "🇭🇰 香港")).toContain('"HK 香港 ⚡03"');
-    expect(groupBlock(config, "🇭🇰 香港")).toContain('"HK 香港 01"'); // WS 兜底仍在
+    const auto = groupBlock(config, "♻️ 自动选择");
+    expect(auto).toContain('"HK 香港 ⚡03"');
+    expect(auto.indexOf('"HK 香港 ⚡03"')).toBeLessThan(auto.indexOf('"HK 香港 01"'));
+    const hk = groupBlock(config, "🇭🇰 香港");
+    expect(hk).toContain('"HK 香港 ⚡03"');
+    expect(hk.indexOf('"HK 香港 ⚡03"')).toBeLessThan(hk.indexOf('"HK 香港 01"'));
   });
 
   it("老内核 UA：不下发 ⚡ 条目，WS 兜底不受影响", () => {
@@ -175,6 +198,74 @@ describe("Reality 直连条目（⚡）", () => {
     expect(config).not.toContain("⚡");
     expect(config).not.toContain("reality-opts");
     expect(config).toContain('"HK 香港 01"');
+  });
+});
+
+describe("Hysteria2 条目（🚀）", () => {
+  const H_NODES: Node[] = [
+    { ...NODES[0], hy2: { port: 8445 } },
+    NODES[2], // 无 hy2 的节点不出 🚀 条目
+  ];
+
+  it("mihomo UA：带 hy2 的节点生成 🚀 条目，字段完整", () => {
+    const config = buildClashConfig({ uuid: UUID, nodes: H_NODES, userAgent: NEW_UA });
+    expect(config).toContain('"HK 香港 🚀03"'); // 序号接在 WS 条目（2 个）之后
+    const hy2Block = config.slice(config.indexOf('"HK 香港 🚀03"'));
+    expect(hy2Block).toContain("type: hysteria2");
+    expect(hy2Block).toContain("port: 8445");
+    expect(hy2Block).toContain(`password: "${UUID}:x"`);
+    expect(hy2Block).toContain("sni: hk1.example.com"); // sni 用节点域名（真实证书）
+    // 无 hy2 的节点不生成 🚀
+    expect(config).not.toContain("JP 日本 🚀");
+    expect((config.match(/type: hysteria2/g) ?? []).length).toBe(1);
+  });
+
+  it("nodeIps 命中时 🚀 条目 server 用 IP，sni 仍为域名", () => {
+    const config = buildClashConfig({
+      uuid: UUID,
+      nodes: H_NODES,
+      userAgent: NEW_UA,
+      nodeIps: { "hk1.example.com": "1.2.3.4" },
+    });
+    const hy2Block = config.slice(config.indexOf('"HK 香港 🚀03"'));
+    expect(hy2Block).toContain("server: 1.2.3.4");
+    expect(hy2Block).toContain("sni: hk1.example.com");
+  });
+
+  it("🚀 条目进全部分组且排最前", () => {
+    const config = buildClashConfig({ uuid: UUID, nodes: H_NODES, userAgent: NEW_UA });
+    expect(groupBlock(config, "🚀 节点选择")).toContain('"HK 香港 🚀03"');
+    const auto = groupBlock(config, "♻️ 自动选择");
+    expect(auto).toContain('"HK 香港 🚀03"');
+    expect(auto.indexOf('"HK 香港 🚀03"')).toBeLessThan(auto.indexOf('"HK 香港 01"'));
+    const hk = groupBlock(config, "🇭🇰 香港");
+    expect(hk).toContain('"HK 香港 🚀03"');
+    expect(hk.indexOf('"HK 香港 🚀03"')).toBeLessThan(hk.indexOf('"HK 香港 01"'));
+  });
+
+  it("老内核 UA：不下发 🚀 条目，WS 兜底不受影响", () => {
+    const config = buildClashConfig({ uuid: UUID, nodes: H_NODES, userAgent: OLD_UA });
+    expect(config).not.toContain("type: hysteria2");
+    expect(config).not.toContain("🚀0");
+    expect(config).toContain('"HK 香港 01"');
+  });
+
+  it("编号连续性：WS 2 个 + Reality 1 个时 hy2 序号从 04 开始", () => {
+    const config = buildClashConfig({
+      uuid: UUID,
+      nodes: [
+        { ...NODES[0], reality: { port: 8444, password: "PUBKEY", short_id: "abcd1234", server_name: "gateway.icloud.com" }, hy2: { port: 8445 } },
+        { ...NODES[1], hy2: { port: 8445 } },
+      ],
+      userAgent: NEW_UA,
+    });
+    expect(config).toContain('"HK 香港 ⚡03"');
+    expect(config).toContain('"HK 香港 🚀04"');
+    expect(config).toContain('"HK 香港 🚀05"');
+    // 自动组内顺序：🚀 在 ⚡ 前（Hy2 优先 → Reality → WS）
+    const auto = groupBlock(config, "♻️ 自动选择");
+    expect(auto.indexOf('"HK 香港 🚀04"')).toBeLessThan(auto.indexOf('"HK 香港 ⚡03"'));
+    expect(auto.indexOf('"HK 香港 ⚡03"')).toBeLessThan(auto.indexOf('"HK 香港 01"'));
   });
 });
 

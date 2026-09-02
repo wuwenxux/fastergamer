@@ -42,6 +42,14 @@ DEFAULT_XRAY_API = "127.0.0.1:10085"
 DEFAULT_ACCESS_LOG = "/var/log/xray/access.log"
 DEFAULT_AGENT_LISTEN = "127.0.0.1:8788"
 DEFAULT_LEDGER_FILE = "/var/lib/vpn-agent/ledger.json"
+# Hysteria2 UDP 入站（可选）：/etc/hysteria/config.yaml 存在才启用。
+# 用户同步 = 按白名单整文件重写 + systemctl restart hysteria（配置无热加载）；
+# 流量统计 = 周期读 trafficStats HTTP 端点，rx（下行）并入该 uuid 账本
+DEFAULT_HY2_CONFIG = "/etc/hysteria/config.yaml"
+DEFAULT_HY2_STATS_URL = "http://127.0.0.1:9999/traffic"
+DEFAULT_HY2_SERVICE = "hysteria"
+HY2_CERT = "/etc/hysteria/cert.crt"
+HY2_KEY = "/etc/hysteria/cert.key"
 INBOUND_TAG = "vless-in"
 # Reality 直连入站（可选）：节点 env 配了 REALITY_PRIVATE_KEY 才生成，
 # 与 WS 入站共用同一批 uuid，走 XTLS Vision（TCP+Reality，无域名/证书依赖）
@@ -94,13 +102,13 @@ class Ledger:
     def entry(self, uuid: str) -> dict:
         e = self.users.setdefault(
             uuid,
-            {"accum": 0, "last_counter": None, "idle_cycles": 0,
+            {"accum": 0, "last_counter": None, "last_counter_hy2": None, "idle_cycles": 0,
              "ip_conns": {}, "last_report": None},
         )
-        # 旧版账本条目可能缺键（如 ip_conns/last_report）：按默认模板补齐，
+        # 旧版账本条目可能缺键（如 ip_conns/last_report/last_counter_hy2）：按默认模板补齐，
         # 避免每周期 KeyError 导致记账停摆
-        for k, v in (("accum", 0), ("last_counter", None), ("idle_cycles", 0),
-                     ("ip_conns", {}), ("last_report", None)):
+        for k, v in (("accum", 0), ("last_counter", None), ("last_counter_hy2", None),
+                     ("idle_cycles", 0), ("ip_conns", {}), ("last_report", None)):
             e.setdefault(k, v)
         return e
 
@@ -473,6 +481,95 @@ def collect_user_stats(xray_bin: str, xray_api: str) -> tuple[dict[str, int] | N
     return None, {}
 
 
+# ---------- Hysteria2（可选 UDP 入站）：用户同步 + 流量统计 ----------
+
+def build_hy2_config(uuids, port=8445) -> str:
+    """
+    生成 hysteria2 服务端配置全文。listen/tls/trafficStats 为固定约定
+    （证书由 enable-hy2.sh 从 Caddy 证书库复制到 /etc/hysteria/），
+    userpass 映射 {uuid: "x"}——客户端 password 字段填 "uuid:x"，
+    安全等级与 VLESS 相同（凭证即 uuid 本身）。
+    """
+    lines = [
+        f"listen: :{port}",
+        "tls:",
+        f"  cert: {HY2_CERT}",
+        f"  key: {HY2_KEY}",
+        "auth:",
+        "  type: userpass",
+        "  userpass:",
+    ]
+    lines += [f"    {u}: x" for u in uuids]
+    lines += ["trafficStats:", "  listen: 127.0.0.1:9999", ""]
+    return "\n".join(lines)
+
+
+def parse_hy2_uuids(text: str) -> set:
+    """从 hy2 配置文本提取 userpass 映射里的 uuid 集合（用于变更检测）。"""
+    uuids = set()
+    in_map = False
+    for line in text.splitlines():
+        if line.strip() == "userpass:":
+            in_map = True
+            continue
+        if in_map:
+            if line.startswith("    ") and ":" in line.strip():
+                uuids.add(line.strip().split(":", 1)[0])
+            elif line.strip():
+                in_map = False
+    return uuids
+
+
+def collect_hy2_stats(stats_url: str) -> dict[str, int] | None:
+    """
+    抓 hysteria2 trafficStats：返回 {uuid: rx 下行 bytes}（累计值，进程重启清零）。
+    只计 rx（= 下行，与 xray downlink 同口径）。端点不可达/解析失败返回 None——
+    与「真的没有计数器」的空 dict 可区分，调用方不得据此删基线（防双重计费）。
+    """
+    try:
+        with urlopen(stats_url, timeout=3) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        return {u: int(v.get("rx", 0)) for u, v in data.items()}
+    except Exception:
+        return None
+
+
+def flush_hy2_counters_once(stats_url: str, ledger: Ledger, primed: bool) -> None:
+    """restart hysteria 前把各用户计数器差值落进账本（计数器随进程重启清零）。"""
+    traffic = collect_hy2_stats(stats_url)
+    if not traffic:
+        return
+    for u, counter in traffic.items():
+        e = ledger.entry(u)
+        e["accum"] += counter_delta(e["last_counter_hy2"], counter, primed)
+        # 进程重启后计数器从 0 重建：按新基线全量计入
+        e["last_counter_hy2"] = None
+
+
+def sync_hy2_users(config_path: str, stats_url: str, service: str,
+                   uuids, ledger: Ledger, primed: bool) -> None:
+    """
+    把 hy2 userpass 同步成白名单 uuid 集合：集合有变化才重写配置并重启服务
+    （hy2 无配置热加载）。节点未部署 hy2（无配置文件）时静默跳过。
+    重启前先把计数器差值落账，避免丢量。
+    """
+    try:
+        old_text = Path(config_path).read_text(encoding="utf-8")
+    except OSError:
+        return
+    if parse_hy2_uuids(old_text) == set(uuids):
+        return
+    # 沿用现有配置的监听端口（enable-hy2.sh 支持自定义端口，重写配置不能改它）
+    m = re.search(r"^listen:\s*:(\d+)", old_text, re.M)
+    port = int(m.group(1)) if m else 8445
+    flush_hy2_counters_once(stats_url, ledger, primed)
+    Path(config_path).write_text(build_hy2_config(uuids, port=port), encoding="utf-8")
+    if os.system(f"systemctl restart {service}") != 0:
+        print("[warn] hysteria restart failed", file=sys.stderr)
+    else:
+        print(f"[info] hy2 users synced: {len(uuids)} uuid(s), hysteria restarted")
+
+
 def counter_delta(prev, counter: int, primed: bool) -> int:
     """
     计数器差值的纯逻辑（xray 计数器只增不减，重启/rmu 后销毁并随流量懒重建）：
@@ -681,6 +778,10 @@ def main():
     xray_api = env.get("XRAY_API", DEFAULT_XRAY_API)
     access_log = env.get("ACCESS_LOG", DEFAULT_ACCESS_LOG)
     tracker = AccessLogTracker(access_log)
+    # Hysteria2 UDP 入站（可选）：配置文件存在才参与同步/记账
+    hy2_config = env.get("HY2_CONFIG", DEFAULT_HY2_CONFIG)
+    hy2_stats_url = env.get("HY2_STATS_URL", DEFAULT_HY2_STATS_URL)
+    hy2_service = env.get("HY2_SERVICE", DEFAULT_HY2_SERVICE)
 
     # Reality 直连入站（可选）：配了 REALITY_PRIVATE_KEY 才启用。
     # dest 默认借 gateway.icloud.com：TLS1.3+H2 大站、证书链适中；
@@ -739,6 +840,9 @@ def main():
                         new_config = build_xray_config(allowed_list, listen_addr, access_log=access_log, reality=reality)
                         # 同步用户自助封禁的 IP 到防火墙（与 Xray 配置变更无关）
                         sync_blocked_ips(resp["data"].get("blocked_ips", []))
+                        # Hy2 用户名单同步（未部署 hy2 的节点内部静默跳过）
+                        sync_hy2_users(hy2_config, hy2_stats_url, hy2_service,
+                                       allowed_list, ledger, primed)
                         new_text = json.dumps(new_config, indent=2, ensure_ascii=False)
 
                         old_text = ""
@@ -812,6 +916,8 @@ def main():
             # ---- 本地记账（每周期，纯本机操作） ----
             now = time.time()
             traffic, user_online = collect_user_stats(xray_bin, xray_api)
+            # Hy2 每周期计数器（未部署/端点异常时为 None，本轮跳过合并，不丢量）
+            hy2_traffic = collect_hy2_stats(hy2_stats_url)
             node_total_bytes, online_count = collect_node_stats(xray_bin, xray_api)
             new_conns = tracker.collect()
             # 只统计白名单内的 uuid：rmu 后 Xray 会残留旧计数器，不过滤的话
@@ -879,11 +985,48 @@ def main():
                           or len(e["ip_conns"]) > FORCE_SETTLE_IP_CONNS):
                         settle(u)
 
+                # Hy2 计数器合并（与 xray 计数器相互独立，各自维护基线/复位检测）
+                if hy2_traffic is not None:
+                    hy2_traffic = {u: b for u, b in hy2_traffic.items() if u in allowed}
+                    for u, counter in hy2_traffic.items():
+                        e = ledger.entry(u)
+                        delta = counter_delta(e["last_counter_hy2"], counter, primed)
+                        e["last_counter_hy2"] = counter
+                        e["accum"] += delta
+                        if delta > 0:
+                            e["idle_cycles"] = 0
+                        # 纯 hy2 用户（xray 无计数器，上面循环没覆盖）：
+                        # 补齐断联/触线/强制结算判定（无 online 信息，按无增量即闲置处理；
+                        # settle 只是上报，不断连，误判代价为零）
+                        if u not in traffic:
+                            if delta == 0:
+                                e["idle_cycles"] += 1
+                            if e["idle_cycles"] >= IDLE_SETTLE_CYCLES:
+                                settle(u)
+                            q = usage_map.get(u)
+                            if q and q.get("limit", 0) > 0 and u not in quota_settled:
+                                if q.get("used", 0) + e["accum"] >= q["limit"]:
+                                    settle(u)
+                                    quota_settled.add(u)
+                            if e["last_report"] is None:
+                                e["last_report"] = now
+                            elif (now - e["last_report"] >= FORCE_SETTLE_AGE_S
+                                  or len(e["ip_conns"]) > FORCE_SETTLE_IP_CONNS):
+                                settle(u)
+
                 # 计数器消失的 uuid（rmu 移除 / xray 重启清零）：结算余量；
                 # 无账的直接清条目，有账的上报成功后再清（上报失败条目保留，不丢账）。
                 # 仅在 statsquery 成功（traffic 非 None）时允许走到这里删账本条目
                 for u in list(ledger.users):
                     if u not in traffic:
+                        # 纯 hy2 用户：hy2 计数器还在就不算消失；
+                        # hy2 抓取失败且该用户有 hy2 基线时按「还在」处理，
+                        # 删基线会在恢复后全量重计（双重计费）
+                        if hy2_traffic is None:
+                            if ledger.users[u].get("last_counter_hy2") is not None:
+                                continue
+                        elif u in hy2_traffic:
+                            continue
                         settle(u)
                         if not ledger.users[u]["accum"]:
                             del ledger.users[u]

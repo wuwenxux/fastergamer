@@ -220,6 +220,12 @@ export interface Node {
     /** 伪装目标 SNI，如 gateway.icloud.com（勿用 www.microsoft.com，证书链过大握手会失败） */
     server_name: string;
   };
+  /** Hysteria2 UDP 入站（可选）：配置后订阅对 mihomo 系客户端额外下发 hy2 条目
+   *  （名称加 🚀 后缀），密码固定为 "uuid:x"，sni 为节点域名（证书用节点域名的真实证书） */
+  hy2?: {
+    /** 公网监听端口（UDP），如 8445 */
+    port: number;
+  };
   /** 最后一次心跳时间（unix 毫秒） */
   last_seen_at?: number;
   /** 节点累计总流量（bytes，部署以来） */

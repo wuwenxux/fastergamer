@@ -22,6 +22,7 @@ class LedgerEntryTest(unittest.TestCase):
             e = ledger.entry(UUID_A)
             self.assertEqual(e["accum"], 5)           # 已有值保留
             self.assertIsNone(e["last_counter"])      # 缺键补齐
+            self.assertIsNone(e["last_counter_hy2"])
             self.assertEqual(e["idle_cycles"], 0)
             self.assertEqual(e["ip_conns"], {})
             self.assertIsNone(e["last_report"])
@@ -31,8 +32,8 @@ class LedgerEntryTest(unittest.TestCase):
             ledger = agent.Ledger(os.path.join(d, "ledger.json"))
             e = ledger.entry(UUID_A)
             self.assertEqual(
-                e, {"accum": 0, "last_counter": None, "idle_cycles": 0,
-                    "ip_conns": {}, "last_report": None})
+                e, {"accum": 0, "last_counter": None, "last_counter_hy2": None,
+                    "idle_cycles": 0, "ip_conns": {}, "last_report": None})
 
 
 class SanitizeUuidsTest(unittest.TestCase):
@@ -188,6 +189,81 @@ class RealityConfigTest(unittest.TestCase):
         flows = [ib["settings"]["clients"][0]["flow"]
                  for ib in captured["payload"]["inbounds"]]
         self.assertEqual(flows, ["", "xtls-rprx-vision"])
+
+
+class Hy2ConfigTest(unittest.TestCase):
+    def test_build_and_parse_roundtrip(self):
+        text = agent.build_hy2_config([UUID_A, UUID_B])
+        self.assertIn("listen: :8445", text)
+        self.assertIn(f"    {UUID_A}: x", text)
+        self.assertIn("trafficStats:", text)
+        self.assertEqual(agent.parse_hy2_uuids(text), {UUID_A, UUID_B})
+
+    def test_parse_empty_userpass(self):
+        self.assertEqual(agent.parse_hy2_uuids(agent.build_hy2_config([])), set())
+
+
+class Hy2StatsTest(unittest.TestCase):
+    def _fake_urlopen(self, payload):
+        class R:
+            def read(self):
+                return json.dumps(payload).encode()
+            def __enter__(self):
+                return self
+            def __exit__(self, *a):
+                return False
+        return mock.patch.object(agent, "urlopen", lambda *a, **kw: R())
+
+    def test_collect_rx_only(self):
+        with self._fake_urlopen({UUID_A: {"tx": 10, "rx": 999}}):
+            self.assertEqual(agent.collect_hy2_stats("http://x/traffic"), {UUID_A: 999})
+
+    def test_collect_failure_returns_none(self):
+        with mock.patch.object(agent, "urlopen", side_effect=OSError("down")):
+            self.assertIsNone(agent.collect_hy2_stats("http://x/traffic"))
+
+    def test_flush_merges_delta_and_resets_baseline(self):
+        with tempfile.TemporaryDirectory() as d:
+            ledger = agent.Ledger(os.path.join(d, "ledger.json"))
+            e = ledger.entry(UUID_A)
+            e["last_counter_hy2"] = 500
+            with self._fake_urlopen({UUID_A: {"tx": 0, "rx": 800}}):
+                agent.flush_hy2_counters_once("http://x/traffic", ledger, primed=True)
+            self.assertEqual(e["accum"], 300)               # 正常差值
+            self.assertIsNone(e["last_counter_hy2"])          # 重启后按新基线全量计入
+
+
+class Hy2UserSyncTest(unittest.TestCase):
+    def test_no_config_file_is_noop(self):
+        with tempfile.TemporaryDirectory() as d:
+            ledger = agent.Ledger(os.path.join(d, "ledger.json"))
+            with mock.patch.object(agent.os, "system") as m:
+                agent.sync_hy2_users(os.path.join(d, "nope.yaml"), "http://x", "hysteria",
+                                     [UUID_A], ledger, primed=True)
+            m.assert_not_called()
+
+    def test_same_set_no_restart(self):
+        with tempfile.TemporaryDirectory() as d:
+            cfg = os.path.join(d, "config.yaml")
+            with open(cfg, "w", encoding="utf-8") as f:
+                f.write(agent.build_hy2_config([UUID_A]))
+            ledger = agent.Ledger(os.path.join(d, "ledger.json"))
+            with mock.patch.object(agent.os, "system") as m:
+                agent.sync_hy2_users(cfg, "http://x", "hysteria", [UUID_A], ledger, primed=True)
+            m.assert_not_called()
+
+    def test_change_rewrites_and_restarts(self):
+        with tempfile.TemporaryDirectory() as d:
+            cfg = os.path.join(d, "config.yaml")
+            with open(cfg, "w", encoding="utf-8") as f:
+                f.write(agent.build_hy2_config([UUID_A]))
+            ledger = agent.Ledger(os.path.join(d, "ledger.json"))
+            with mock.patch.object(agent.os, "system", return_value=0) as m, \
+                 mock.patch.object(agent, "collect_hy2_stats", return_value=None):
+                agent.sync_hy2_users(cfg, "http://x", "hysteria", [UUID_A, UUID_B], ledger, primed=True)
+            m.assert_called_once_with("systemctl restart hysteria")
+            with open(cfg, encoding="utf-8") as f:
+                self.assertEqual(agent.parse_hy2_uuids(f.read()), {UUID_A, UUID_B})
 
 
 if __name__ == "__main__":
