@@ -14,7 +14,7 @@ export default function Enterprise() {
       <section className="grid grid-cols-1 md:grid-cols-3 gap-5">
         <div className="rounded-2xl border border-slate-700 bg-slate-900 p-6 space-y-3">
           <h3 className="text-lg font-semibold">共享加速池</h3>
-          <p className="text-2xl font-black text-sky-300">¥588 <span className="text-sm font-normal text-slate-500">/ 年</span></p>
+          <p className="text-2xl font-black text-sky-300">¥998 <span className="text-sm font-normal text-slate-500">/ 年起</span></p>
           <ul className="text-sm text-slate-400 space-y-1.5">
             <li>✓ 10~20 人团队</li>
             <li>✓ 流量不限量（公平使用）</li>
@@ -23,11 +23,11 @@ export default function Enterprise() {
           </ul>
         </div>
         <div className="rounded-2xl border border-amber-500/50 bg-slate-900 p-6 space-y-3">
-          <h3 className="text-lg font-semibold">专用节点</h3>
-          <p className="text-2xl font-black text-amber-300">¥988 <span className="text-sm font-normal text-slate-500">/ 年</span></p>
+          <h3 className="text-lg font-semibold">独享 VPS 专用节点</h3>
+          <p className="text-2xl font-black text-amber-300">¥1988 <span className="text-sm font-normal text-slate-500">/ 年</span></p>
           <ul className="text-sm text-slate-400 space-y-1.5">
             <li>✓ 20~40 人团队</li>
-            <li>✓ 500 Mbps 端口独享</li>
+            <li>✓ 大带宽独享 VPS（≥500 Mbps）</li>
             <li>✓ 专用故障自动回落共享池</li>
             <li>✓ 付费后 24 小时内交付</li>
           </ul>

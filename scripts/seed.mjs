@@ -6,8 +6,9 @@
  *   node scripts/seed.mjs [API_BASE] [ADMIN_KEY]
  * 默认 API_BASE=http://localhost:8787，ADMIN_KEY=change-me-in-production
  *
- * 注意：此文件与线上 PLANS KV 保持一致（2026-08-29 同步）。
- * 个人付费套餐统一 3 台设备；免费体验 1 台；企业套餐单独档位。
+ * 注意：此文件与线上 PLANS KV 保持一致（2026-09-02 同步）。
+ * 个人付费套餐统一 3 台设备；免费体验 1 台；企业套餐单独档位
+ * （20 台共享池 ¥998/年起，30 台独享 VPS 大带宽 ¥1988/年）。
  */
 const [base = "http://localhost:8787", adminKey = "change-me-in-production"] =
   process.argv.slice(2);
@@ -99,7 +100,7 @@ const plans = [
     "id": "plan_biz_yearly",
     "name": "企业年付",
     "duration_days": 365,
-    "price_cny": 588,
+    "price_cny": 998,
     "traffic_limit_gb": 0,
     "max_devices": 20,
     "tag": "企业团队",
@@ -116,18 +117,18 @@ const plans = [
     "id": "plan_biz_dedicated",
     "name": "企业专用节点",
     "duration_days": 365,
-    "price_cny": 988,
+    "price_cny": 1988,
     "traffic_limit_gb": 0,
     "max_devices": 30,
-    "tag": "确定性首选",
-    "description": "不限量流量（公平使用），30 台设备，独享一台专用节点",
+    "tag": "顶尖旗舰",
+    "description": "不限量流量（公平使用），30 台设备，独享 VPS 大带宽专用节点",
     "features": [
       "流量不限量",
       "30 台设备",
-      "500 Mbps 独享节点",
+      "大带宽独享 VPS（≥500 Mbps）",
       "故障自动回落共享池"
     ],
-    "pitch": "独享节点，晚高峰也稳"
+    "pitch": "独享 VPS 大带宽，性能到顶"
   }
 ];
 
