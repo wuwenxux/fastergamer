@@ -584,6 +584,19 @@ def counter_delta(prev, counter: int, primed: bool) -> int:
     return counter - prev if counter >= prev else counter
 
 
+def has_live_counters(u: str, entry: dict, traffic: dict, hy2_traffic) -> bool:
+    """
+    该 uuid 是否仍有存活计数器（xray 或 hy2），决定账本条目能否清理。
+    hy2 抓取失败（None）但有基线时视为存活：删掉 last_counter_hy2 基线，
+    恢复后会把 hysteria 启动以来的全量 rx 当新增量重计（双重计费）。
+    """
+    if u in traffic:
+        return True
+    if hy2_traffic is None:
+        return entry.get("last_counter_hy2") is not None
+    return u in hy2_traffic
+
+
 def flush_counters_once(xray_bin: str, xray_api: str, ledger: Ledger,
                         allowed=None, primed: bool = True) -> None:
     """
@@ -1018,15 +1031,7 @@ def main():
                 # 无账的直接清条目，有账的上报成功后再清（上报失败条目保留，不丢账）。
                 # 仅在 statsquery 成功（traffic 非 None）时允许走到这里删账本条目
                 for u in list(ledger.users):
-                    if u not in traffic:
-                        # 纯 hy2 用户：hy2 计数器还在就不算消失；
-                        # hy2 抓取失败且该用户有 hy2 基线时按「还在」处理，
-                        # 删基线会在恢复后全量重计（双重计费）
-                        if hy2_traffic is None:
-                            if ledger.users[u].get("last_counter_hy2") is not None:
-                                continue
-                        elif u in hy2_traffic:
-                            continue
+                    if not has_live_counters(u, ledger.users[u], traffic, hy2_traffic):
                         settle(u)
                         if not ledger.users[u]["accum"]:
                             del ledger.users[u]
@@ -1057,9 +1062,10 @@ def main():
                                 le["accum"] = max(0, le["accum"] - b)
                                 le["ip_conns"] = {}
                                 le["last_report"] = now  # 长期在线兜底以此计时
-                        # 已结算且计数器不再存在的条目可以清掉了
+                        # 已结算且计数器不再存在（xray/hy2 都没有）的条目可以清掉了
                         for u in list(ledger.users):
-                            if u not in traffic and ledger.users[u]["accum"] <= 0:
+                            if (ledger.users[u]["accum"] <= 0
+                                    and not has_live_counters(u, ledger.users[u], traffic, hy2_traffic)):
                                 del ledger.users[u]
                         print(
                             f"[info] settled {len(settled)} user(s), "

@@ -266,5 +266,30 @@ class Hy2UserSyncTest(unittest.TestCase):
                 self.assertEqual(agent.parse_hy2_uuids(f.read()), {UUID_A, UUID_B})
 
 
+class HasLiveCountersTest(unittest.TestCase):
+    """结算后清理守卫：纯 hy2 用户的账本条目不能因 xray 无计数器被删
+    （删了 last_counter_hy2 基线 → 下周期全量重计 = 双重计费）。"""
+
+    def test_xray_counter_alive(self):
+        e = {"last_counter_hy2": None}
+        self.assertTrue(agent.has_live_counters(UUID_A, e, {UUID_A: 1}, None))
+
+    def test_pure_hy2_user_alive_via_counter(self):
+        e = {"last_counter_hy2": 500}
+        self.assertTrue(agent.has_live_counters(UUID_A, e, {}, {UUID_A: 500}))
+
+    def test_hy2_fetch_failed_but_baseline_kept(self):
+        e = {"last_counter_hy2": 500}
+        self.assertTrue(agent.has_live_counters(UUID_A, e, {}, None))
+
+    def test_no_counters_anywhere(self):
+        e = {"last_counter_hy2": None}
+        self.assertFalse(agent.has_live_counters(UUID_A, e, {}, {}))
+
+    def test_hy2_baseline_cleared_and_counter_gone(self):
+        e = {"last_counter_hy2": None}
+        self.assertFalse(agent.has_live_counters(UUID_A, e, {}, None))
+
+
 if __name__ == "__main__":
     unittest.main()
