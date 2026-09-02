@@ -2,13 +2,15 @@
 set -euo pipefail
 
 # 新节点一键接入（在中心服务器本机执行）
-# 用法: bash infra/xray/onboard-node.sh <IP> <ROOT密码> <地区代码> <节点名>
-# 示例: bash infra/xray/onboard-node.sh 64.90.26.88 '***REMOVED***' HK "香港 05"
+# 用法: NODE_SUDO_PASS=xxx bash infra/xray/onboard-node.sh <IP> <ROOT密码> <地区代码> <节点名>
+# 示例: NODE_SUDO_PASS=xxx bash infra/xray/onboard-node.sh 203.0.113.10 'root初始密码' HK "香港 05"
 #
 # 自动完成：wafer 用户 + SSH 互信 → DNS 记录（CF，地理命名 hk01/jp01…）→
 #           Xray(wafer 运行) → Caddy TLS → 注册节点 → 部署 agent → ufw 防火墙 → 验证
 # 前提：本机有 ~/.ssh/id_ed25519_cloudvpn(.pub)、workers/api/.dev.vars
-#      （ADMIN_KEY + CLOUDFLARE_API_TOKEN）、sshpass、node。
+#      （ADMIN_KEY + CLOUDFLARE_API_TOKEN + NODE_SUDO_PASS）、sshpass、node。
+# 安全约定：wafer 的 sudo 密码统一由 NODE_SUDO_PASS 提供（存 .dev.vars，不入库）；
+#      节点初始化后应 passwd -l root + sshd 关闭密码登录（仅密钥）。
 
 IP="${1:-}"
 ROOT_PASS="${2:-}"
@@ -16,14 +18,15 @@ REGION="${3:-}"
 NAME="${4:-}"
 
 if [ -z "$IP" ] || [ -z "$ROOT_PASS" ] || [ -z "$REGION" ] || [ -z "$NAME" ]; then
-  echo "Usage: bash infra/xray/onboard-node.sh <IP> <ROOT密码> <地区代码> <节点名>"
-  echo "Example: bash infra/xray/onboard-node.sh 64.90.26.88 'pass' HK \"香港 05\""
+  echo "Usage: NODE_SUDO_PASS=xxx bash infra/xray/onboard-node.sh <IP> <ROOT密码> <地区代码> <节点名>"
+  echo "Example: NODE_SUDO_PASS=xxx bash infra/xray/onboard-node.sh 203.0.113.10 'pass' HK \"香港 05\""
   exit 1
 fi
 
 ROOT_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
 SSH_KEY="$HOME/.ssh/id_ed25519_cloudvpn"
-WAFER_PASS="***REMOVED***"
+# wafer 初始 sudo 密码：统一由环境变量传入（存 .dev.vars 的 NODE_SUDO_PASS，不入库）
+WAFER_PASS="${NODE_SUDO_PASS:?请设置 NODE_SUDO_PASS（见 workers/api/.dev.vars）}"
 API_BASE="https://fastergamer.click"
 DOMAIN_SUFFIX="fastergamer.click"
 DEV_VARS="$ROOT_DIR/workers/api/.dev.vars"
