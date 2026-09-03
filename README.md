@@ -1,58 +1,128 @@
-# FasterGamer — 高速稳定的 Clash 梯子 / 科学上网加速器
+# CloudVPN —— Token 制 VPN（Cloudflare 托管）
 
-**官网入口：<https://fastergamer.click>**
+无需注册，购买 token（VLESS UUID）后激活即用；有效期由购买时选择的套餐决定。
+Clash 订阅包含多个 VPS 落地节点，客户端直连所选节点；每台 VPS 上的 Agent 从中心拉取有效 token，
+按事件驱动结算流量（断联/超量才上报）。
 
-一个开箱即用的科学上网服务：注册购买后拿到 Clash 订阅链接，导入客户端即可使用。
-香港 / 日本 / 马来西亚多地区节点，三协议智能兜底，晚高峰也稳。
+## 架构
 
-## 为什么选择 FasterGamer
+```
+用户浏览器 → fastergamer.cn（纯静态门面站，API 跨域走 CF）
+         └→ fastergamer.click（CF Worker + KV：售卖、token 状态机、节点注册表、流量结算）
+用户 Clash → 直连所选 VPS 节点（VLESS + WS + TLS，Xray 校验用户 UUID，节点域名 *.fastergamer.click）
+                 └→ 每台 VPS 跑 vpn-agent：拉取授权快照、事件驱动结算上报
+节点在线探测 → 中心服务器 cron 每 5 分钟从国内探测各节点 /ping（scripts/probe-nodes.sh）
+```
 
-- **多地区优质节点**：香港、日本、马来西亚 BGP 机房，国内三网（电信/联通/移动）低延迟直连
-- **三协议自动兜底**：Hysteria2（移动网络优先，抗丢包）→ VLESS + Reality（抗封锁）→ VLESS + WS + TLS（兼容兜底），客户端自动择优
-- **流媒体 / AI 解锁**：优化 Netflix、YouTube、ChatGPT、Claude、TikTok 等访问
-- **全平台客户端**：Clash / Clash Verge / mihomo / Stash / sing-box / Shadowrocket 均可导入订阅
-- **自助服务**：在线注册、扫码支付、订阅链接自动生成，设备管理与流量明细在网页可查
-- **按设备独立订阅**：每台设备独立 uuid，可随时解绑，流量按设备审计
+| 模块 | 目录 | 技术栈 |
+|------|------|--------|
+| API | `workers/api` | Hono + Cloudflare KV |
+| 前端站点 | `pages` | React + Vite + Tailwind（CF Static Assets + cn 静态站双部署） |
+| Xray 落地 | `infra/xray` | Xray + vpn-agent + Caddy/Nginx + 部署文档 |
 
-## 快速开始
+## 本地开发
 
-1. 打开官网注册：<https://fastergamer.click>
-2. 选择套餐并支付，系统自动生成你的专属订阅链接
-3. 把订阅链接导入 Clash（或其他兼容客户端）
-4. 选择节点，开始使用
+需要 Node.js ≥ 22 与 npm。
 
-### 客户端推荐
+```bash
+# 1. 安装依赖（根目录，含两个 workspace）
+npm install
 
-| 平台 | 推荐客户端 |
-|------|-----------|
-| Windows / macOS / Linux | Clash Verge Rev、mihomo party |
-| iOS | Stash、Shadowrocket |
-| Android | ClashMetaForAndroid、sing-box |
+# 2. 启动 API Worker（占位 KV 即可，本地模拟）
+npm run dev:api
 
-> 建议升级到支持 Hysteria2 与 VLESS Reality 的新版客户端，可获得更低的握手延迟与更强的抗封锁能力。
+# 3. 初始化套餐数据（另一个终端）
+curl -s -X POST http://localhost:8787/api/admin/seed \
+  -H "x-admin-key: change-me-in-production"
 
-## 适用场景
+# 4. 启动前端
+npm run dev:pages
+# 打开 http://localhost:5173
+```
 
-外贸办公、学术查资料、开发者访问 GitHub/Stack Overflow、流媒体追剧、
-ChatGPT/Claude 等 AI 工具、海外游戏加速、跨境电商运营。
+### 端到端快速体验（演示支付）
 
-## 常见问题
+1. 打开 `http://localhost:5173`，选一个套餐 → 去支付 → 确认支付
+2. 购买成功页拿到 token，点击「立即激活」
+3. 复制 Clash 订阅链接 → 用 Clash 客户端添加订阅
+4. 连接「🚀 选择节点」→ 验证可用
 
-- **支持 UDP / 游戏加速吗？** Hysteria2 协议基于 QUIC(UDP)，移动网络下表现最好；WS 模式仅 TCP。
-- **订阅安全吗？** 订阅链接即凭证，请勿分享给他人；泄露后可在官网一键重置。
-- **流量怎么算？** 按实际使用结算，订阅内自带流量统计，客户端可直接查看剩余量。
+## 生产部署（Cloudflare 托管）
 
-更多问题见官网 FAQ 与帮助反馈页。
+整套系统（前端静态站 + API + KV 数据）跑在 Cloudflare 免费版：
+`fastergamer.click`（CF Worker + Static Assets，前后端同源）是唯一的生产中心；
+`fastergamer.cn` 已退役为纯跳转（本机 nginx 整站 301 到 `.click`，URI 保留，
+`/api/sub` 老订阅链接由客户端跟随 301）。
 
----
+- 配置：`workers/api/wrangler.cf.toml`（真实 CF KV 命名空间 + Static Assets 托管 `pages/dist`）
+- 入口差异：`src/index.ts` 检测 `env.ASSETS` 绑定存在时把非 `/api` 请求转给静态资产（SPA 回退 `index.html`）
+- 注意：`*.workers.dev` 在大陆被封锁，用户入口是自定义域名；管理 API（api.cloudflare.com）大陆可直连，部署/数据操作不受影响
 
-相关搜索：梯子推荐、Clash 订阅、Clash 节点、科学上网、翻墙软件、VPN 推荐、
-机场推荐、VLESS Reality、Hysteria2、香港节点、日本节点、Netflix 解锁、
-ChatGPT 梯子、TikTok 运营网络、外贸 VPN、高速稳定梯子。
+```bash
+# 推荐：一键脚本（经 hk02 跳板，避开本机到 CF 上传的不稳定；token 自动取 .dev.vars）
+bash scripts/deploy-cf.sh           # 仅 API/配置改动
+bash scripts/deploy-cf.sh --build   # 前端有改动，先构建 pages/dist
 
----
+# 手动方式（直连 CF 可用时）：
+# 1. 构建前端（CF 版：API 同源，无需 VITE_API_BASE）
+cd pages && npm run build
 
-## 开发者
+# 2. 部署 worker + 静态资产（需 CLOUDFLARE_API_TOKEN 环境变量）
+cd workers/api && npx wrangler deploy --config wrangler.cf.toml
 
-本项目为自建运营系统的完整源码（Cloudflare Workers + KV 中心，Xray 落地节点，
-事件驱动流量结算）。架构与部署文档见 [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)。
+# 密钥管理（ADMIN_KEY / ALIYUN_* / ADMIN_NOTIFY_EMAIL / ALIPAY_PRIVATE_KEY）
+npx wrangler secret put <KEY> --config wrangler.cf.toml
+```
+
+注：`scripts/deploy-site-local.sh`（cn 静态门面部署）随整站 301 退役，仅留档。
+
+### 初始化套餐
+
+```bash
+curl -s -X POST https://fastergamer.click/api/admin/seed \
+  -H "x-admin-key: 你的ADMIN_KEY"
+```
+
+### 部署落地节点
+
+按 `infra/xray/README.md` 在每个地区部署 Xray + Agent（一键：
+`bash infra/xray/onboard-node.sh <IP> <ROOT密码> <地区代码> <节点名>`）。
+
+## API 一览
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | `/api/plans` | 套餐列表 |
+| POST | `/api/orders` | 购买（演示支付）→ 返回 token |
+| GET | `/api/tokens/:id` | 查询 token |
+| POST | `/api/tokens/:id/activate` | 激活，开始计时 |
+| POST/DELETE | `/api/tokens/:id/devices(/:deviceId)` | 设备槽位管理：每台设备独立 uuid 与订阅链接，流量按设备审计 |
+| GET | `/api/sub?uuid=` | Clash 订阅 yaml |
+| POST | `/api/admin/seed` | 初始化套餐（需 x-admin-key） |
+| GET/POST/PUT/DELETE | `/api/admin/nodes` | 节点注册表管理（需 x-admin-key） |
+| GET | `/api/agent/config` | 节点 Agent 拉取配置（需 x-node-key） |
+| POST | `/api/agent/traffic` | 节点流量结算上报（需 x-node-key） |
+| GET/DELETE | `/api/admin/tokens(/:id)` | token 列表 / 删除（需 x-admin-key） |
+| POST | `/api/admin/tokens/:id/rotate-uuid` | 重置 UUID，断开该 token 全部设备（需 x-admin-key） |
+| POST | `/api/admin/tokens/:id/reset-penalty` | 重置续用：用量清零恢复满额，有效期 -30 天（需 x-admin-key） |
+| POST | `/api/admin/notify-scan` | 扫描 24h 内到期 token 并邮件提醒（需 x-admin-key） |
+| POST | `/api/feedback` | 用户提交问题反馈（限流 5 次/分钟），自动回执邮件 |
+| GET | `/api/faq` | 公开常见问题（由沉淀的工单生成） |
+| GET | `/api/admin/tickets` | 反馈工单列表，可按 ?status= 过滤（需 x-admin-key） |
+| POST | `/api/admin/tickets/:id/reply` | 回复工单并邮件通知用户，publish_faq=true 沉淀到 FAQ |
+| POST | `/api/admin/tickets/:id/close` | 不回复直接关闭工单 |
+
+## 限制与注意
+
+- 节点 Agent 事件驱动：授权变更（激活/撤销/设备/节点注册表/耗尽等）由中心主动 POST 节点 `/api/agent/refresh` 立即生效，节点只保留 30 分钟兜底轮询防丢；断联/超量才上报结算
+- 设备槽位制：token 主 uuid 即主设备，用户可按套餐上限加绑设备（各持独立 uuid/订阅链接），流量按设备审计、计入 token 总量；解绑后该设备凭证立即失效
+- 月度配额制（年付）：每月 20GB，当月用超自动预支下月额度继续服务，每预支一个月有效期永久提前 30 天（已预支月数跨月锁定不归还），每档预支邮件通知客户
+- 风险提醒：流量用到 80%/耗尽、同一 token 多设备在线时自动邮件提醒客户（每类幂等只发一次）；24h 内到期提醒由 cron 定期调 `/api/admin/notify-scan` 触发
+- 流量暴增告警：单 token 1 小时内新增 >10GB 时邮件告警客户与管理员（24h 幂等），止血用 rotate-uuid 或撤销；给客户续命用 reset-penalty（用量清零恢复满额，有效期 -30 天，offset 记账不受 Xray 累计值影响）
+- 节点月配额：节点可配 `monthly_budget_gb`（PUT /api/admin/nodes/:id），按自然月记账；80% 告警，100% 自动从订阅与同步摘除，跨月自动恢复
+- 节点失联告警：`scripts/probe-nodes.sh`（cron 每 5 分钟）从国内探测各节点 /ping，连续 2 次失败邮件告警，恢复后自动通知
+- 数据生命周期：expired/revoked 满 90 天的 token 由 notify-scan 自动清除（含 id 索引与全部设备索引）；closed 满 90 天的工单同样清理（已沉淀 FAQ 的保留）；token 过期后不可重新激活，需购买新套餐
+- 反馈渠道：用户在「帮助反馈」页提交问题（邮箱必填）→ 管理员通过 `/api/admin/tickets` 查看、`reply` 接口回复（自动发邮件）→ 有价值的问答标 `publish_faq` 沉淀到 FAQ 给新用户自助查阅
+- WebSocket 隧道仅支持 TCP，不支持 UDP/QUIC（游戏 UDP 类应用不可用）
+- 演示支付不产生真实扣款；接入真实网关时参考 `workers/api/src/routes/orders.ts` 中的注释
+- 请确保服务的运营符合你所在地区的法律法规
