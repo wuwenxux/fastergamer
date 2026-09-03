@@ -3,6 +3,7 @@ import { getTokenByAnyUuid } from "../lib/kv";
 import { activatePaidToken } from "../lib/activate";
 import { buildClashConfig, parseRegions } from "../lib/clash";
 import { getNodes, isBudgetExhausted } from "../lib/nodes";
+import { ispFromAsn, orderNodesForIsp } from "../lib/isp";
 import { pushAuthRefresh } from "../lib/authpush";
 import type { Env } from "../types";
 
@@ -88,10 +89,13 @@ subRoutes.get("/", async (c) => {
   }
 
   const nodes = (await getNodes(c.env)).filter((n) => !isBudgetExhausted(n));
-  const nodeIps = await resolveNodeIps(nodes.filter((n) => n.active).map((n) => n.host));
+  // 按用户运营商（CF 边缘 ASN）静默重排：线路匹配节点排前，首屏即落最优线路
+  const isp = ispFromAsn((c.req.raw.cf as { asn?: number } | undefined)?.asn);
+  const orderedNodes = orderNodesForIsp(nodes, isp);
+  const nodeIps = await resolveNodeIps(orderedNodes.filter((n) => n.active).map((n) => n.host));
   const yaml = buildClashConfig({
     uuid,
-    nodes,
+    nodes: orderedNodes,
     regions: parseRegions(c.env.CLASH_REGIONS),
     userAgent: c.req.header("user-agent"),
     nodeIps,

@@ -228,6 +228,9 @@ export interface Node {
     /** 公网监听端口（UDP），如 8445 */
     port: number;
   };
+  /** 该节点对哪些运营商线路做了优化（可选，"移动"/"电信"/"联通"）。
+   *  订阅生成时按用户 ASN 识别运营商，匹配节点静默排在前面；用户无感知、无可选项 */
+  prefer_isp?: string[];
   /** 最后一次心跳时间（unix 毫秒） */
   last_seen_at?: number;
   /** 节点累计总流量（bytes，部署以来） */
