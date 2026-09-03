@@ -6,6 +6,7 @@
  *
  * 用法：
  *   node scripts/ali-sitemonitor.mjs probe [每节点探测点数，默认3]   # 建任务→等结果→出表
+ *   node scripts/ali-sitemonitor.mjs probe-mobile [省份数=8] [nodes|URL] [lastmile]  # 移动全国各省 HTTPS 拨测
  *   node scripts/ali-sitemonitor.mjs result <TaskId>          # 单独查某个任务
  *
  * 计费：境内 IDC 探测点 0.001 元/次（无免费额度）。默认 6 节点 × 3 点 = 18 次 ≈ 0.018 元/轮。
@@ -98,17 +99,19 @@ const ISP_POINTS = [
   { city: "777", isp: "5", type: "LASTMILE", label: "广州移动" },
 ];
 
-async function probeIsp(targetUrl) {
+function pickTargets(targetUrl) {
   // 目标选择：默认 sub 入口（用户真实链路）；nodes = legacy 六节点；URL = 任意单目标
-  const targets =
-    targetUrl === "nodes"
-      ? NODES.map((n) => ({ ...n, url: `https://${n.host}/ping` }))
-      : targetUrl
-      ? [{ name: targetUrl, host: new URL(targetUrl).host, url: targetUrl }]
-      : [{ ...SITE_ENTRY, url: `https://${SITE_ENTRY.host}${SITE_ENTRY.path}` }];
-  const total = targets.length * ISP_POINTS.length;
-  console.log(`将创建 ${targets.length} 任务 × ${ISP_POINTS.length} 运营商点（LASTMILE 家庭宽带，单价高于 IDC）= ${total} 次探测`);
-  const ispCities = ISP_POINTS.map(({ city, isp, type }) => ({ city, isp, type }));
+  return targetUrl === "nodes"
+    ? NODES.map((n) => ({ ...n, url: `https://${n.host}/ping` }))
+    : targetUrl
+    ? [{ name: targetUrl, host: new URL(targetUrl).host, url: targetUrl }]
+    : [{ ...SITE_ENTRY, url: `https://${SITE_ENTRY.host}${SITE_ENTRY.path}` }];
+}
+
+// 指定 IspCities 探测点集合的通用拨测：建任务 → 轮询 → 出表
+async function runIspProbe(targets, ispCities, desc) {
+  const total = targets.length * ispCities.length;
+  console.log(`将创建 ${targets.length} 任务 × ${ispCities.length} 探测点（${desc}）= ${total} 次探测`);
   const tasks = [];
   for (const n of targets) {
     const r = await call("CreateInstantSiteMonitor", {
@@ -123,7 +126,7 @@ async function probeIsp(targetUrl) {
     console.log(`✓ 任务已创建 ${n.name} (${t?.TaskId ?? "?"})`);
   }
 
-  console.log(`\n等待探测执行（${tasks.length} 任务 × ${ISP_POINTS.length} 点）...`);
+  console.log(`\n等待探测执行（${tasks.length} 任务 × ${ispCities.length} 点）...`);
   const deadline = Date.now() + 180_000;
   const done = new Set();
   while (Date.now() < deadline && done.size < tasks.length) {
@@ -132,7 +135,7 @@ async function probeIsp(targetUrl) {
       if (done.has(t.taskId)) continue;
       const log = await call("DescribeSiteMonitorLog", { TaskIds: t.taskId });
       const items = JSON.parse(log.Data || "[]");
-      if (items.length >= ISP_POINTS.length) done.add(t.taskId);
+      if (items.length >= ispCities.length) done.add(t.taskId);
       t.items = items;
     }
   }
@@ -153,6 +156,36 @@ async function probeIsp(targetUrl) {
       }
     }
   }
+}
+
+async function probeIsp(targetUrl) {
+  const ispCities = ISP_POINTS.map(({ city, isp, type }) => ({ city, isp, type }));
+  await runIspProbe(pickTargets(targetUrl), ispCities, "LASTMILE 家庭宽带，单价高于 IDC");
+}
+
+// 移动全国：动态拉取探测点列表，每省取 IPV4 探测资源最多的一个移动城市，覆盖 n 个省份。
+// 默认 IDC 点（0.001 元/次，每晚 8 省 × 1 目标 ≈ ¥0.008）；lastmile 换家庭宽带点（更贴近真实用户，单价更高）。
+async function probeMobile(n = 8, targetUrl, lastmile = false) {
+  const r = await call("DescribeSiteMonitorIspCityList");
+  const all = r.IspCityList?.IspCity ?? [];
+  const byRegion = new Map();
+  for (const p of all) {
+    // Country 629=中国，Isp 5=移动；IPV4ProbeCount=0 的点不可用
+    if (p.Country !== "629" || p.Isp !== "5" || !(p.IPV4ProbeCount > 0)) continue;
+    const cur = byRegion.get(p.Region);
+    if (!cur || p.IPV4ProbeCount > cur.IPV4ProbeCount) byRegion.set(p.Region, p);
+  }
+  const points = [...byRegion.values()]
+    .sort((a, b) => b.IPV4ProbeCount - a.IPV4ProbeCount)
+    .slice(0, n);
+  if (!points.length) {
+    console.error("未拿到可用移动探测点（DescribeSiteMonitorIspCityList 为空）");
+    process.exit(1);
+  }
+  const type = lastmile ? "LASTMILE" : "IDC";
+  console.log(`移动探测点（${type}）：${points.map((p) => `${p["Region.zh_CN"]}${p["CityName.zh_CN"]}`).join("、")}`);
+  const ispCities = points.map((p) => ({ city: p.City, isp: p.Isp, type }));
+  await runIspProbe(pickTargets(targetUrl), ispCities, `移动 ${type}`);
 }
 
 async function probe(points = 3, legacyNodes = false) {
@@ -221,12 +254,19 @@ async function result(taskId) {
   if (!items.length) console.log("（暂无数据，探测点可能仍在执行，稍后重试）");
 }
 
-const [cmd, arg, arg2] = process.argv.slice(2);
-// probe / probe-isp 默认测 sub 入口（用户真实链路）；加 nodes 参数怀旧测六节点 CF 域名
+const [cmd, arg, arg2, arg3] = process.argv.slice(2);
+// probe / probe-isp / probe-mobile 默认测 sub 入口（用户真实链路）；加 nodes 参数怀旧测六节点 CF 域名
 if (cmd === "probe") await probe(parseInt(arg2 ?? arg, 10) || 3, arg === "nodes" || arg2 === "nodes");
 else if (cmd === "probe-isp") await probeIsp(arg);
+else if (cmd === "probe-mobile") {
+  // probe-mobile [省份数=8] [nodes|URL] [lastmile]
+  const rest = [arg, arg2, arg3].filter(Boolean);
+  const n = parseInt(rest.find((a) => /^\d+$/.test(a)) ?? "8", 10);
+  const target = rest.find((a) => a === "nodes" || /^https?:\/\//.test(a));
+  await probeMobile(n, target, rest.includes("lastmile"));
+}
 else if (cmd === "result" && arg) await result(arg);
 else {
-  console.error("用法: node scripts/ali-sitemonitor.mjs probe [点数|nodes] | probe-isp [URL|nodes] | result <TaskId>");
+  console.error("用法: node scripts/ali-sitemonitor.mjs probe [点数|nodes] | probe-isp [URL|nodes] | probe-mobile [省份数=8] [nodes|URL] [lastmile] | result <TaskId>");
   process.exit(1);
 }

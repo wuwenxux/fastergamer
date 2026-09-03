@@ -4,6 +4,7 @@
  *
  * 用法：
  *   node scripts/ali-node-eval.mjs "HK-候选A=1.2.3.4" "JP-候选B=5.6.7.8" [更多 NAME=IP 或裸 IP]
+ *   node scripts/ali-node-eval.mjs --isp 移动 "HK-候选A=1.2.3.4"   # 只测某运营商（移动/电信/联通）
  *   node scripts/ali-node-eval.mjs --points 6 "HK-候选A=1.2.3.4"   # 少量点快速验证
  *   node scripts/ali-node-eval.mjs "hk01-reality=1.2.3.4:8444:TCP" "hk01-hy2=1.2.3.4:8445:UDP"  # 协议级对比
  *
@@ -29,15 +30,17 @@ const ISP_NAME = { "5": "移动", "132": "电信", "232": "联通" };
 // ---------- 参数 ----------
 const args = process.argv.slice(2);
 let maxPoints = Infinity;
+let ispFilter = null; // --isp 移动|电信|联通（或代码 5/132/232）
 const targets = [];
 for (let i = 0; i < args.length; i++) {
   if (args[i] === "--points") { maxPoints = Number(args[++i]); continue; }
+  if (args[i] === "--isp") { ispFilter = args[++i]; continue; }
   const m = args[i].match(/^([^=]+)=([\d.]+)(?::(\d+)(?::(PING|TCP|UDP))?)?$/i);
   if (m) targets.push({ name: m[1], ip: m[2], port: m[3] ? Number(m[3]) : null, type: (m[4] ?? (m[3] ? "TCP" : "PING")).toUpperCase() });
   else if (/^[\d.]+$/.test(args[i])) targets.push({ name: args[i], ip: args[i], port: null, type: "PING" });
 }
 if (!targets.length) {
-  console.error('用法: node scripts/ali-node-eval.mjs [--points N] "名称=IP[:端口[:PING|TCP|UDP]]" [更多...]');
+  console.error('用法: node scripts/ali-node-eval.mjs [--points N] [--isp 移动|电信|联通] "名称=IP[:端口[:PING|TCP|UDP]]" [更多...]');
   process.exit(1);
 }
 
@@ -77,6 +80,13 @@ let points = (ispListJson.IspCityList?.IspCity ?? [])
     city: x.City, isp: x.Isp,
     label: `${x["Region.zh_CN"]}/${x["CityName.zh_CN"]}/${x["IspName.zh_CN"]}`,
   }));
+if (ispFilter) {
+  const code = ISP_NAME[ispFilter] ? ispFilter
+    : Object.keys(ISP_NAME).find((k) => ISP_NAME[k] === ispFilter);
+  if (!code) { console.error(`--isp 只支持 ${Object.values(ISP_NAME).join("/")}（或代码 ${Object.keys(ISP_NAME).join("/")}）`); process.exit(1); }
+  points = points.filter((p) => p.isp === code);
+  if (!points.length) { console.error(`没有可用的「${ISP_NAME[code]}」探测点`); process.exit(1); }
+}
 if (points.length > maxPoints) points = points.slice(0, maxPoints);
 const chunks = [];
 for (let i = 0; i < points.length; i += CHUNK) chunks.push(points.slice(i, i + CHUNK));
