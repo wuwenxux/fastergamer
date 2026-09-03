@@ -100,6 +100,8 @@ export const buildClashConfig = ({ uuid, nodes, regions, userAgent, nodeIps }: B
 
   const proxies: {
     name: string;
+    /** 节点基名（注册名去掉尾部序号），⚡/🚀 条目命名复用 */
+    base: string;
     region: string;
     /** 客户端实际连接的地址：nodeIps 命中时是 IP，否则是域名 */
     server: string;
@@ -114,14 +116,16 @@ export const buildClashConfig = ({ uuid, nodes, regions, userAgent, nodeIps }: B
     hy2?: Node["hy2"];
   }[] = [];
 
-  // 显示名统一为「区域代码 中文地区名 全局序号」，如 "MY 马来西亚 01"、"HK 香港 02"，
-  // 序号按节点列表顺序全局递增（跨区域不重排），与后台维护的节点顺序一致
+  // 显示名统一为「区域代码 节点基名 全局序号」，如 "MY 马来西亚 01"、"HK 香港-移动 07"。
+  // 基名取节点注册名（去掉注册时写入的尾部序号），显示序号按节点列表顺序全局递增重排
   for (const node of nodes ?? []) {
     if (!node.active) continue;
     const meta = regionMeta.find((r) => r.code === node.region);
     const seq = String(proxies.length + 1).padStart(2, "0");
+    const base = (node.name || meta?.name || node.region).trim().replace(/\s+\d+$/, "");
     proxies.push({
-      name: `${node.region} ${meta?.name ?? node.name} ${seq}`,
+      name: `${node.region} ${base} ${seq}`,
+      base,
       region: node.region,
       server: nodeIps?.[node.host] ?? node.host,
       host: node.host,
@@ -165,7 +169,7 @@ export const buildClashConfig = ({ uuid, nodes, regions, userAgent, nodeIps }: B
   const realityProxies = geosite
     ? proxies
         .filter((p) => p.reality)
-        .map((p, i) => ({ ...p, name: `${p.region} ${p.name.split(" ")[1]} ⚡${String(proxies.length + i + 1).padStart(2, "0")}` }))
+        .map((p, i) => ({ ...p, name: `${p.region} ${p.base} ⚡${String(proxies.length + i + 1).padStart(2, "0")}` }))
     : [];
   for (const p of realityProxies) {
     const r = p.reality!;
@@ -196,7 +200,7 @@ export const buildClashConfig = ({ uuid, nodes, regions, userAgent, nodeIps }: B
         .filter((p) => p.hy2)
         .map((p, i) => ({
           ...p,
-          name: `${p.region} ${p.name.split(" ")[1]} 🚀${String(proxies.length + realityProxies.length + i + 1).padStart(2, "0")}`,
+          name: `${p.region} ${p.base} 🚀${String(proxies.length + realityProxies.length + i + 1).padStart(2, "0")}`,
         }))
     : [];
   for (const p of hy2Proxies) {
