@@ -44,12 +44,8 @@ export const invalidateNodesCache = (): void => {
   nodesCache = null;
 };
 
-export const getNodes = async (env: Env): Promise<Node[]> => {
-  // 返回深拷贝：多个调用方（probe-state / POST / PUT）会原地改数组与节点对象，
-  // 直接给缓存引用会污染后续命中者
-  if (nodesCache && Date.now() - nodesCache.at < NODES_CACHE_TTL) {
-    return structuredClone(nodesCache.nodes);
-  }
+/** 无缓存直读 KV：管理接口读-改-写专用（见 getNodesFresh） */
+const loadNodes = async (env: Env): Promise<Node[]> => {
   const raw = await env.NODES.get(KV.NODES);
   let registry: Node[] = [];
   if (raw) {
@@ -75,10 +71,28 @@ export const getNodes = async (env: Env): Promise<Node[]> => {
     })
   );
   const statsById = new Map(entries);
-  const merged = registry.map((n) => ({ ...n, ...(statsById.get(n.id) ?? {}) }));
+  return registry.map((n) => ({ ...n, ...(statsById.get(n.id) ?? {}) }));
+};
+
+export const getNodes = async (env: Env): Promise<Node[]> => {
+  // 返回深拷贝：多个调用方（probe-state / POST / PUT）会原地改数组与节点对象，
+  // 直接给缓存引用会污染后续命中者
+  if (nodesCache && Date.now() - nodesCache.at < NODES_CACHE_TTL) {
+    return structuredClone(nodesCache.nodes);
+  }
+  const merged = await loadNodes(env);
+  if (merged.length === 0) return [];
   nodesCache = { at: Date.now(), nodes: merged };
   return structuredClone(merged);
 };
+
+/**
+ * 管理接口读-改-写专用：绕开 isolate 内存缓存直读 KV。
+ * enable-reality.sh / enable-hy2.sh 这类连续 PUT 不同字段的调用会落在不同 isolate，
+ * 走缓存的 PUT 会拿 60s 内的旧快照做合并，把另一个脚本刚写入的字段覆盖掉（已发生：
+ * reality 字段被随后 hy2 的 PUT 抹掉）。直读后竞争窗口只剩 KV 最终一致性本身。
+ */
+export const getNodesFresh = async (env: Env): Promise<Node[]> => loadNodes(env);
 
 /** 保存注册表（静态配置）。动态字段会被剥离，由 saveNodeStat 单独持久化 */
 export const saveNodes = async (env: Env, nodes: Node[]): Promise<void> => {

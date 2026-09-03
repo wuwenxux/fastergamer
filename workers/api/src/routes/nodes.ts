@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import { KV, type Node } from "../../../../shared/types";
-import { getNodes, saveNodes, saveNodeStat, deleteNodeStat, isNodeOnline } from "../lib/nodes";
+import { getNodes, getNodesFresh, saveNodes, saveNodeStat, deleteNodeStat, isNodeOnline } from "../lib/nodes";
 import { pushAuthRefresh } from "../lib/authpush";
 import { invalidateNodeIpsCache } from "./sub";
 import { adminAuth } from "../middleware/admin";
@@ -93,7 +93,7 @@ nodesRoutes.put("/:id", async (c) => {
   const body = (await c.req.json().catch(() => null)) as Partial<Node> | null;
   if (!body) return c.json({ ok: false, error: "invalid body" }, 400);
 
-  const nodes = await getNodes(c.env);
+  const nodes = await getNodesFresh(c.env);
   const idx = nodes.findIndex((n) => n.id === id);
   if (idx === -1) return c.json({ ok: false, error: "node not found" }, 404);
 
@@ -111,7 +111,7 @@ nodesRoutes.put("/:id", async (c) => {
 /** DELETE /api/admin/nodes/:id —— 删除节点 */
 nodesRoutes.delete("/:id", async (c) => {
   const id = c.req.param("id");
-  const nodes = await getNodes(c.env);
+  const nodes = await getNodesFresh(c.env);
   const filtered = nodes.filter((n) => n.id !== id);
   if (filtered.length === nodes.length) {
     return c.json({ ok: false, error: "node not found" }, 404);
