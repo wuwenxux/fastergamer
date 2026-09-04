@@ -58,10 +58,7 @@ export const api = {
   /** 套餐列表 */
   plans: () => request<Plan[]>("/api/plans"),
 
-  /** 收款信息（静态转账模式下展示的支付宝账号；未配置时为 null） */
-  paymentInfo: () => request<{ alipay_account: string | null }>("/api/payment-info"),
-
-  /** 创建订单（返回 pending 订单；配置了当面付时 order.alipay_qr_code 为动态二维码；带登录会话时自动使用推广余额抵扣；ref 为推广码） */
+  /** 创建订单（返回 pending 订单，order.epay_qr_code 为易支付动态二维码；带登录会话时自动使用推广余额抵扣；ref 为推广码） */
   createOrder: (plan_id: string, contact?: string, ref?: string) =>
     request<CreateOrderResponse>("/api/orders", {
       method: "POST",
@@ -83,13 +80,6 @@ export const api = {
   /** 查询订单支付状态（扫码页轮询用，只返回状态与 token 短 ID） */
   orderStatus: (id: string) =>
     request<{ status: Order["status"]; token_id?: string }>(`/api/orders/${id}`),
-
-  /** 买家声明「我已转账」（静态收款模式）：通知管理员核对到账，金额/备注可选辅助对账 */
-  claimPaid: (id: string, amount_cny?: number, note?: string) =>
-    request<{ claimed: boolean; first: boolean }>(`/api/orders/${id}/claim-paid`, {
-      method: "POST",
-      body: JSON.stringify({ amount_cny, note }),
-    }),
 
   /** 查询 token 详情（带会话时本人返回完整数据，否则只返回概要并带 restricted 标记） */
   getToken: (id: string) => request<TokenView>(`/api/tokens/${id}`, { headers: sessionHeaders() }),
@@ -129,6 +119,21 @@ export const api = {
     request<{ blocked_ips: string[] }>(`/api/tokens/${tokenId}/blocked-ips/${encodeURIComponent(ip)}`, {
       method: "DELETE",
       headers: sessionHeaders(),
+    }),
+
+  /** 自助重置流量（有效期 -30 天）；需本人登录，否则 401 */
+  resetPenalty: (tokenId: string) =>
+    request<TokenView>(`/api/tokens/${tokenId}/reset-penalty`, {
+      method: "POST",
+      headers: sessionHeaders(),
+    }),
+
+  /** 升级套餐（补差价）：返回升级订单；差价 ≤0 时 paid=true 且 token 为升级后的完整数据 */
+  upgradeToken: (tokenId: string, target_plan_id: string) =>
+    request<{ order: Order; token?: TokenView; paid: boolean }>(`/api/tokens/${tokenId}/upgrade`, {
+      method: "POST",
+      headers: sessionHeaders(),
+      body: JSON.stringify({ target_plan_id }),
     }),
 
   /** Clash 订阅链接（需 token 处于 active）；走主域 fastergamer.click，由 CF Worker 渲染 */
@@ -196,7 +201,7 @@ export const api = {
       body: JSON.stringify(input),
     }),
 
-  /** 领取免费体验（每邮箱一次，30 天 20GB，凭证发到邮箱）；ref 为推广码 */
+  /** 领取免费体验（每邮箱一次，3 天 20GB，凭证发到邮箱）；ref 为推广码 */
   claimTrial: (email: string, ref?: string) =>
     request<{ token_id: string }>("/api/tokens/trial", {
       method: "POST",

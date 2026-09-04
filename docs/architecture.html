@@ -2873,21 +2873,24 @@ window.DIAGRAMS = [
   W -->|邮件 阿里云 DirectMail| U`
   },
   {
-    title: "时序 1：购买 → 人工确认 → 激活 → 事件推送到节点",
+    title: "时序 1（历史留档，支付通道已停用）：购买 → 易支付回调自动发货 → 激活 → 事件推送到节点",
     code: `sequenceDiagram
   autonumber
   participant U as 用户浏览器
   participant W as CF Worker<br>fastergamer.click
   participant K as CF KV
-  participant A as 管理员邮箱
+  participant P as 易支付平台<br>pay.neil.asia（已停用）
   participant N as 6 台节点 agent
 
+  Note over W,P: 支付通道已摘除：下单/回调代码已移除，<br>订单照常落 pending 但无支付凭证；以下流程仅作历史留档
   U->>W: POST /api/orders 下单(邮箱)
-  W->>K: 写 ORDERS pending
-  W-->>A: 邮件：新订单待收款
-  U->>W: POST /orders/:id/claim-paid 我已转账
-  W-->>A: 邮件：买家已声明 + 一键确认链接
-  A->>W: 点开链接 GET /admin/orders/:id/confirm?key=
+  W->>P: POST /api/pay/create 统一下单<br>(商户私钥 RSA 签名)
+  P-->>W: 二维码链接 pay_info<br>(平台公钥验签)
+  W->>K: 写 ORDERS pending + epay_qr_code
+  W-->>U: 展示扫码二维码
+  U->>P: 支付宝扫码支付
+  P->>W: GET /api/orders/epay-notify 异步回调
+  W->>W: 验签 + 金额核对(防改价)
   W->>K: fulfillOrder 写 TOKENS(待发)
   W->>K: 重建授权快照 + 推送
   W-->>N: POST /api/agent/refresh (fire-and-forget)

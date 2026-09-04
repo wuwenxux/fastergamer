@@ -1,12 +1,14 @@
 import { Hono } from "hono";
 import { KV } from "../../../../shared/types";
-import type { Order, Plan, Presence, Registration, Token } from "../../../../shared/types";
+import type { Plan, Presence, Registration, Token } from "../../../../shared/types";
 import { adminAuth } from "../middleware/admin";
 import { deleteDeviceIndex, deleteTokenByUuid, getOrder, getPlans, getTicket, getTokenById, getTokenPresence, listKeys, listOrders, listTickets, listTokensByContact, mergeTokenSettlement, rotateTokenUuid, saveOrder, savePlans, savePresenceIfChanged, saveTicket, saveToken } from "../lib/kv";
 import { checkExpiringToken, notifyAdmin } from "../lib/risk-notify";
 import { getNodes } from "../lib/nodes";
 import { isEmail, sendMail, shouldSendEmail } from "../lib/email-aliyun";
-import { fulfillOrder, type WaitUntilCtx } from "../lib/issue-token";
+import { getEpayConfig, refundEpayOrder } from "../lib/epay";
+import { computeRefundQuote } from "../lib/refund";
+import { resetPenalty } from "../lib/reset-penalty";
 import { restoreCredit } from "../lib/referral";
 import { withinTrafficAllowance } from "../lib/authsnapshot";
 import { pushAuthRefresh } from "../lib/authpush";
@@ -16,46 +18,18 @@ import type { Env } from "../types";
 export const adminRoutes = new Hono<{ Bindings: Env }>();
 adminRoutes.use("*", adminAuth);
 
-export const QR_NAMES = new Set(["alipay"]);
-
-/**
- * PUT /api/admin/qr/:name —— 上传收款码图片（仅 alipay）
- * body 为图片二进制（png/jpeg，≤2MB），存 KV，由 GET /api/qr/:name 对外供图
- */
-adminRoutes.put("/qr/:name", async (c) => {
-  const name = c.req.param("name");
-  if (!QR_NAMES.has(name)) {
-    return c.json({ ok: false, error: "name must be alipay or wechat" }, 400);
-  }
-  const buf = await c.req.arrayBuffer();
-  if (!buf.byteLength) return c.json({ ok: false, error: "empty body" }, 400);
-  if (buf.byteLength > 2 * 1024 * 1024) {
-    return c.json({ ok: false, error: "image too large (max 2MB)" }, 413);
-  }
-  // 校验 PNG / JPEG 魔数
-  const head = new Uint8Array(buf.slice(0, 4));
-  const isPng = head[0] === 0x89 && head[1] === 0x50;
-  const isJpg = head[0] === 0xff && head[1] === 0xd8;
-  if (!isPng && !isJpg) {
-    return c.json({ ok: false, error: "only png or jpeg images" }, 415);
-  }
-  const contentType = isPng ? "image/png" : "image/jpeg";
-  await c.env.PLANS.put(KV.QR + name, buf, { metadata: { contentType } });
-  return c.json({ ok: true, data: { name, bytes: buf.byteLength } });
-});
-
 /** 默认套餐（可通过请求体覆盖，见 /api/admin/seed） */
 const DEFAULT_PLANS: Plan[] = [
   {
     id: "plan_3days",
     pitch: "先试用，好用再买",
-    name: "30 天免费体验",
-    duration_days: 30,
+    name: "3 天免费体验",
+    duration_days: 3,
     price_cny: 0,
     traffic_limit_gb: 20,
     max_devices: 1,
     tag: "新用户体验",
-    description: "30 天免费体验，20 GB 总流量，1 台设备（首页免费领取，不出售）",
+    description: "3 天免费体验，20 GB 总流量，1 台设备（首页免费领取，不出售）",
     features: [
         "20 GB 流量",
         "1 台设备",
@@ -86,28 +60,30 @@ const DEFAULT_PLANS: Plan[] = [
     price_cny: 30,
     traffic_limit_gb: 60,
     max_devices: 3,
+    monthly_quota_gb: 20,
     tag: "个人常用",
-    description: "90 天有效，60 GB 总流量，3 台设备",
+    description: "90 天有效，每月 20GB（用超预支下月，有效期提前），3 台设备",
     features: [
-        "60 GB / 90 天",
+        "每月 20 GB",
         "3 台设备",
         "多地域自动切换",
       ],
   },
   {
     id: "plan_yearly",
-    pitch: "全家用一年，最划算",
+    pitch: "买 12 个月送 1 个月，最划算",
     name: "年付套餐",
-    duration_days: 365,
+    duration_days: 395,
+    bonus_days: 30,
     price_cny: 120,
-    traffic_limit_gb: 240,
-    max_devices: 5,
+    traffic_limit_gb: 260,
     monthly_quota_gb: 20,
+    max_devices: 3,
     tag: "家庭多设备",
-    description: "一年有效，每月 20GB（用超预支下月，有效期提前），5 台设备",
+    description: "13 个月有效（买一年送一月），每月 20GB（用超预支下月，有效期提前），3 台设备",
     features: [
         "每月 20 GB",
-        "5 台设备",
+        "3 台设备",
         "多地域自动切换",
       ],
   },
@@ -115,17 +91,35 @@ const DEFAULT_PLANS: Plan[] = [
     id: "plan_yearly_renew",
     pitch: "老用户续一年，省 20 元",
     name: "年付续费",
-    duration_days: 365,
+    duration_days: 395,
+    bonus_days: 30,
     price_cny: 100,
-    traffic_limit_gb: 240,
-    max_devices: 5,
+    traffic_limit_gb: 260,
     monthly_quota_gb: 20,
+    max_devices: 3,
     tag: "老用户优惠",
-    description: "连续包年，每月 20GB（用超预支下月，有效期提前），5 台设备",
+    description: "连续包年 13 个月（买一年送一月），每月 20GB（用超预支下月，有效期提前），3 台设备",
     features: [
         "每月 20 GB",
-        "5 台设备",
+        "3 台设备",
         "年付到期续费专用",
+      ],
+  },
+  {
+    id: "plan_yearly_plus",
+    pitch: "大流量随便用，5 台设备",
+    name: "年付大流量",
+    duration_days: 365,
+    price_cny: 199,
+    traffic_limit_gb: 480,
+    monthly_quota_gb: 40,
+    max_devices: 5,
+    tag: "大流量多设备",
+    description: "一年有效，每月 40GB（用超预支下月，有效期提前），5 台设备",
+    features: [
+        "每月 40 GB",
+        "5 台设备",
+        "多地域自动切换",
       ],
   },
   {
@@ -256,35 +250,7 @@ adminRoutes.post("/tokens/:id/reset-penalty", async (c) => {
   } | null;
   const daysPenalty = body?.days_penalty ?? 30;
 
-  const now = Date.now();
-  // 以当前 Xray 累计值为新基准，用量从零重计（上限不变，剩余恢复满额）
-  token.traffic_offset_bytes = Object.values(token.traffic_by_node ?? {}).reduce((s, v) => s + v, 0);
-  token.traffic_used_gb = 0;
-  delete token.rate_window_start;
-  delete token.rate_window_bytes;
-  delete token.traffic_exhausted_at;
-
-  if (token.expires_at) {
-    token.expires_at -= daysPenalty * 86_400_000;
-    // 月度配额套餐每次结算按 base_expires_at 重算 expires_at，扣减需同步作用于基准，否则处罚被抹掉
-    if (token.base_expires_at) {
-      token.base_expires_at -= daysPenalty * 86_400_000;
-    }
-  }
-
-  // 重置后重新评估状态：未撤销且仍在有效期则恢复 active
-  if (token.status !== "revoked") {
-    token.status = (token.expires_at ?? Infinity) > now ? "active" : "expired";
-    if (!token.activated_at) token.activated_at = now;
-  }
-  // 流量类提醒重置后可重新触发
-  if (token.notify_log) {
-    delete token.notify_log.traffic_80;
-    delete token.notify_log.exhausted;
-    delete token.notify_log.traffic_spike;
-  }
-
-  await saveToken(c.env, token);
+  await resetPenalty(c.env, token, daysPenalty);
   // 用量清零/状态恢复属于授权变更：推送节点更新配额基数与名单
   c.executionCtx.waitUntil(pushAuthRefresh(c.env));
 
@@ -303,6 +269,103 @@ adminRoutes.post("/tokens/:id/reset-penalty", async (c) => {
   }
 
   return c.json({ ok: true, data: token });
+});
+
+/**
+ * POST /api/admin/orders/:id/refund —— 订单退款（售后）
+ * 默认折算（lib/refund.ts）：月付按剩余天数退；季付/年付扣当月退剩余整月，
+ * 促销赠送月不参与折算，消耗进入赠送期则无可退余额。
+ * body 可传 { money } 覆盖为指定金额（不超过实付）。
+ * 调易支付退款接口原路退回，成功后撤销对应 token。
+ * 需在商户后台开启「订单退款API接口开关」；已退过的订单幂等拒绝。
+ */
+adminRoutes.post("/orders/:id/refund", async (c) => {
+  const order = await getOrder(c.env, c.req.param("id"));
+  if (!order) return c.json({ ok: false, error: "order not found" }, 404);
+  if (order.refunded_at) {
+    return c.json({ ok: false, error: "该订单已退款" }, 409);
+  }
+  if (order.status !== "paid") {
+    return c.json({ ok: false, error: "只有已支付订单可退款" }, 400);
+  }
+
+  const plans = await getPlans(c.env);
+  const plan = plans.find((p) => p.id === order.plan_id);
+  const paid = order.payable_cny ?? plan?.price_cny ?? 0;
+  if (paid <= 0) {
+    return c.json({ ok: false, error: "0 元订单无需退款，直接撤销 token 即可" }, 400);
+  }
+
+  // 默认折算：月付按剩余天数退，季付/年付扣当月、赠送月不参与；body.money 可人工覆盖
+  const body = (await c.req.json().catch(() => null)) as { money?: number } | null;
+  const quote = computeRefundQuote(plan, paid, order.paid_at ?? order.created_at);
+  const amount =
+    body?.money !== undefined && Number.isFinite(body.money)
+      ? Math.min(Math.max(body.money, 0), paid)
+      : quote.amount;
+  if (amount <= 0) {
+    const detail =
+      quote.basis === "days"
+        ? `剩余可退 ${quote.daysRemaining} 天`
+        : `已用 ${quote.monthsUsed}/${quote.totalMonths} 个付费月`;
+    return c.json(
+      { ok: false, error: `扣除已消耗费用后无可退余额（${detail}）；如需特殊处理请传 body.money 指定金额` },
+      400
+    );
+  }
+  const money = amount.toFixed(2);
+
+  const epay = getEpayConfig(c.env);
+  if (!epay) {
+    return c.json({ ok: false, error: "易支付未配置" }, 503);
+  }
+
+  let refundNo: string | undefined;
+  try {
+    const r = await refundEpayOrder(epay, {
+      tradeNo: order.trade_no,
+      outTradeNo: order.id,
+      money,
+      outRefundNo: order.id, // 防重复退款
+    });
+    refundNo = r.refundNo;
+  } catch (e) {
+    console.error(`[refund] order ${order.id}: ${(e as Error).message}`);
+    return c.json({ ok: false, error: "退款失败，请查看日志或稍后再试" }, 502);
+  }
+
+  order.refunded_at = Date.now();
+  order.refund_no = refundNo;
+  await saveOrder(c.env, order);
+
+  // 撤销该订单发放的 token（含升级订单的原 token）
+  if (order.token_id) {
+    const token = await getTokenById(c.env, order.token_id);
+    if (token && token.status !== "revoked") {
+      token.status = "revoked";
+      await saveToken(c.env, token);
+    }
+  }
+  c.executionCtx.waitUntil(pushAuthRefresh(c.env)); // 撤销立即从各节点白名单摘除
+
+  if (shouldSendEmail(order.contact)) {
+    // 人工覆盖金额时不带折算明细（quote 的手续费只适用于默认折算）
+    const breakdown =
+      body?.money !== undefined
+        ? `实付 ${paid.toFixed(2)} 元`
+        : `实付 ${paid.toFixed(2)} 元，扣除已消耗费用与 1% 退款手续费（按实付总额计，${quote.fee.toFixed(2)} 元）后折算`;
+    const res = await sendMail(
+      c.env,
+      order.contact,
+      "【GameBoost】订单退款成功",
+      `<p>你好，订单 <strong>${order.id}</strong> 已退款 <strong>${money} 元</strong>（${breakdown}），原路退回支付账户。</p>
+       <p>对应服务已停用。如有疑问请回复本邮件联系售后。</p>`,
+      `订单 ${order.id} 已退款 ${money} 元（${breakdown}），原路退回。对应服务已停用。`
+    );
+    if (!res.ok) console.error(`[refund] mail failed ${order.id}: ${res.error}`);
+  }
+
+  return c.json({ ok: true, data: { order_id: order.id, refund_no: refundNo, money, paid: paid.toFixed(2), quote } });
 });
 
 /** DELETE /api/admin/tokens/:id —— 删除指定 token（测试清理用） */
@@ -401,7 +464,8 @@ adminRoutes.put("/tokens/:id", async (c) => {
 
 /**
  * POST /api/admin/notify-scan —— 定时风险扫描（cron 每 15 分钟调用）
- * 做两件事：24h 内到期提醒；清理过期 90 天的 token 与已结工单
+ * 做三件事：24h 内到期提醒；清理过期 90 天的 token 与已结工单；
+ * 清理超 3 天未激活的免费体验 token（白嫖/假邮箱垃圾）
  * （节点失联告警由 probe-nodes.sh 主动探测承担，agent 事件驱动后 last_seen 不再可靠）
  */
 adminRoutes.post("/notify-scan", async (c) => {
@@ -417,6 +481,21 @@ adminRoutes.post("/notify-scan", async (c) => {
     const raw = await c.env.TOKENS.get(key.name);
     if (!raw) continue;
     const token = JSON.parse(raw) as Token;
+
+    // 未激活的免费体验 token 超 3 天：白嫖/假邮箱留下的垃圾（永远不会激活，90 天规则扫不到
+    // paid 状态），直接清掉。trial 领取标记保留——该邮箱仍算已领过，防同址反复领取
+    if (
+      token.plan_id === "plan_3days" &&
+      token.status === "paid" &&
+      (token.purchased_at ?? 0) > 0 &&
+      (token.purchased_at ?? 0) < now - 3 * 86_400_000
+    ) {
+      await c.env.TOKENS.delete(KV.TOKEN + token.uuid);
+      await c.env.TOKENS.delete(KV.TOKEN_BY_ID + token.id);
+      await c.env.TOKENS.delete(KV.PRESENCE + token.uuid);
+      purgedTokens++;
+      continue;
+    }
 
     // 过期/撤销满 90 天：删除主键 + id 索引 + presence + 全部设备索引
     const endAt = token.expires_at ?? token.purchased_at ?? 0;
@@ -528,75 +607,6 @@ adminRoutes.get("/customers", async (c) => {
 adminRoutes.get("/orders", async (c) => {
   const orders = await listOrders(c.env);
   return c.json({ ok: true, data: orders });
-});
-
-/** 确认收款并发货（POST 接口与邮件一键确认链接共用）；幂等：已 paid 直接返回已发放 token */
-async function confirmOrderPaid(
-  env: Env,
-  ctx: WaitUntilCtx,
-  id: string
-): Promise<{ http: 200; order: Order; token: Token | null; already?: boolean } | { http: 404 | 409 | 500; error: string }> {
-  const order = await getOrder(env, id);
-  if (!order) return { http: 404, error: "order not found" };
-  if (order.status === "failed") return { http: 409, error: "order has been cancelled" };
-  try {
-    const result = await fulfillOrder(env, ctx, order);
-    // 发货产生新 token（或续期），授权名单有变：推送节点立即刷新；幂等重放不重复推
-    if (!result.already) ctx.waitUntil(pushAuthRefresh(env));
-    return { http: 200, order, token: result.token, already: result.already || undefined };
-  } catch (e) {
-    return { http: 500, error: (e as Error).message };
-  }
-}
-
-/**
- * POST /api/admin/orders/:id/confirm —— 确认订单已收款，发放 token
- * 幂等：已 paid 的订单直接返回已发放的 token，不会重复发放
- */
-adminRoutes.post("/orders/:id/confirm", async (c) => {
-  const r = await confirmOrderPaid(c.env, c.executionCtx, c.req.param("id"));
-  if ("error" in r) return c.json({ ok: false, error: r.error }, r.http);
-  return c.json({ ok: true, data: { order: r.order, token: r.token, already: r.already } });
-});
-
-/**
- * GET /api/admin/orders/:id/confirm?ticket=... —— 邮件里的一键确认链接（浏览器直接打开）
- * 只返回落地页，不直接发货：企业邮箱安全网关会预取邮件 URL（预取只验票不焚票），
- * 真正的确认发货由页面按钮 JS 发 POST 到同路径完成（POST 验票后焚票；幂等，见上方 POST 路由）。
- */
-adminRoutes.get("/orders/:id/confirm", async (c) => {
-  const id = escapeHtml(c.req.param("id"));
-  return c.html(
-    `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">` +
-      `<body style="font-family:sans-serif;max-width:32rem;margin:4rem auto;padding:0 1rem;text-align:center">` +
-      `<h2>订单 ${id}</h2>` +
-      `<p>请先在支付宝核对到账（备注应为买家邮箱），确认到账后再点击下面按钮发货。</p>` +
-      `<button id="btn" style="background:#0ea5e9;color:#fff;border:0;padding:12px 28px;border-radius:8px;font-size:16px;cursor:pointer">确认已收款并发货</button>` +
-      `<p id="msg" style="color:#888"></p>` +
-      `<script>
-const btn = document.getElementById("btn");
-const msg = document.getElementById("msg");
-btn.onclick = async () => {
-  btn.disabled = true;
-  msg.textContent = "处理中…";
-  try {
-    const r = await fetch(location.pathname + location.search, { method: "POST" });
-    const j = await r.json();
-    if (j.ok) {
-      msg.textContent = j.data.already
-        ? "✅ 订单此前已确认过，token 已发放（未重复发货）"
-        : "✅ 已确认收款，token 已发放并邮件通知买家";
-    } else {
-      msg.textContent = "❌ 操作失败：" + (j.error || r.status);
-      btn.disabled = false;
-    }
-  } catch (e) {
-    msg.textContent = "❌ 网络错误，请重试";
-    btn.disabled = false;
-  }
-};
-</script></body>`
-  );
 });
 
 /** POST /api/admin/orders/:id/cancel —— 取消未支付的订单（无效/刷单订单清理），已用的推广额度归还 */

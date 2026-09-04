@@ -9,6 +9,3 @@ export const newTokenId = (): string => `tk_${randHex(6)}`;
 
 /** 订单 ID */
 export const newOrderId = (): string => `ord_${randHex(8)}`;
-
-/** 演示支付流水号 */
-export const newPaymentRef = (): string => `demo_${randHex(6)}`;

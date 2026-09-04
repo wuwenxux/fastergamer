@@ -24,6 +24,8 @@ export interface Plan {
   max_devices?: number;
   /** 每月流量限额（GB）。当月用超自动预支下月额度，有效期永久提前一个月 */
   monthly_quota_gb?: number;
+  /** 促销赠送天数（如买 12 送 1 的 30 天）：包含在 duration_days 内，但退款折算时不计入（赠送月不可退） */
+  bonus_days?: number;
 }
 
 /** 设备槽位 —— token 下每台设备一个独立 UUID，用于 per-device 流量审计 */
@@ -145,8 +147,6 @@ export interface Presence {
 export interface Order {
   id: string;
   plan_id: string;
-  /** 支付流水号；个人收款码过渡期间仅为内部参考号 */
-  payment_ref: string;
   status: "pending" | "paid" | "failed";
   /** 买家联系方式 */
   contact?: string;
@@ -154,22 +154,20 @@ export interface Order {
   token_id?: string;
   /** 确认收款时间（unix 毫秒） */
   paid_at?: number;
-  /** 当面付动态二维码内容（配置了支付宝时由 precreate 生成；无则前端回退静态收款码） */
-  alipay_qr_code?: string;
-  /** 支付宝交易号（回调成功后记录，用于对账） */
+  /** 易支付动态二维码/收银台链接（收款已停用，不再生成；仅历史订单可能带此字段） */
+  epay_qr_code?: string;
+  /** 支付平台交易号（历史订单回调时记录，用于对账/退款） */
   trade_no?: string;
   /** 推广减免金额（元）：邀请新用户注册获得，每个额度减 10 元 */
   discount_cny?: number;
   /** 实付金额（元）= 套餐价 - 减免；无减免时等于套餐价 */
   payable_cny?: number;
-  /** 买家声明「我已转账」（静态收款模式）：管理员收到邮件提醒后核对到账再确认 */
-  paid_claim?: {
-    at: number;
-    /** 买家自述转账金额（元），可选 */
-    amount_cny?: number;
-    /** 买家自述付款账号昵称/尾号，可选，辅助对账 */
-    note?: string;
-  };
+  /** 升级订单：支付成功后升级该既有 token（保留 uuid/设备），而非新发货 */
+  upgrade_token_id?: string;
+  /** 退款时间（unix 毫秒）；退款后对应 token 被撤销 */
+  refunded_at?: number;
+  /** 易支付退款单号 */
+  refund_no?: string;
   created_at: number;
 }
 
@@ -320,14 +318,15 @@ export const KV = {
   DEVICE: "device:", // device:{uuid} → { token_id }（设备 uuid 反查索引，存 TOKENS namespace）
   ROUTING: "routing", // routing → 区域名列表 JSON
   NODES: "nodes", // nodes → Node[] JSON
-  QR: "qr:", // qr:{alipay|wechat} → 收款码图片二进制（存 PLANS namespace）
   SESSION: "session:", // session:{token} → { email, created_at }（存 TOKENS namespace）
   MAGIC: "magic:", // magic:{ticket} → MagicTicket JSON（一次性，用后即焚，存 TOKENS namespace）
   TRIAL: "trial:", // trial:{email} → { token_id, created_at }（免费体验每邮箱限领一次，存 TOKENS namespace）
+  TRIAL_IP: "trialip:", // trialip:{ip} → 1（免费体验每 IP 每天限领一次，TTL 24h，存 TOKENS namespace）
   REFCODE: "refcode:", // refcode:{code} → { email }（推广码反查邀请人，存 TOKENS namespace）
   REFCREDIT: "refcredit:", // refcredit:{email} → { earned, used }（推广减免额度，单位：个 ×10元，存 TOKENS namespace）
   REFERRAL: "referral:", // referral:{被邀请人email} → { referrer_email, created_at }（存 TOKENS namespace）
   REG: "reg:", // reg:{账号email} → Registration JSON（防失联登记，存 TOKENS namespace）
+  MAILTHROTTLE: "mailthrottle:", // mailthrottle:{sha1(email)} → 计数（收件人邮件节流，1h TTL，存 TOKENS namespace）
 } as const;
 
 /** API 统一响应格式 */

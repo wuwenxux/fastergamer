@@ -12,6 +12,7 @@
 import { KV, type Token } from "../../../../shared/types";
 import { createMagicTicket } from "./accounts";
 import { sendMail, sendTokenEmail } from "./email-aliyun";
+import { maskEmail } from "./mask-email";
 import { newTokenId } from "./ids";
 import { getPlans, listKeys, listTokensByContact, saveToken } from "./kv";
 import type { Env } from "../types";
@@ -120,7 +121,7 @@ export const rewardReferrerOnPayment = async (env: Env, inviteeEmail: string): P
   const credit = await getCredit(env, referrer);
   credit.earned += 1;
   await saveCredit(env, referrer, credit);
-  console.log(`[referral] ${inviteeEmail} paid, +${DISCOUNT_PER_CREDIT} CNY to ${referrer}`);
+  console.log(`[referral] ${maskEmail(inviteeEmail)} paid, +${DISCOUNT_PER_CREDIT} CNY to ${maskEmail(referrer)}`);
 
   const balance = Math.max(0, credit.earned - credit.used) * DISCOUNT_PER_CREDIT;
   const res = await sendMail(
@@ -132,12 +133,12 @@ export const rewardReferrerOnPayment = async (env: Env, inviteeEmail: string): P
      <p>余额满 <strong>100 元</strong>（累计 10 人付费）：已开通套餐的自动<strong>续期一年</strong>；未开通的直接<strong>送一年年付套餐</strong>，也可在下单时抵扣。</p>`,
     `你邀请的用户（${inviteeEmail}）已成功付费开通，推广余额 +${DISCOUNT_PER_CREDIT} 元（当前 ${balance} 元）。余额满 100 元：已开通套餐的自动续期一年，未开通的直接送一年年付套餐，也可下单抵扣。`
   );
-  if (!res.ok) console.error(`[referral] reward mail failed for ${referrer}: ${res.error}`);
+  if (!res.ok) console.error(`[referral] reward mail failed for ${maskEmail(referrer)}: ${res.error}`);
 
   // 余额满续费价：自动给激活中的付费套餐续期一年
   const renew = await tryAutoRenewWithBalance(env, referrer);
   if (renew.renewed) {
-    console.log(`[referral] auto-renewed ${renew.tokenId} for ${referrer}, new expires_at=${renew.newExpiresAt}`);
+    console.log(`[referral] auto-renewed ${renew.tokenId} for ${maskEmail(referrer)}, new expires_at=${renew.newExpiresAt}`);
     const expiry = new Date(renew.newExpiresAt ?? Date.now()).toLocaleDateString("zh-CN", { timeZone: "Asia/Shanghai" });
     const renewRes = await sendMail(
       env,
@@ -147,14 +148,14 @@ export const rewardReferrerOnPayment = async (env: Env, inviteeEmail: string): P
        <p>新的到期时间：<strong>${expiry}</strong>。继续邀请可继续累积余额，满 ${renew.renewCostCny} 元再次自动续期。</p>`,
       `你的推广余额已满 ${renew.renewCostCny} 元，已自动为套餐（${renew.tokenId}）续期一年，新到期时间：${expiry}。`
     );
-    if (!renewRes.ok) console.error(`[referral] renew mail failed for ${referrer}: ${renewRes.error}`);
+    if (!renewRes.ok) console.error(`[referral] renew mail failed for ${maskEmail(referrer)}: ${renewRes.error}`);
     return true; // 续期可能复活已过期的 token，授权名单有变
   }
 
   // 未开通付费套餐：余额满额直接发放年付 token（待激活）
   const reward = await tryIssueRewardToken(env, referrer);
   if (reward.issued) {
-    console.log(`[referral] reward token ${reward.tokenId} issued to ${referrer}`);
+    console.log(`[referral] reward token ${reward.tokenId} issued to ${maskEmail(referrer)}`);
   }
   return false; // 奖励 token 为 paid 待激活状态，不进授权名单
 };
@@ -290,7 +291,7 @@ export const tryIssueRewardToken = async (env: Env, email: string): Promise<Rewa
       contact: email,
       magicUrl: `${site}/auth/magic?ticket=${ticket}`,
     });
-    if (!res.ok) console.error(`[referral] reward token mail failed for ${email}: ${res.error}`);
+    if (!res.ok) console.error(`[referral] reward token mail failed for ${maskEmail(email)}: ${res.error}`);
   }
   return result;
 };

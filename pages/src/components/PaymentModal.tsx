@@ -2,8 +2,7 @@ import type { Plan } from "../../../shared/types";
 
 /**
  * 下单弹窗：填写联系方式后创建待支付订单。
- * 个人收款码过渡期间，订单确认页展示收款码，人工确认到账后发放 token。
- * 将来接入真实网关时，这里替换为跳转支付网关 / 展示网关二维码。
+ * 支付走易支付动态扫码（下单接口返回二维码内容，由订单确认页渲染）。
  */
 export default function PaymentModal({
   plan,

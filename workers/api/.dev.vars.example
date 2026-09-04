@@ -5,3 +5,9 @@
 # 获取地址：https://ram.console.aliyun.com/users 创建 AccessKey
 ALIYUN_ACCESS_KEY_ID=LTAIxxxxxxxxxxxxxxxxxxxx
 ALIYUN_ACCESS_KEY_SECRET=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+
+# 易支付（pay.neil.asia）—— 收款已停用，以下三项仅供管理端退款接口使用（存量订单退款）
+# 商户后台 → 个人资料 → API信息：pid、生成商户RSA密钥对（商户私钥自己保存，平台公钥用于验签）
+# EPAY_PID=1001
+# EPAY_PRIVATE_KEY=-----BEGIN PRIVATE KEY-----\nMIIE...(PKCS8)
+# EPAY_PLATFORM_KEY=-----BEGIN PUBLIC KEY-----\nMIIB...(SPKI)
