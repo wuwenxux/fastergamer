@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FasterGamer 企业网络服务 · 企业跨境网络解决方案</title>
+<meta name="description" content="面向出海企业的跨境网络咨询、国际专线集成与运维托管服务。仅面向企业客户，合同制合作，对公结算，开具发票。">
+<style>
+  :root {
+    --bg: #0b1220; --panel: #111a2e; --line: #1f2c48; --text: #dbe4f5;
+    --dim: #8fa0c0; --accent: #3b82f6; --accent2: #22c55e;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: var(--bg); color: var(--text); font-family: -apple-system, "PingFang SC", "Microsoft YaHei", "Noto Sans SC", sans-serif; line-height: 1.7; }
+  .wrap { max-width: 1080px; margin: 0 auto; padding: 0 24px; }
+  a { color: var(--accent); text-decoration: none; }
+
+  header { border-bottom: 1px solid var(--line); position: sticky; top: 0; background: rgba(11,18,32,.92); backdrop-filter: blur(8px); z-index: 10; }
+  nav { display: flex; align-items: center; justify-content: space-between; height: 64px; }
+  .logo { font-weight: 700; font-size: 18px; letter-spacing: .5px; }
+  .logo span { color: var(--accent); }
+  nav .links a { color: var(--dim); margin-left: 28px; font-size: 14px; }
+  nav .links a:hover { color: var(--text); }
+
+  .hero { padding: 110px 0 90px; }
+  .badge { display: inline-block; border: 1px solid var(--line); color: var(--dim); border-radius: 999px; padding: 4px 14px; font-size: 13px; margin-bottom: 24px; }
+  h1 { font-size: 42px; line-height: 1.3; font-weight: 700; }
+  h1 em { color: var(--accent); font-style: normal; }
+  .hero p { color: var(--dim); font-size: 17px; max-width: 640px; margin: 22px 0 36px; }
+  .cta { display: inline-block; background: var(--accent); color: #fff; padding: 13px 34px; border-radius: 8px; font-size: 15px; font-weight: 600; }
+  .cta:hover { filter: brightness(1.1); }
+  .cta.ghost { background: transparent; border: 1px solid var(--line); color: var(--text); margin-left: 14px; }
+
+  section { padding: 72px 0; border-top: 1px solid var(--line); }
+  h2 { font-size: 28px; margin-bottom: 8px; }
+  .sub { color: var(--dim); margin-bottom: 40px; }
+
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 20px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 28px; }
+  .card h3 { font-size: 18px; margin-bottom: 10px; }
+  .card .tag { display: inline-block; font-size: 12px; color: var(--accent2); border: 1px solid var(--accent2); border-radius: 4px; padding: 1px 8px; margin-bottom: 14px; }
+  .card p, .card li { color: var(--dim); font-size: 14.5px; }
+  .card ul { padding-left: 18px; margin-top: 10px; }
+  .card .price { margin-top: 18px; font-size: 14px; color: var(--text); }
+  .card .price b { font-size: 20px; }
+
+  .steps { counter-reset: s; }
+  .step { display: flex; gap: 18px; padding: 18px 0; border-bottom: 1px dashed var(--line); }
+  .step:last-child { border-bottom: none; }
+  .step::before { counter-increment: s; content: counter(s); flex: 0 0 34px; height: 34px; border-radius: 50%; background: var(--accent); color: #fff; display: flex; align-items: center; justify-content: center; font-weight: 700; }
+  .step b { display: block; }
+  .step span { color: var(--dim); font-size: 14px; }
+
+  .notice { background: var(--panel); border: 1px solid var(--line); border-left: 3px solid var(--accent); border-radius: 8px; padding: 22px 26px; color: var(--dim); font-size: 14.5px; }
+  .notice b { color: var(--text); }
+
+  footer { border-top: 1px solid var(--line); padding: 36px 0 48px; color: var(--dim); font-size: 13px; }
+  footer .biz { margin-top: 6px; }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="wrap">
+    <nav>
+      <div class="logo">Faster<span>Gamer</span> · 企业网络服务</div>
+      <div class="links">
+        <a href="#plans">服务方案</a>
+        <a href="#flow">合作流程</a>
+        <a href="#contact">商务联系</a>
+      </div>
+    </nav>
+  </div>
+</header>
+
+<div class="wrap">
+  <section class="hero" style="border-top:none">
+    <div class="badge">仅面向企业客户 · 合同制合作 · 对公结算 · 开具发票</div>
+    <h1>企业跨境网络<br>咨询 · 集成 · 运维<em>一站式方案</em></h1>
+    <p>我们联合持牌基础电信运营商与合规信道资源，为出海企业提供跨境网络规划、国际专线/SD-WAN 集成交付与长期运维托管。所有合作均以企业为主体签署正式合同，对公结算并开具发票。</p>
+    <a class="cta" href="#contact">预约商务洽谈</a>
+    <a class="cta ghost" href="#plans">查看服务方案</a>
+  </section>
+
+  <section id="plans">
+    <h2>服务方案</h2>
+    <p class="sub"></p>
+    <div class="grid">
+      <div class="card">
+        <div class="tag">咨询</div>
+        <h3>跨境网络评估与规划</h3>
+        <p>面向准备出海或现有链路不稳定的企业：</p>
+        <ul>
+          <li>现有跨境链路质量诊断（分省分运营商拨测报告）</li>
+          <li>目标市场（东南亚/日韩/欧美）接入架构设计</li>
+          <li>合规路径与供应商选型建议</li>
+        </ul>
+        <div class="price">项目制报价 · <b>按需求评估</b></div>
+      </div>
+      <div class="card">
+        <div class="tag">集成</div>
+        <h3>国际专线 / SD-WAN 交付</h3>
+        <p>联合持牌运营商的企业级信道：</p>
+        <ul>
+          <li>国际以太网专线（IEPL/IPLC）代理开通</li>
+          <li>SD-WAN 组网：多分支统一接入与策略下发</li>
+          <li>交付验收：带宽、时延、丢包率写入合同附件</li>
+        </ul>
+        <div class="price">按带宽与 SLA 报价 · <b>合同制</b></div>
+      </div>
+      <div class="card">
+        <div class="tag">运维</div>
+        <h3>专属网络运维托管</h3>
+        <p>把跨境链路的日常运维交给我们：</p>
+        <ul>
+          <li>7×24 链路监控与故障响应（SLA 分级）</li>
+          <li>月度质量报告：可用率、时延、故障复盘</li>
+          <li>变更与扩容代实施，单点联系人</li>
+        </ul>
+        <div class="price">年框制 · <b>按接入规模定价</b></div>
+      </div>
+    </div>
+  </section>
+
+  <section id="flow">
+    <h2>合作流程</h2>
+    <p class="sub">标准商务流程，全程留痕，支持审计。</p>
+    <div class="steps">
+      <div class="step"><div><b>需求沟通</b><span>明确目标区域、带宽、时延与可用率要求，出具初步方案与测算。</span></div></div>
+      <div class="step"><div><b>资质互验</b><span>双方交换营业执照复印件（加盖公章），确认合作主体与经营范围。</span></div></div>
+      <div class="step"><div><b>合同签署</b><span>正式服务合同：服务内容、SLA 条款、验收标准、保密条款。</span></div></div>
+      <div class="step"><div><b>对公结算</b><span>对公账户付款，开具增值税发票（普票/专票）。不接受个人转账。</span></div></div>
+      <div class="step"><div><b>交付与运维</b><span>按合同附件指标交付验收，进入运维期，月度报告与例行评审。</span></div></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>合作准入说明</h2>
+    <p class="sub"></p>
+    <div class="notice">
+      <b>我们仅与企业客户合作。</b>签约主体须为依法注册的企业或组织，需提供营业执照并对公结算；
+      我们不向个人用户提供任何网络接入服务，个人咨询恕不接待。所有跨境信道均通过持牌基础电信运营商开通，
+      服务范围以合同约定为准，并遵守《中华人民共和国电信条例》及相关法律法规。
+    </div>
+  </section>
+
+  <section id="contact">
+    <h2>商务联系</h2>
+    <p class="sub">请使用企业邮箱来信，注明公司名称与需求背景，我们将在 1 个工作日内回复。</p>
+    <div class="card" style="max-width:560px">
+      <h3>商务合作</h3>
+      <p>邮箱：<a href="mailto:wwx0306@foxmail.com">wwx0306@foxmail.com</a></p>
+      <p style="margin-top:8px">来信请附：公司全称、统一社会信用代码、目标区域与带宽需求、期望交付时间。</p>
+    </div>
+  </section>
+</div>
+
+<footer>
+  <div class="wrap">
+    <div>© 2026【公司全称待补充】 · 企业跨境网络解决方案</div>
+    <div class="biz">统一社会信用代码：【待补充】 ｜ 【ICP备案号待补充】</div>
+  </div>
+</footer>
+
+</body>
+</html>

@@ -61,7 +61,7 @@ nodesRoutes.post("/", async (c) => {
     return c.json({ ok: false, error: "id, host, region are required" }, 400);
   }
 
-  const nodes = await getNodes(c.env);
+  const nodes = await getNodesFresh(c.env);
   if (nodes.some((n) => n.id === body.id)) {
     return c.json({ ok: false, error: "node id already exists" }, 409);
   }
@@ -126,7 +126,7 @@ nodesRoutes.delete("/:id", async (c) => {
 /** POST /api/admin/nodes/:id/rotate-key —— 重置节点 key */
 nodesRoutes.post("/:id/rotate-key", async (c) => {
   const id = c.req.param("id");
-  const nodes = await getNodes(c.env);
+  const nodes = await getNodesFresh(c.env);
   const idx = nodes.findIndex((n) => n.id === id);
   if (idx === -1) return c.json({ ok: false, error: "node not found" }, 404);
 

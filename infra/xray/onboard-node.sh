@@ -47,6 +47,13 @@ SEQ=$(( ${SEQ:-0} + 1 ))
 RR=$(printf "%s%02d" "$PREFIX" "$SEQ")
 NODE_ID="node-${PREFIX}-$(printf '%02d' "$SEQ")"
 DOMAIN="$RR.$DOMAIN_SUFFIX"
+# 节点 id 与 DNS 编号历史上已脱节（如 node-hk-05 → hk02），注册前须查注册表防撞 id
+ID_SEQ=$SEQ
+while curl -sf -H "x-admin-key: $ADMIN_KEY" "$API_BASE/api/admin/nodes" \
+    | grep -q "\"id\":\"$NODE_ID\""; do
+  ID_SEQ=$(( ID_SEQ + 1 ))
+  NODE_ID="node-${PREFIX}-$(printf '%02d' "$ID_SEQ")"
+done
 echo "RR=$RR  DOMAIN=$DOMAIN  NODE_ID=$NODE_ID"
 
 # ---------- 1. wafer 用户 + SSH 互信 ----------
@@ -78,7 +85,11 @@ echo "✓ wafer 密钥登录 + sudo 就绪"
 step 2 "添加 DNS 记录 $DOMAIN -> $IP"
 node "$ROOT_DIR/scripts/cf-dns.mjs" add "$RR" "$IP" "$NAME"
 for i in $(seq 1 12); do
+  # AliDNS 对新记录常有负缓存滞后，223.5.5.5 与 1.1.1.1 任一生效即放行
+  #（证书签发走 LE 多视角验证，不依赖 AliDNS；国内客户端解析稍后自动收敛）
   RESOLVED=$(dig +short "$DOMAIN" @223.5.5.5 | head -1)
+  [ "$RESOLVED" = "$IP" ] && break
+  RESOLVED=$(dig +short "$DOMAIN" @1.1.1.1 | head -1)
   [ "$RESOLVED" = "$IP" ] && break
   echo "等待 DNS 生效... ($i/12)"
   sleep 5
@@ -117,7 +128,8 @@ step 5 "注册节点 $NODE_ID（$NAME）"
 RESP=$(curl -s -X POST "$API_BASE/api/admin/nodes" \
   -H "x-admin-key: $ADMIN_KEY" -H "content-type: application/json" \
   -d "{\"id\":\"$NODE_ID\",\"name\":\"$NAME\",\"region\":\"$REGION\",\"host\":\"$DOMAIN\",\"port\":443,\"tls\":true,\"ws_path\":\"/vless-ws\"}")
-NODE_KEY=$(node -pe "JSON.parse(process.argv[1]).data.node.key" "$RESP")
+echo "$RESP"
+NODE_KEY=$(echo "$RESP" | node -pe "JSON.parse(require('fs').readFileSync(0,'utf8')).data.node.key")
 echo "✓ 已注册，NODE_KEY=$NODE_KEY"
 
 # ---------- 6. 部署 Agent ----------
