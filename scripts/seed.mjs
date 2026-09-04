@@ -16,13 +16,13 @@ const [base = "http://localhost:8787", adminKey = "change-me-in-production"] =
 const plans = [
   {
     "id": "plan_3days",
-    "name": "30 天免费体验",
-    "duration_days": 30,
+    "name": "3 天免费体验",
+    "duration_days": 3,
     "price_cny": 0,
     "traffic_limit_gb": 20,
     "max_devices": 1,
     "tag": "新用户体验",
-    "description": "30 天免费体验，20 GB 总流量，1 台设备（首页免费领取，不出售）",
+    "description": "3 天免费体验，20 GB 总流量，1 台设备（首页免费领取，不出售）",
     "features": [
       "20 GB 流量",
       "1 台设备",
@@ -53,10 +53,11 @@ const plans = [
     "price_cny": 30,
     "traffic_limit_gb": 60,
     "max_devices": 3,
+    "monthly_quota_gb": 20,
     "tag": "个人常用",
-    "description": "90 天有效，60 GB 总流量，3 台设备",
+    "description": "90 天有效，每月 20GB（用超预支下月，有效期提前），3 台设备",
     "features": [
-      "60 GB / 90 天",
+      "每月 20 GB",
       "3 台设备",
       "多地域自动切换"
     ],
@@ -65,36 +66,55 @@ const plans = [
   {
     "id": "plan_yearly",
     "name": "年付套餐",
-    "duration_days": 365,
+    "duration_days": 395,
+    "bonus_days": 30,
     "price_cny": 120,
-    "traffic_limit_gb": 240,
-    "max_devices": 5,
+    "traffic_limit_gb": 260,
+    "max_devices": 3,
     "monthly_quota_gb": 20,
     "tag": "家庭多设备",
-    "description": "一年有效，每月 20GB（用超预支下月，有效期提前），5 台设备",
+    "description": "13 个月有效（买一年送一月），每月 20GB（用超预支下月，有效期提前），3 台设备",
     "features": [
       "每月 20 GB",
-      "5 台设备",
+      "3 台设备",
       "多地域自动切换"
     ],
-    "pitch": "全家用一年，最划算"
+    "pitch": "买 12 个月送 1 个月，最划算"
   },
   {
     "id": "plan_yearly_renew",
     "name": "年付续费",
-    "duration_days": 365,
+    "duration_days": 395,
+    "bonus_days": 30,
     "price_cny": 100,
-    "traffic_limit_gb": 240,
-    "max_devices": 5,
+    "traffic_limit_gb": 260,
+    "max_devices": 3,
     "monthly_quota_gb": 20,
     "tag": "老用户优惠",
-    "description": "连续包年，每月 20GB（用超预支下月，有效期提前），5 台设备",
+    "description": "连续包年 13 个月（买一年送一月），每月 20GB（用超预支下月，有效期提前），3 台设备",
     "features": [
       "每月 20 GB",
-      "5 台设备",
+      "3 台设备",
       "年付到期续费专用"
     ],
     "pitch": "老用户续一年，省 20 元"
+  },
+  {
+    "id": "plan_yearly_plus",
+    "name": "年付大流量",
+    "duration_days": 365,
+    "price_cny": 199,
+    "traffic_limit_gb": 480,
+    "monthly_quota_gb": 40,
+    "max_devices": 5,
+    "tag": "大流量多设备",
+    "description": "一年有效，每月 40GB（用超预支下月，有效期提前），5 台设备",
+    "features": [
+      "每月 40 GB",
+      "5 台设备",
+      "多地域自动切换"
+    ],
+    "pitch": "大流量随便用，5 台设备"
   },
   {
     "id": "plan_biz_yearly",

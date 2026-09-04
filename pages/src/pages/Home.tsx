@@ -7,6 +7,23 @@ import { api } from "../services/api";
 
 const REF_KEY = "fg_ref";
 
+/** 年付限时活动截止（2026-10-04 24:00 北京时间）：过后横幅自动隐藏 */
+const YEARLY_PROMO_END = new Date("2026-10-05T00:00:00+08:00").getTime();
+
+/** 年付「买 12 送 1」限时活动横幅；到期自动消失（套餐数据需同步改回 365 天） */
+function YearlyPromoBanner() {
+  if (Date.now() >= YEARLY_PROMO_END) return null;
+  return (
+    <section className="max-w-3xl mx-auto rounded-2xl border border-amber-500/40 bg-gradient-to-r from-amber-500/10 to-slate-900 p-5 text-center space-y-1">
+      <p className="font-semibold text-amber-300">🔥 限时活动：年付买 12 个月送 1 个月</p>
+      <p className="text-sm text-slate-300">
+        现在开通或续费年付套餐，有效期 <strong className="text-amber-300">13 个月</strong>（395 天）。
+        活动 10 月 4 日截止，之后恢复 12 个月。
+      </p>
+    </section>
+  );
+}
+
 /** 从 URL 捕获推广码（?ref=xxx）存入 localStorage，领取试用/下单时使用 */
 function captureRefCode() {
   try {
@@ -50,6 +67,8 @@ export default function Home() {
       </section>
 
       <TrialCard />
+
+      <YearlyPromoBanner />
 
       <section>
         <h2 className="text-xl font-semibold mb-5 text-center">选择套餐</h2>
@@ -151,7 +170,7 @@ export default function Home() {
   );
 }
 
-/** 免费体验领取卡片：输入邮箱领 30 天 20GB，凭证发到邮箱，每邮箱限一次 */
+/** 免费体验领取卡片：输入邮箱领 3 天 20GB，凭证发到邮箱，每邮箱限一次 */
 function TrialCard() {
   const [email, setEmail] = useState("");
   const [state, setState] = useState<"idle" | "sending" | "done">("idle");
@@ -174,7 +193,7 @@ function TrialCard() {
       <section className="max-w-xl mx-auto rounded-2xl border border-emerald-500/50 bg-emerald-500/10 p-6 text-center space-y-2">
         <h2 className="text-lg font-semibold text-emerald-300">体验凭证已发送 ✅</h2>
         <p className="text-sm text-slate-300">
-          30 天 · 20GB 体验 token 已发到你的邮箱，按邮件里的指引导入 Clash 即可使用；
+          3 天 · 20GB 体验 token 已发到你的邮箱，按邮件里的指引导入 Clash 即可使用；
           也可在
           <Link to="/tokens" className="text-sky-400 hover:underline"> 我的 Token </Link>
           输入邮箱一键登录查看。
@@ -186,7 +205,7 @@ function TrialCard() {
   return (
     <section className="max-w-xl mx-auto rounded-2xl border border-sky-500/40 bg-sky-500/5 p-6 space-y-4">
       <div className="text-center space-y-1">
-        <h2 className="text-lg font-semibold">新用户免费体验 30 天</h2>
+        <h2 className="text-lg font-semibold">新用户免费体验 3 天</h2>
         <p className="text-sm text-slate-400">20GB 流量，输入邮箱立即领取，每个邮箱限领一次</p>
       </div>
       <div className="flex gap-2">
