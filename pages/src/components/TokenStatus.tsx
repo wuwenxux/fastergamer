@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import type { Token } from "../../../shared/types";
+import { QRCodeCanvas } from "qrcode.react";
+import type { Order, Plan, Token } from "../../../shared/types";
 import { api } from "../services/api";
 import DeviceManager from "./DeviceManager";
 
@@ -35,20 +36,45 @@ export default function TokenStatus({ token }: { token: Token }) {
   const [showPreview, setShowPreview] = useState(false);
   const [previewLoading, setPreviewLoading] = useState(false);
   const [monthlyQuotaGb, setMonthlyQuotaGb] = useState<number | null>(null);
+  const [plans, setPlans] = useState<Plan[]>([]);
   // 非本人激活时后端只返回概要（无 uuid），置此标记展示登录引导
   const [activatedRestricted, setActivatedRestricted] = useState(false);
   const [rotating, setRotating] = useState(false);
+  const [resetting, setResetting] = useState(false);
+  // 升级套餐：已下单待支付的升级订单（扫码轮询中）
+  const [upgradeOrder, setUpgradeOrder] = useState<Order | null>(null);
+  const [upgrading, setUpgrading] = useState<string | null>(null);
 
   // 套餐带月度配额时拉取配额值用于展示
   useEffect(() => {
     api
       .plans()
       .then((plans) => {
+        setPlans(plans);
         const plan = plans.find((p) => p.id === current.plan_id);
         setMonthlyQuotaGb(plan?.monthly_quota_gb ?? null);
       })
       .catch(() => {});
   }, [current.plan_id]);
+
+  // 升级订单扫码后轮询支付状态，平台回调升级完成后刷新 token
+  useEffect(() => {
+    if (!upgradeOrder) return;
+    const timer = setInterval(async () => {
+      try {
+        const s = await api.orderStatus(upgradeOrder.id);
+        if (s.status === "paid") {
+          clearInterval(timer);
+          const updated = await api.getToken(current.id);
+          setCurrent(updated);
+          setUpgradeOrder(null);
+        }
+      } catch {
+        /* 网络抖动忽略，下一轮再试 */
+      }
+    }, 3000);
+    return () => clearInterval(timer);
+  }, [upgradeOrder, current.id]);
 
   // 每秒刷新剩余时间和在线状态
   useEffect(() => {
@@ -190,6 +216,55 @@ export default function TokenStatus({ token }: { token: Token }) {
     }
   };
 
+  // 自助重置流量：恢复满额，代价是有效期提前 30 天
+  const onResetPenalty = async () => {
+    if (!window.confirm("确认重置流量？\n流量将立即恢复满额，代价是有效期提前 30 天。")) return;
+    setResetting(true);
+    try {
+      const updated = await api.resetPenalty(current.id);
+      setCurrent(updated);
+    } catch (e) {
+      alert((e as Error).message);
+    } finally {
+      setResetting(false);
+    }
+  };
+
+  // 可升级的目标套餐：价格高于当前套餐（排除免费体验）
+  const currentPlan = plans.find((p) => p.id === current.plan_id);
+  const upgradeTargets =
+    current.status === "revoked" || !currentPlan
+      ? []
+      : plans.filter((p) => p.id !== "plan_3days" && p.price_cny > currentPlan.price_cny);
+
+  // 预估补差价（与后端同公式：旧套餐价 × 剩余有效期比例折抵；未激活按全额剩余）
+  const estimatePayable = (target: Plan): number => {
+    if (!currentPlan) return target.price_cny;
+    const durationMs = currentPlan.duration_days * 86_400_000;
+    const remaining = current.expires_at
+      ? Math.max(current.expires_at - now, 0)
+      : durationMs;
+    const credit = currentPlan.price_cny * Math.min(remaining / durationMs, 1);
+    return Math.max(0, Math.round((target.price_cny - credit) * 100) / 100);
+  };
+
+  const startUpgrade = async (targetId: string) => {
+    setUpgrading(targetId);
+    try {
+      const res = await api.upgradeToken(current.id, targetId);
+      if (res.paid && res.token) {
+        // 差价 ≤ 0 免费升级：立即生效
+        setCurrent(res.token);
+      } else {
+        setUpgradeOrder(res.order);
+      }
+    } catch (e) {
+      alert((e as Error).message);
+    } finally {
+      setUpgrading(null);
+    }
+  };
+
   return (
     <div className="rounded-2xl border border-slate-700 bg-slate-900 p-6 space-y-4">
       <div className="flex items-center justify-between flex-wrap gap-2">
@@ -264,11 +339,20 @@ export default function TokenStatus({ token }: { token: Token }) {
             </div>
           )}
           {trafficExhausted && (
-            <p className="text-xs text-amber-400">
-              流量已用完。不会立即断线：48 小时宽限期内服务照常，请尽快
-              <Link to="/" className="text-sky-400 hover:underline"> 续费 </Link>
-              ；宽限期结束后服务才会暂停。
-            </p>
+            <div className="space-y-2">
+              <p className="text-xs text-amber-400">
+                流量已用完。不会立即断线：48 小时宽限期内服务照常，请尽快
+                <Link to="/" className="text-sky-400 hover:underline"> 续费 </Link>
+                ；宽限期结束后服务才会暂停。
+              </p>
+              <button
+                onClick={onResetPenalty}
+                disabled={resetting}
+                className="w-full rounded-lg border border-amber-500/50 bg-amber-500/10 py-2 text-xs font-medium text-amber-400 hover:bg-amber-500/20 transition-colors disabled:opacity-60"
+              >
+                {resetting ? "重置中…" : "立即重置流量（有效期 -30 天）"}
+              </button>
+            </div>
           )}
         </div>
       )}
@@ -442,6 +526,56 @@ export default function TokenStatus({ token }: { token: Token }) {
       )}
 
       <DeviceManager token={current} onChange={setCurrent} />
+
+      {upgradeOrder && (
+        <div className="rounded-xl border border-sky-500/50 bg-sky-500/10 p-4 space-y-3 text-center">
+          <p className="text-sm font-medium text-sky-300">
+            升级订单已创建，请扫码支付差价 ¥{upgradeOrder.payable_cny}
+          </p>
+          {upgradeOrder.epay_qr_code ? (
+            <div className="max-w-[240px] mx-auto rounded-lg bg-white p-3">
+              <QRCodeCanvas value={upgradeOrder.epay_qr_code} size={224} className="w-full h-auto" />
+            </div>
+          ) : (
+            <p className="text-xs text-rose-400">支付二维码生成失败，请稍后重试</p>
+          )}
+          <p className="text-xs text-slate-400">
+            支付宝扫码支付后自动完成升级（订阅链接与设备不变）；支付成功本页自动刷新。
+          </p>
+          <button
+            onClick={() => setUpgradeOrder(null)}
+            className="text-xs text-slate-500 hover:text-slate-300"
+          >
+            取消并收起
+          </button>
+        </div>
+      )}
+
+      {upgradeTargets.length > 0 && !upgradeOrder && (
+        <div className="rounded-xl border border-slate-700 bg-slate-950 p-4 space-y-3">
+          <div className="text-sm font-medium text-slate-300">升级套餐（补差价，订阅链接与设备不变）</div>
+          <div className="space-y-2">
+            {upgradeTargets.map((p) => (
+              <div key={p.id} className="flex items-center justify-between gap-3 text-sm">
+                <div>
+                  <span>{p.name}</span>
+                  <span className="text-xs text-slate-500 ml-2">¥{p.price_cny} / {p.duration_days} 天</span>
+                </div>
+                <button
+                  onClick={() => startUpgrade(p.id)}
+                  disabled={upgrading !== null}
+                  className="shrink-0 rounded-lg bg-sky-500 px-3 py-1.5 text-xs font-medium hover:bg-sky-400 transition-colors disabled:opacity-60"
+                >
+                  {upgrading === p.id ? "下单中…" : `补差价 ≈¥${estimatePayable(p)} 升级`}
+                </button>
+              </div>
+            ))}
+          </div>
+          <p className="text-[11px] text-slate-500">
+            差价 = 目标套餐价 - 当前套餐剩余价值（按剩余天数折算）；升级后流量清零重计，有效期按新套餐重新开始。
+          </p>
+        </div>
+      )}
     </div>
   );
 }

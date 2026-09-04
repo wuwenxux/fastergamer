@@ -1,12 +1,13 @@
 /**
- * 确认收款后发放 token（个人收款码过渡期间由管理员手动触发，
- * 接入支付宝当面付后由回调触发；两者共用 fulfillOrder）
+ * 确认收款后发放 token（易支付回调自动触发，或推广全额抵扣的
+ * 0 元订单下单即触发；两者共用 fulfillOrder）
  */
 import { KV, type Order, type Plan, type Token } from "../../../../shared/types";
-import { isEmail, sendTokenEmail, shouldSendEmail } from "./email-aliyun";
+import { isEmail, sendMail, sendTokenEmail, shouldSendEmail } from "./email-aliyun";
 import { createMagicTicket } from "./accounts";
 import { deleteDeviceIndex, getPlans, getTokenById, saveOrder, saveToken } from "./kv";
 import { newTokenId } from "./ids";
+import { currentMonthKey } from "./nodes";
 import { rewardReferrerOnPayment } from "./referral";
 import { pushAuthRefresh } from "./authpush";
 import type { Env } from "../types";
@@ -55,6 +56,67 @@ export const issueTokenForOrder = async (
   return token;
 };
 
+/**
+ * 升级订单发货：支付成功后升级既有 token（保留 id/uuid/设备槽位）。
+ * 套餐、流量上限、设备上限换新；有效期从升级时刻按新套餐时长重计；
+ * 流量记账清零（offset 基准对齐当前 Xray 累计值），月度配额账期重置。
+ */
+export const upgradeTokenForOrder = async (
+  env: Env,
+  ctx: WaitUntilCtx,
+  order: Order,
+  plan: Plan
+): Promise<Token> => {
+  const token = await getTokenById(env, order.upgrade_token_id!);
+  if (!token) throw new Error(`upgrade token '${order.upgrade_token_id}' not found`);
+
+  const now = Date.now();
+  token.plan_id = plan.id;
+  token.traffic_limit_gb = plan.traffic_limit_gb ?? 0;
+  token.max_devices = plan.max_devices;
+  if (!token.activated_at) token.activated_at = now;
+  token.expires_at = now + plan.duration_days * 86_400_000;
+  if (plan.monthly_quota_gb) {
+    token.base_expires_at = token.expires_at;
+    token.months_borrowed = 0;
+    token.month_used_bytes = 0;
+    token.month_key = currentMonthKey();
+  } else {
+    delete token.base_expires_at;
+    delete token.months_borrowed;
+    delete token.month_used_bytes;
+    delete token.month_key;
+  }
+  // 新套餐流量从零重计（Xray 计数器不可清零，用 offset 对齐基准）
+  token.traffic_offset_bytes = Object.values(token.traffic_by_node ?? {}).reduce((s, v) => s + v, 0);
+  token.traffic_used_gb = 0;
+  delete token.rate_window_start;
+  delete token.rate_window_bytes;
+  delete token.traffic_exhausted_at;
+  if (token.status !== "revoked") token.status = "active";
+  // 流量类提醒升级后可重新触发
+  if (token.notify_log) {
+    delete token.notify_log.traffic_80;
+    delete token.notify_log.exhausted;
+    delete token.notify_log.traffic_spike;
+  }
+  await saveToken(env, token);
+
+  if (shouldSendEmail(order.contact)) {
+    ctx.waitUntil(
+      sendMail(
+        env,
+        order.contact!,
+        "【GameBoost】套餐升级成功",
+        `<p>你好，你的 Token（<strong>${token.id}</strong>）已升级为 <strong>${plan.name}</strong>。</p>
+         <p>新有效期至 <strong>${new Date(token.expires_at!).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" })}</strong>，流量额度已重置为满额。订阅链接与设备保持不变，无需重新配置。</p>`,
+        `你的 Token（${token.id}）已升级为 ${plan.name}。新有效期至 ${new Date(token.expires_at!).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" })}，流量已重置为满额。订阅链接与设备不变。`
+      )
+    );
+  }
+  return token;
+};
+
 /** 发货锁 TTL（秒）：兜底自动清理，进程崩溃也不会留下永久锁 */
 const ORDER_LOCK_TTL_SEC = 60;
 /** 锁的拦截窗口（毫秒）：窗口内的并发/接连触发直接拒绝，让调用方稍后重试 */
@@ -100,6 +162,18 @@ export const fulfillOrder = async (
   const plans = await getPlans(env);
   const plan = plans.find((p) => p.id === order.plan_id);
   if (!plan) throw new Error(`plan '${order.plan_id}' not found`);
+
+  // 升级订单：支付成功后升级既有 token（uuid/设备不变），而非新发货。
+  // 升级不新造 token，竞态 loser 只是重复升级同一 token（幂等），无需游离 token 对账。
+  if (order.upgrade_token_id) {
+    const upgraded = await upgradeTokenForOrder(env, ctx, order, plan);
+    order.status = "paid";
+    order.token_id = upgraded.id;
+    order.paid_at = Date.now();
+    await saveOrder(env, order);
+    ctx.waitUntil(pushAuthRefresh(env)); // 配额/状态变化立即同步各节点
+    return { token: upgraded, already: false };
+  }
 
   const token = await issueTokenForOrder(env, ctx, order, plan);
   order.status = "paid";
