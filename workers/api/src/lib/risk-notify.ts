@@ -258,7 +258,8 @@ export async function notifyIpChange(env: Env, token: Token, ips: string[]): Pro
   const res = await sendMail(env, token.contact, subject, html, text);
   if (res.ok) {
     token.notify_log["ip_change"] = now;
-    console.log(`[risk] ip-change notified ${token.id} ips=${ips.join(",")}`);
+    // 用户接入 IP 属敏感信息，日志只记条数不记具体 IP
+    console.log(`[risk] ip-change notified ${token.id} ip_count=${ips.length}`);
   } else {
     console.error(`[risk] ip-change mail failed ${token.id}: ${res.error}`);
   }

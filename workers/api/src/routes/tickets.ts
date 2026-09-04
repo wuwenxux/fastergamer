@@ -7,6 +7,8 @@
 import { Hono } from "hono";
 import type { FaqItem, Ticket } from "../../../../shared/types";
 import { isEmail, sendMail } from "../lib/email-aliyun";
+import { mailThrottleAllows } from "../lib/mail-throttle";
+import { maskEmail } from "../lib/mask-email";
 import { listTickets, saveTicket } from "../lib/kv";
 import { escapeHtml } from "../lib/escape-html";
 import type { Env } from "../types";
@@ -48,16 +50,19 @@ ticketsRoutes.post("/feedback", async (c) => {
   };
   await saveTicket(c.env, ticket);
 
-  // 回执邮件（尽力发送，失败不影响提交）
+  // 回执邮件（尽力发送，失败不影响提交）；按收件人节流（防邮件炸弹），超限静默不发
   const site = (c.env.SITE_URL ?? "https://fastergamer.cn").replace(/\/$/, "");
-  sendMail(
-    c.env,
-    contact,
-    "【GameBoost】我们已收到你的问题反馈",
-    `<p>你好，我们已收到你的问题反馈（工单号 <strong>${ticket.id}</strong>），客服会尽快通过本邮箱回复你。</p>
-     <p style="color:#64748b;font-size:13px;">你的问题：${escapeHtml(message.slice(0, 500))}</p>`,
-    `我们已收到你的问题反馈（工单号 ${ticket.id}），客服会尽快通过本邮箱回复你。\n\n你的问题：${message.slice(0, 500)}`
-  ).catch(() => {});
+  (async () => {
+    if (!(await mailThrottleAllows(c.env, contact))) return;
+    await sendMail(
+      c.env,
+      contact,
+      "【GameBoost】我们已收到你的问题反馈",
+      `<p>你好，我们已收到你的问题反馈（工单号 <strong>${ticket.id}</strong>），客服会尽快通过本邮箱回复你。</p>
+       <p style="color:#64748b;font-size:13px;">你的问题：${escapeHtml(message.slice(0, 500))}</p>`,
+      `我们已收到你的问题反馈（工单号 ${ticket.id}），客服会尽快通过本邮箱回复你。\n\n你的问题：${message.slice(0, 500)}`
+    );
+  })().catch(() => {});
 
   // 管理员通知（配置了 ADMIN_NOTIFY_EMAIL 才发）
   if (c.env.ADMIN_NOTIFY_EMAIL) {
@@ -73,7 +78,7 @@ ticketsRoutes.post("/feedback", async (c) => {
     ).catch(() => {});
   }
 
-  console.log(`[feedback] new ticket ${ticket.id} from ${contact} category=${category}`);
+  console.log(`[feedback] new ticket ${ticket.id} from ${maskEmail(contact)} category=${category}`);
   return c.json({ ok: true, data: { id: ticket.id } });
 });
 

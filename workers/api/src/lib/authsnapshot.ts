@@ -52,10 +52,14 @@ export async function getAuthSnapshot(env: Env): Promise<AuthSnapshot> {
   try {
     const snap = await computeAuthSnapshot(env);
     // 写快照也算一次 KV write；TTL 15min ≈ 96 写/天，免费版 1k/天 可承受
-    await env.TOKENS.put(AUTH_SNAPSHOT_KEY, JSON.stringify(snap)).catch(() => {});
+    await env.TOKENS.put(AUTH_SNAPSHOT_KEY, JSON.stringify(snap)).catch((e) => {
+      console.error(`[authsnapshot] snapshot write failed: ${(e as Error).message}`);
+    });
     return snap;
-  } catch {
-    // KV 配额耗尽（list/reads 打满）时用陈旧快照兜底，宁可名单滞后也不让节点同步全挂
+  } catch (e) {
+    // KV 配额耗尽（list/reads 打满）时用陈旧快照兜底，宁可名单滞后也不让节点同步全挂；
+    // 但撤销生效最长滞后 ~TTL，失败必须告警
+    console.error(`[authsnapshot] rebuild failed${cached ? ", serving stale snapshot" : ""}: ${(e as Error).message}`);
     if (cached) return cached;
     throw new Error("auth snapshot unavailable");
   }

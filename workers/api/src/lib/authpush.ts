@@ -13,8 +13,10 @@ export async function pushAuthRefresh(env: Env): Promise<void> {
   try {
     const snap = await computeAuthSnapshot(env);
     await env.TOKENS.put(AUTH_SNAPSHOT_KEY, JSON.stringify(snap));
-  } catch {
-    // 快照重建失败不阻断推送：节点拉到旧快照也无妨，变更由兜底轮询补齐
+  } catch (e) {
+    // 快照重建失败不阻断推送：节点拉到旧快照也无妨，变更由兜底轮询补齐；
+    // 但撤销最长滞后 15min，失败必须告警（只记操作类型与错误 message，不含敏感数据）
+    console.error(`[authpush] snapshot rebuild failed: ${(e as Error).message}`);
   }
   const nodes = await getNodes(env);
   await Promise.allSettled(

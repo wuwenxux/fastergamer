@@ -16,7 +16,8 @@ import { rateLimit } from "./middleware/rateLimit";
 
 const app = new Hono<{ Bindings: Env }>();
 
-// CORS 只允许本站来源（同源请求自动放行，兼容 workers.dev / 自定义域名），本地开发允许 localhost
+// CORS 只允许本站来源（同源请求自动放行，兼容 workers.dev / 自定义域名）；
+// localhost 来源只在本地开发（ENVIRONMENT=dev，见 wrangler.toml）放行，生产不放行
 app.use(
   "*",
   cors({
@@ -30,7 +31,10 @@ app.use(
       if (origin === "https://fastergamer.cn" || origin === "https://www.fastergamer.cn") {
         return origin;
       }
-      if (origin.startsWith("http://localhost:") || origin.startsWith("http://127.0.0.1:")) {
+      if (
+        c.env.ENVIRONMENT === "dev" &&
+        (origin.startsWith("http://localhost:") || origin.startsWith("http://127.0.0.1:"))
+      ) {
         return origin;
       }
       return "";
@@ -42,36 +46,14 @@ app.use(
 
 app.get("/health", (c) => c.json({ ok: true, service: "vpn-api" }));
 
-/** GET /api/payment-info —— 公开的收款信息（静态转账模式下展示的支付宝账号） */
-app.get("/api/payment-info", (c) =>
-  c.json({ ok: true, data: { alipay_account: c.env.ALIPAY_ACCOUNT ?? null } })
-);
-
-/** GET /api/qr/:name —— 公开的收款码图片输出（仅 alipay） */
-app.get("/api/qr/:name", async (c) => {
-  const name = c.req.param("name");
-  if (name !== "alipay") {
-    return c.json({ ok: false, error: "not found" }, 404);
-  }
-  const { value, metadata } = await c.env.PLANS.getWithMetadata<ArrayBuffer>(
-    `qr:${name}`,
-    "arrayBuffer"
-  );
-  if (!value) return c.json({ ok: false, error: "not found" }, 404);
-  const contentType =
-    (metadata as { contentType?: string } | null)?.contentType ?? "image/png";
-  return new Response(value, {
-    headers: { "content-type": contentType, "cache-control": "public, max-age=60" },
-  });
-});
-
 // 敏感接口限流：找回、下单、反馈、登录链接、magic 核销
 app.use("/api/tokens/recover", rateLimit(10, 60_000));
 app.use("/api/tokens/trial", rateLimit(3, 60_000));
 app.use("/api/tokens/login-link", rateLimit(5, 60_000));
 app.use("/api/tokens/magic/consume", rateLimit(10, 60_000));
+app.use("/api/tokens/*/reset-penalty", rateLimit(5, 60_000));
+app.use("/api/tokens/*/upgrade", rateLimit(10, 60_000));
 app.use("/api/orders", rateLimit(20, 60_000));
-app.use("/api/orders/:id/claim-paid", rateLimit(10, 60_000));
 app.use("/api/feedback", rateLimit(5, 60_000));
 app.use("/api/register", rateLimit(10, 60_000));
 

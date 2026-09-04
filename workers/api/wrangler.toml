@@ -30,6 +30,9 @@ id = "c6e5f9d44b0a5320e9f8c1a234567890"
 
 # --- 环境变量 ---
 [vars]
+# 本地开发环境标记：CORS 放行 localhost 来源（生产 wrangler.cf.toml 为 production，不放行）
+ENVIRONMENT = "dev"
+
 # 管理接口密钥：调用 /api/admin/* 时需在 header 携带 x-admin-key
 # 真实值放在 .dev.vars（不入库），这里只是占位
 ADMIN_KEY = "change-me-in-.dev.vars"
@@ -42,6 +45,3 @@ CLASH_REGIONS = '[{"code":"HK","flag":"🇭🇰","name":"香港"},{"code":"JP","
 
 # 邮件走阿里云 DirectMail（ALIYUN_ACCESS_KEY_ID/SECRET 在 .dev.vars）
 SITE_URL = "https://fastergamer.cn"
-
-# 支付宝收款账号（静态转账模式展示给用户；当面付动态码启用时不会用到）
-ALIPAY_ACCOUNT = "19115946187"
