@@ -8,7 +8,8 @@
  * 自动落 ⚡/WS 三层兜底）。老内核（Premium）只收 WS 条目。
  * 节点显示名统一为「区域代码 中文地区名 全局序号」，如 "MY 马来西亚 01"（序号按节点列表顺序全局递增）。
  * 分组结构（按区域）：
- *   🚀 节点选择（select）→ ♻️ 自动选择（全部节点 url-test，gstatic 端到端）
+ *   🚀 节点选择（select）→ ♻️ 自动选择（全部节点 url-test，测首节点 /generate_204，
+ *                          显示值 ≈ 客户端→节点接入成本）
  *                        → 🇭🇰 香港 / 🇯🇵 日本 …（各区域 url-test，测本区域节点 /generate_204，
  *                          显示值 ≈ 客户端→节点延迟）
  *                        → 各节点（手动指定）
@@ -50,6 +51,8 @@ export interface BuildConfigInput {
   regions?: ClashRegion[];
   /** 订阅请求的 User-Agent，用于判断是否支持 GEOSITE 规则 */
   userAgent?: string;
+  /** 客户端运营商（cf.asn 识别，isp.ts）：用于下发运营商友好的 DNS 顺序 */
+  isp?: string | null;
   /** 节点域名 → IP（订阅下发前由 Worker 通过 DoH 解析）。
    *  命中时 server 直接写 IP：Cloudflare 权威 DNS 在国内解析不稳，
    *  客户端直连 IP 可完全跳过节点域名解析；未命中回退域名 */
@@ -65,34 +68,81 @@ const AUTO_GROUP = "♻️ 自动选择";
 const MAIN_GROUP = "🚀 节点选择";
 const TEST_URL = "http://www.gstatic.com/generate_204";
 
-export const buildClashConfig = ({ uuid, nodes, regions, userAgent, nodeIps }: BuildConfigInput): string => {
+export const buildClashConfig = ({ uuid, nodes, regions, userAgent, nodeIps, isp }: BuildConfigInput): string => {
   const lines: string[] = [];
-  lines.push("mixed-port: 7890", "allow-lan: false", "mode: rule", "log-level: info", "");
+  lines.push("mixed-port: 7890", "allow-lan: false", "mode: rule", "log-level: info");
+  // unified-delay：url-test 从同一阶段起算延迟，各节点数字可比；顶层 ipv6 关闭防 AAAA 泄漏
+  lines.push("unified-delay: true", "ipv6: false");
+  // sniffer：从 TLS ClientHello / HTTP Host 嗅回域名再匹配规则——硬编码 IP 的 App
+  //（游戏/IoT/部分 SDK）不再被 GEOIP 裸判。仅 mihomo 系下发，Premium 不认此语法
+  const geositeEarly = supportsGeosite(userAgent);
+  if (geositeEarly) {
+    lines.push(
+      "sniffer:",
+      "  enable: true",
+      "  override-destination: true",
+      "  sniff:",
+      "    TLS:",
+      "      ports: [443]",
+      "    HTTP:",
+      "      ports: [80]"
+    );
+  }
+  lines.push("");
 
   // DNS 分流：国内域名走阿里/腾讯 DNS（结果真实、指向国内 CDN）；境外域名由
   // GEOSITE,geolocation-!cn 规则直接代理、不触发本地解析（实测国内访问 1.1.1.1 DoH
   // 全部超时，挂在这里会拖慢每个境外域名首连 5s+）。未分类域名用默认国内 DNS 解析
   // 后交给 GEOIP,CN 兜底判定。没有这段时 GEOIP/GEOSITE 依赖系统 DNS，被污染或解析
   // 到境外 CDN 会导致国内站误判走代理。
-  const geosite = supportsGeosite(userAgent);
-  // nameserver-policy 的 key：新内核用 geosite 分类；老内核（Premium）用 +.cn 域名后缀
+  const geosite = geositeEarly;
+  // 运营商适配：UDP 首选解析器按用户运营商排序（阿里/腾讯都是多线 BGP，但各省
+  // 到两家任播的 RTT 有差异）；DoH 永远排最前（防 UDP 53 劫持），系统/ISP DNS 不用
+  // （广告劫持与 TTL 违规高发）。114DNS 仅作移动的第三兜底（多线接入，移动侧稳定）
+  const ISP_DNS_FIRST: Record<string, string> = { 移动: "223.5.5.5", 电信: "119.29.29.29", 联通: "223.5.5.5" };
+  const udpFirst = (isp && ISP_DNS_FIRST[isp]) || "223.5.5.5";
+  const udpRest = ["223.5.5.5", "119.29.29.29", ...(isp === "移动" ? ["114.114.114.114"] : [])]
+    .filter((s) => s !== udpFirst);
+  // nameserver-policy 的 key：新内核用 geosite 分类；老内核（Premium）用 +.cn 域名后缀。
+  // 新内核 cn 策略给 DoH + UDP 双路（UDP 53 被劫持/丢包的弱网环境 DoH 兜底）；
+  // Premium 对 policy 数组兼容性差，保持单路 UDP
   const cnPolicyKey = geosite ? '"geosite:cn"' : '"+.cn"';
+  const cnPolicyVal = geosite ? `[https://dns.alidns.com/dns-query, ${udpFirst}]` : "223.5.5.5";
   lines.push(
     "dns:",
     "  enable: true",
     "  ipv6: false",
     "  enhanced-mode: fake-ip",
     "  fake-ip-range: 198.18.0.1/16",
+    // fake-ip 白名单：这些服务必须拿真实 IP，进 fake-ip 池会直接坏——
+    // NTP 校时 / STUN（游戏语音、主机联机）/ Windows 联网检测 / Apple 推送与系统服务
+    "  fake-ip-filter:",
+    "    - \"+.lan\"",
+    "    - \"+.local\"",
+    "    - \"+.localhost\"",
+    "    - \"+.home.arpa\"",
+    "    - \"time.*.com\"",
+    "    - \"time.*.gov\"",
+    "    - \"+.time.edu.cn\"",
+    "    - \"+.ntp.org.cn\"",
+    "    - \"+.pool.ntp.org\"",
+    "    - \"time1.cloud.tencent.com\"",
+    "    - \"stun.*.*\"",
+    "    - \"stun.*.*.*\"",
+    "    - \"+.msftconnecttest.com\"",
+    "    - \"+.msftncsi.com\"",
+    "    - swscan.apple.com",
+    "    - mesu.apple.com",
+    "    - localhost.ptlogin2.qq.com",
     // 目标域名解析：阿里 DoH 放最前（防 UDP 53 被劫持/慢），纯 IP 递归做 bootstrap 兜底
     "  nameserver:",
     "    - https://dns.alidns.com/dns-query",
-    "    - 223.5.5.5",
-    "    - 119.29.29.29",
+    ...[udpFirst, ...udpRest].map((s) => `    - ${s}`),
     // 节点域名解析保持单路：节点 server 已由 nodeIps 直发 IP，这里仅兜底
     "  proxy-server-nameserver:",
     "    - 223.5.5.5",
     "  nameserver-policy:",
-    `    ${cnPolicyKey}: 223.5.5.5`,
+    `    ${cnPolicyKey}: ${cnPolicyVal}`,
     ""
   );
   // 区域元数据提前解析：节点显示名要用它拼中文地区名
@@ -214,8 +264,6 @@ export const buildClashConfig = ({ uuid, nodes, regions, userAgent, nodeIps }: B
       `    sni: ${p.host}`
     );
   }
-  const allProxies = [...proxies, ...realityProxies, ...hy2Proxies];
-
   // 自动分组协议池：三协议全放，顺序 🚀Hy2 → ⚡Reality → WS。
   // 依据实测（杭州→HK 稳态延迟 Hy2 ~141ms / Reality ~184ms / WS ~232ms）：
   // 排最前的协议配合 tolerance 粘滞成为默认链路；UDP 被 QoS 时 url-test
@@ -239,17 +287,24 @@ export const buildClashConfig = ({ uuid, nodes, regions, userAgent, nodeIps }: B
   };
 
   lines.push("", "proxy-groups:");
-  // 主分组：默认「自动选择」，可切到某区域（区域内自动测速切换）或手动指定单节点
+  // 主分组：默认「自动选择」，可切到某区域（区域内自动测速切换）；单节点按地域分块排列
+  //（每块内部 🚀Hy2 → ⚡Reality → WS），不再按注册顺序平铺，新增/下线节点只影响本区域块
   lines.push(`  - name: "${MAIN_GROUP}"`, "    type: select", "    proxies:");
   lines.push(`      - "${AUTO_GROUP}"`);
   for (const code of orderedCodes) lines.push(`      - "${regionGroupName(code)}"`);
-  for (const p of allProxies) lines.push(`      - "${p.name}"`);
+  for (const code of orderedCodes)
+    for (const name of byRegion.get(code)!) lines.push(`      - "${name}"`);
 
   // 全局自动选择：url-test 覆盖自动池全部条目，单节点故障无需手动干预。
-  // 测速目标保持 gstatic 端到端——它决定实际用哪个节点，必须反映真实上网链路
+  // 测速目标用 HK 首节点的 /generate_204（HK 是主力区域、内核间互访 <1ms）：
+  // 显示值 ≈ 客户端→节点接入延迟，不含节点→外网段与目标站 DNS，读数稳定；
+  // 跨区成员带一个固定的「本区→HK」小段偏移（JP→HK ≈45ms、MY→HK ≈75ms）。
+  // 代价是自动选择不再感知节点出口抽风——出口段各节点实测均匀（→Google <40ms），可接受
+  const anchor = proxies.find((p) => p.region === "HK") ?? proxies[0];
+  const autoTestUrl = anchor ? `https://${anchor.host}/generate_204` : TEST_URL;
   lines.push(`  - name: "${AUTO_GROUP}"`, "    type: url-test", "    proxies:");
   for (const p of autoPool) lines.push(`      - "${p.name}"`);
-  lines.push(`    url: ${TEST_URL}`, "    interval: 300", "    tolerance: 50");
+  lines.push(`    url: ${autoTestUrl}`, "    interval: 300", "    tolerance: 50");
 
   // 每个区域一个 url-test 分组：锁定区域时仍享受区域内故障切换。
   // 测速目标用本区域首节点的 /generate_204：显示值 ≈ 客户端→节点延迟（区域内核间 <1ms），

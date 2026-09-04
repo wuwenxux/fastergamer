@@ -99,6 +99,7 @@ subRoutes.get("/", async (c) => {
     regions: parseRegions(c.env.CLASH_REGIONS),
     userAgent: c.req.header("user-agent"),
     nodeIps,
+    isp,
   });
 
   // subscription-userinfo：Clash/Stash 客户端可直接显示已用流量与到期时间

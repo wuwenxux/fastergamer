@@ -90,7 +90,7 @@ describe("GEOSITE 规则按 UA 降级", () => {
   it("新 UA：GEOSITE,CN 规则与 geosite dns policy 都在", () => {
     const config = buildClashConfig({ uuid: UUID, nodes: NODES, userAgent: NEW_UA });
     expect(config).toContain("GEOSITE,CN,DIRECT");
-    expect(config).toContain('"geosite:cn": 223.5.5.5');
+    expect(config).toContain('"geosite:cn": [https://dns.alidns.com/dns-query, 223.5.5.5]');
   });
 
   it("新 UA：geolocation-!cn 直接代理抢在 GEOIP 前，且不再下发 1.1.1.1 DoH policy", () => {
@@ -285,6 +285,28 @@ describe("Hysteria2 条目（🚀）", () => {
 });
 
 describe("DNS 解析", () => {
+  it("全局开关：unified-delay + 顶层 ipv6 关闭", () => {
+    const config = buildClashConfig({ uuid: UUID, nodes: NODES, userAgent: NEW_UA });
+    expect(config).toContain("unified-delay: true");
+    expect(config).toContain("ipv6: false");
+  });
+
+  it("fake-ip-filter 覆盖 NTP/STUN/系统检测域名", () => {
+    const config = buildClashConfig({ uuid: UUID, nodes: NODES, userAgent: NEW_UA });
+    expect(config).toContain("fake-ip-filter:");
+    expect(config).toContain('"stun.*.*"');
+    expect(config).toContain('"+.msftconnecttest.com"');
+    expect(config).toContain("+.pool.ntp.org");
+  });
+
+  it("sniffer 仅对 mihomo 系下发，Premium 不下发", () => {
+    const neo = buildClashConfig({ uuid: UUID, nodes: NODES, userAgent: NEW_UA });
+    expect(neo).toContain("sniffer:");
+    expect(neo).toContain("override-destination: true");
+    const old = buildClashConfig({ uuid: UUID, nodes: NODES, userAgent: OLD_UA });
+    expect(old).not.toContain("sniffer:");
+  });
+
   it("nameserver 含阿里 DoH 加速，proxy-server-nameserver 保持单路兜底", () => {
     const config = buildClashConfig({ uuid: UUID, nodes: NODES, userAgent: NEW_UA });
     const nsBlock = config.slice(
@@ -301,5 +323,29 @@ describe("DNS 解析", () => {
     expect(psBlock).toContain("- 223.5.5.5");
     expect(psBlock).not.toContain("119.29.29.29");
     expect(psBlock).not.toContain("https://");
+  });
+
+  it("按运营商调整 UDP 首选解析器与 cn policy 兜底", () => {
+    const order = (cfg: string) => {
+      const block = cfg.slice(cfg.indexOf("  nameserver:"), cfg.indexOf("  proxy-server-nameserver:"));
+      return [block.indexOf("223.5.5.5"), block.indexOf("119.29.29.29")];
+    };
+    const dianxin = buildClashConfig({ uuid: UUID, nodes: NODES, userAgent: NEW_UA, isp: "电信" });
+    const [a1, b1] = order(dianxin);
+    expect(b1).toBeGreaterThan(-1);
+    expect(b1).toBeLessThan(a1); // 电信首选 DNSPod
+    expect(dianxin).toContain('"geosite:cn": [https://dns.alidns.com/dns-query, 119.29.29.29]');
+    expect(dianxin).not.toContain("114.114.114.114");
+
+    const yidong = buildClashConfig({ uuid: UUID, nodes: NODES, userAgent: NEW_UA, isp: "移动" });
+    const [a2, b2] = order(yidong);
+    expect(a2).toBeGreaterThan(-1);
+    expect(a2).toBeLessThan(b2); // 移动首选 AliDNS
+    expect(yidong).toContain("114.114.114.114"); // 移动附加 114DNS 兜底
+
+    const unknown = buildClashConfig({ uuid: UUID, nodes: NODES, userAgent: NEW_UA, isp: null });
+    const [a3, b3] = order(unknown);
+    expect(a3).toBeLessThan(b3); // 默认 AliDNS 优先
+    expect(unknown).not.toContain("114.114.114.114");
   });
 });
