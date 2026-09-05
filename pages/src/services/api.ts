@@ -58,7 +58,7 @@ export const api = {
   /** 套餐列表 */
   plans: () => request<Plan[]>("/api/plans"),
 
-  /** 创建订单（返回 pending 订单，order.epay_qr_code 为易支付动态二维码；带登录会话时自动使用推广余额抵扣；ref 为推广码） */
+  /** 创建订单（返回 pending 订单；支付通道已摘除，暂无支付二维码；带登录会话时自动使用推广余额抵扣；ref 为推广码） */
   createOrder: (plan_id: string, contact?: string, ref?: string) =>
     request<CreateOrderResponse>("/api/orders", {
       method: "POST",
@@ -139,7 +139,7 @@ export const api = {
   /** Clash 订阅链接（需 token 处于 active）；走主域 fastergamer.click，由 CF Worker 渲染 */
   subUrl: (uuid: string) => `https://fastergamer.click/api/sub?uuid=${encodeURIComponent(uuid)}`,
 
-  /** 免费重新生成订阅链接（每个 token 限一次；旧链接立即失效）；需本人登录，否则 401 */
+  /** 自助重新生成订阅链接（不限次数；旧链接立即失效）；需本人登录，否则 401 */
   rotateUuid: (tokenId: string) =>
     request<{ id: string; uuid: string }>(`/api/tokens/${tokenId}/rotate-uuid`, {
       method: "POST",

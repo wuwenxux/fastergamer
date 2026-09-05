@@ -4,6 +4,7 @@ import { QRCodeCanvas } from "qrcode.react";
 import type { Order, Plan } from "../../../shared/types";
 import PaymentModal from "../components/PaymentModal";
 import { api } from "../services/api";
+import { copyText } from "../utils/clipboard";
 
 type Step = "summary" | "paying" | "result";
 
@@ -107,19 +108,27 @@ export default function Purchase() {
   );
 }
 
-/** 下单后的扫码支付页：易支付动态二维码，平台回调发货后轮询自动确认 */
+/** 下单后的支付页：有二维码则扫码支付；支付通道维护期（无二维码）展示保留提示，轮询 10 分钟后停止 */
 function PaymentResult({ order, plan }: { order: Order; plan: Plan }) {
   const [copied, setCopied] = useState(false);
   // 推广减免后实付 0 元的订单在创建时已直接发货
   const [paid, setPaid] = useState(order.status === "paid");
+  // 通道维护期订单不会变 paid，轮询 10 分钟后停止，避免无限空转
+  const [pollStopped, setPollStopped] = useState(false);
   const dynamicQr = order.epay_qr_code;
   const payable = order.payable_cny ?? plan.price_cny;
   const discount = order.discount_cny ?? 0;
 
   // 轮询订单状态，支付成功（支付平台回调发货）后自动跳转提示
   useEffect(() => {
-    if (paid) return;
+    if (paid || pollStopped) return;
+    const startedAt = Date.now();
     const timer = setInterval(async () => {
+      if (Date.now() - startedAt > 10 * 60_000) {
+        setPollStopped(true);
+        clearInterval(timer);
+        return;
+      }
       try {
         const s = await api.orderStatus(order.id);
         if (s.status === "paid") {
@@ -131,15 +140,14 @@ function PaymentResult({ order, plan }: { order: Order; plan: Plan }) {
       }
     }, 3000);
     return () => clearInterval(timer);
-  }, [paid, order.id]);
+  }, [paid, pollStopped, order.id]);
 
   const copyOrderId = async () => {
-    try {
-      await navigator.clipboard.writeText(order.id);
+    if (await copyText(order.id)) {
       setCopied(true);
       setTimeout(() => setCopied(false), 1500);
-    } catch {
-      /* ignore */
+    } else {
+      window.prompt("自动复制失败，请长按全选手动复制订单号：", order.id);
     }
   };
 
@@ -162,10 +170,12 @@ function PaymentResult({ order, plan }: { order: Order; plan: Plan }) {
   return (
     <div className="max-w-xl mx-auto space-y-6">
       <div className="rounded-2xl border border-sky-500/50 bg-sky-500/10 p-6 text-center space-y-2">
-        <h2 className="text-xl font-semibold">订单已创建，请扫码支付</h2>
-        <p className="text-sm text-slate-300">
-          打开<strong className="text-sky-300">支付宝</strong>扫码支付，支付成功自动到账。
-        </p>
+        <h2 className="text-xl font-semibold">订单已创建{dynamicQr ? "，请扫码支付" : ""}</h2>
+        {dynamicQr && (
+          <p className="text-sm text-slate-300">
+            打开<strong className="text-sky-300">支付宝</strong>扫码支付，支付成功自动到账。
+          </p>
+        )}
       </div>
 
       <div className="rounded-2xl border border-slate-700 bg-slate-900 p-6 space-y-4">
@@ -197,8 +207,10 @@ function PaymentResult({ order, plan }: { order: Order; plan: Plan }) {
               <div className="text-sm text-slate-300">支付宝扫码 · 等待支付…</div>
             </div>
           ) : (
-            <p className="text-center text-sm text-rose-400">
-              支付二维码生成失败，请返回重新下单
+            <p className="text-center text-sm text-slate-400">
+              {pollStopped
+                ? "支付通道维护中，订单已为你保留；请稍后再来或到「我的 Token」查看。"
+                : "支付通道维护中，暂无法支付；订单已为你保留，恢复后本页自动确认。"}
             </p>
           )}
         </div>

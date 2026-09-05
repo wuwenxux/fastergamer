@@ -66,7 +66,7 @@ export default function PaymentModal({
         </button>
 
         <p className="text-xs text-slate-500 text-center">
-          提交后展示支付宝收款账号，确认到账后 token 将发送到你的邮箱
+          提交订单后按页面提示完成支付；到账后 token 自动发送到你的邮箱
         </p>
       </div>
     </div>

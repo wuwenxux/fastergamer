@@ -196,8 +196,6 @@ export default function Tokens() {
         忘记 Token ID？直接输入购买时留的邮箱，登录链接邮件里会列出名下所有 Token。
       </p>
 
-      <ReferralCard />
-
       {loggedIn && (
         <div className="rounded-xl border border-slate-700 bg-slate-900 px-4 py-3 flex items-center justify-between">
           <div className="text-sm">
@@ -216,6 +214,8 @@ export default function Tokens() {
         ) : (
           <TokenStatus token={token} />
         ))}
+
+      <ReferralCard />
 
       <p className="text-sm text-slate-400">
         还不知道怎么导入订阅？

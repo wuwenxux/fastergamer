@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { api } from "../services/api";
+import { copyText } from "../utils/clipboard";
 
 interface ReferralInfo {
   code: string;
@@ -33,12 +34,11 @@ export default function ReferralCard() {
   const litSlots = Math.min(10, Math.floor(balance / info.discount_per_credit));
 
   const copy = async () => {
-    try {
-      await navigator.clipboard.writeText(info.link);
+    if (await copyText(info.link)) {
       setCopied(true);
       setTimeout(() => setCopied(false), 1500);
-    } catch {
-      /* 剪贴板不可用时忽略 */
+    } else {
+      window.prompt("自动复制失败，请长按全选手动复制邀请链接：", info.link);
     }
   };
 

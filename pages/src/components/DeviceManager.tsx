@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import type { Device, Token } from "../../../shared/types";
 import { api } from "../services/api";
+import { copyText } from "../utils/clipboard";
 
 /**
  * 设备槽位管理 —— 每台设备独立 UUID / 订阅链接，流量按设备审计
@@ -68,12 +69,12 @@ export default function DeviceManager({
   };
 
   const copySub = async (device: Device) => {
-    try {
-      await navigator.clipboard.writeText(api.subUrl(device.uuid));
+    const url = api.subUrl(device.uuid);
+    if (await copyText(url)) {
       setCopiedId(device.id);
       setTimeout(() => setCopiedId(""), 1500);
-    } catch {
-      /* ignore */
+    } else {
+      window.prompt("自动复制失败，请长按全选手动复制订阅链接：", url);
     }
   };
 

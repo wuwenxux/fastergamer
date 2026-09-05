@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 import { QRCodeCanvas } from "qrcode.react";
 import type { Order, Plan, Token } from "../../../shared/types";
 import { api } from "../services/api";
+import { copyText } from "../utils/clipboard";
 import DeviceManager from "./DeviceManager";
 
 type VerifyResult =
@@ -57,10 +58,17 @@ export default function TokenStatus({ token }: { token: Token }) {
       .catch(() => {});
   }, [current.plan_id]);
 
-  // 升级订单扫码后轮询支付状态，平台回调升级完成后刷新 token
+  // 升级订单扫码后轮询支付状态，平台回调升级完成后刷新 token；
+  // 支付通道维护期订单不会变 paid，10 分钟后停止轮询并收起，避免无限空转
   useEffect(() => {
     if (!upgradeOrder) return;
+    const startedAt = Date.now();
     const timer = setInterval(async () => {
+      if (Date.now() - startedAt > 10 * 60_000) {
+        clearInterval(timer);
+        setUpgradeOrder(null);
+        return;
+      }
       try {
         const s = await api.orderStatus(upgradeOrder.id);
         if (s.status === "paid") {
@@ -152,12 +160,13 @@ export default function TokenStatus({ token }: { token: Token }) {
   };
 
   const copySub = async () => {
-    try {
-      await navigator.clipboard.writeText(api.subUrl(current.uuid));
+    const url = api.subUrl(current.uuid);
+    if (await copyText(url)) {
       setCopied(true);
       setTimeout(() => setCopied(false), 1500);
-    } catch {
-      /* 剪贴板不可用时忽略 */
+    } else {
+      // 微信内置浏览器等场景剪贴板不可用，给用户手动复制的兜底
+      window.prompt("自动复制失败，请长按全选手动复制订阅链接：", url);
     }
   };
 
@@ -437,14 +446,6 @@ export default function TokenStatus({ token }: { token: Token }) {
             {verifying ? "诊断中…" : "Clash 导入失败？一键诊断"}
           </button>
 
-          <button
-            onClick={onRotate}
-            disabled={rotating}
-            className="w-full rounded-lg border border-amber-500/50 bg-amber-500/10 py-2 font-medium text-amber-400 hover:bg-amber-500/20 transition-colors disabled:opacity-60"
-          >
-            {rotating ? "生成中…" : "重新生成订阅链接"}
-          </button>
-
           {verify?.valid ? (
             <div className="rounded-lg border border-emerald-500/40 bg-emerald-500/5 p-3 space-y-2">
               <p className="text-xs text-emerald-400">
@@ -476,6 +477,20 @@ export default function TokenStatus({ token }: { token: Token }) {
               </pre>
             </div>
           )}
+
+          {/* 作废旧订阅属于危险操作，降级为卡片底部小按钮，避免与主操作混排误点 */}
+          <div className="flex items-center justify-between gap-3 border-t border-slate-800 pt-3">
+            <p className="text-[11px] text-slate-500">
+              订阅泄露或凭证被盗用？重新生成后旧链接立即失效，Clash 需重新导入订阅。
+            </p>
+            <button
+              onClick={onRotate}
+              disabled={rotating}
+              className="shrink-0 rounded-lg border border-amber-500/40 px-3 py-1.5 text-xs text-amber-400/90 hover:bg-amber-500/10 transition-colors disabled:opacity-60"
+            >
+              {rotating ? "生成中…" : "重新生成订阅链接"}
+            </button>
+          </div>
 
         </div>
       )}
@@ -530,50 +545,44 @@ export default function TokenStatus({ token }: { token: Token }) {
       {upgradeOrder && (
         <div className="rounded-xl border border-sky-500/50 bg-sky-500/10 p-4 space-y-3 text-center">
           <p className="text-sm font-medium text-sky-300">
-            升级订单已创建，请扫码支付差价 ¥{upgradeOrder.payable_cny}
+            升级订单已创建，差价 ¥{upgradeOrder.payable_cny}
           </p>
           {upgradeOrder.epay_qr_code ? (
             <div className="max-w-[240px] mx-auto rounded-lg bg-white p-3">
               <QRCodeCanvas value={upgradeOrder.epay_qr_code} size={224} className="w-full h-auto" />
             </div>
           ) : (
-            <p className="text-xs text-rose-400">支付二维码生成失败，请稍后重试</p>
+            <p className="text-xs text-slate-400">支付通道维护中，订单已保留，请稍后重试</p>
           )}
-          <p className="text-xs text-slate-400">
-            支付宝扫码支付后自动完成升级（订阅链接与设备不变）；支付成功本页自动刷新。
-          </p>
           <button
             onClick={() => setUpgradeOrder(null)}
             className="text-xs text-slate-500 hover:text-slate-300"
           >
-            取消并收起
+            取消
           </button>
         </div>
       )}
 
       {upgradeTargets.length > 0 && !upgradeOrder && (
         <div className="rounded-xl border border-slate-700 bg-slate-950 p-4 space-y-3">
-          <div className="text-sm font-medium text-slate-300">升级套餐（补差价，订阅链接与设备不变）</div>
+          <div className="text-sm font-medium text-slate-300">升级套餐</div>
           <div className="space-y-2">
             {upgradeTargets.map((p) => (
               <div key={p.id} className="flex items-center justify-between gap-3 text-sm">
-                <div>
-                  <span>{p.name}</span>
+                <span>
+                  {p.name}
                   <span className="text-xs text-slate-500 ml-2">¥{p.price_cny} / {p.duration_days} 天</span>
-                </div>
+                </span>
                 <button
                   onClick={() => startUpgrade(p.id)}
                   disabled={upgrading !== null}
                   className="shrink-0 rounded-lg bg-sky-500 px-3 py-1.5 text-xs font-medium hover:bg-sky-400 transition-colors disabled:opacity-60"
                 >
-                  {upgrading === p.id ? "下单中…" : `补差价 ≈¥${estimatePayable(p)} 升级`}
+                  {upgrading === p.id ? "下单中…" : `≈¥${estimatePayable(p)} 升级`}
                 </button>
               </div>
             ))}
           </div>
-          <p className="text-[11px] text-slate-500">
-            差价 = 目标套餐价 - 当前套餐剩余价值（按剩余天数折算）；升级后流量清零重计，有效期按新套餐重新开始。
-          </p>
         </div>
       )}
     </div>
