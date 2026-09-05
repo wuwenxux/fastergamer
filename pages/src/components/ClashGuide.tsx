@@ -164,10 +164,68 @@ interface Step {
   verify: string;
 }
 
+type AppKey = "clash_verge" | "cmfa" | "ios";
+
+interface AppGuide {
+  name: string;
+  importSteps: string[];
+  enableSteps: string[];
+}
+
+/** 各客户端的专属操作步骤：界面入口名称按 app 实际菜单写，不用泛泛的「订阅/Profiles」 */
+const APP_GUIDES: Record<AppKey, AppGuide> = {
+  clash_verge: {
+    name: "Clash Verge Rev",
+    importSteps: [
+      "打开 Clash Verge Rev，点左侧菜单「订阅」（Profiles）",
+      "在顶部输入框粘贴订阅链接，点「导入」",
+      "导入成功后点击该配置卡片，让它处于选中（高亮）状态",
+    ],
+    enableSteps: [
+      "点左侧菜单「设置」，打开「系统代理」开关",
+      "长时间不稳定可在「设置 → TUN 模式」开启增强模式（需要管理员权限）",
+    ],
+  },
+  cmfa: {
+    name: "Clash Meta for Android",
+    importSteps: [
+      "打开 App，点底部导航的「配置」",
+      "点右上角「+」→ 选「从 URL 导入」，粘贴订阅链接后保存",
+      "回到配置列表，点一下刚导入的配置让它生效",
+    ],
+    enableSteps: [
+      "回到主界面，点中间的「启动」大按钮",
+      "首次启动会弹出「VPN 连接请求」系统对话框，必须点「允许」",
+      "状态栏出现钥匙 / VPN 图标即表示已开启",
+    ],
+  },
+  ios: {
+    name: "Stash",
+    importSteps: [
+      "打开 Stash，点底部「配置」→ 右上角「+」→「订阅」",
+      "粘贴本站 Clash 订阅链接，保存并等待下载完成",
+      "Shadowrocket 用户见页面底部「iPhone / iPad 使用说明」方案 B",
+    ],
+    enableSteps: [
+      "回到 Stash 首页，打开「启动」开关",
+      "首次启动会弹出「添加 VPN 配置」系统授权，点「允许」",
+    ],
+  },
+};
+
 export default function ClashGuide() {
   const currentPlatform = usePlatform();
   const recommended = CLASH_DOWNLOADS.find((d) => platformMatches(d.platform, currentPlatform));
   const [versions, setVersions] = useState<Record<string, string>>({});
+
+  // 识别当前设备适配的客户端：iOS 固定走 Stash 指引，其余按推荐下载项的 versionKey
+  const appKey: AppKey | "" =
+    detectOS() === "iOS"
+      ? "ios"
+      : recommended && "versionKey" in recommended
+      ? (recommended.versionKey as AppKey)
+      : "";
+  const appGuide = appKey ? APP_GUIDES[appKey] : null;
 
   // 下载站（R2）上的 version.json 由 scripts/update-clients.py 每天自动刷新
   useEffect(() => {
@@ -246,8 +304,14 @@ export default function ClashGuide() {
     },
     {
       id: "import",
-      title: "导入订阅到 Clash",
-      detail: (
+      title: appGuide ? `导入订阅到 ${appGuide.name}` : "导入订阅到 Clash",
+      detail: appGuide ? (
+        <ol className="list-decimal list-inside space-y-1 text-slate-400">
+          {appGuide.importSteps.map((s) => (
+            <li key={s}>{s}</li>
+          ))}
+        </ol>
+      ) : (
         <ol className="list-decimal list-inside space-y-1 text-slate-400">
           <li>打开 Clash 客户端，进入「订阅 / Profiles」</li>
           <li>粘贴刚才复制的订阅链接</li>
@@ -272,8 +336,14 @@ export default function ClashGuide() {
     },
     {
       id: "enable",
-      title: "开启系统代理",
-      detail: (
+      title: appGuide ? `在 ${appGuide.name} 中开启代理` : "开启系统代理",
+      detail: appGuide ? (
+        <ol className="list-decimal list-inside space-y-1 text-slate-400">
+          {appGuide.enableSteps.map((s) => (
+            <li key={s}>{s}</li>
+          ))}
+        </ol>
+      ) : (
         <p className="text-slate-400">
           返回主界面，打开「系统代理 / System Proxy」开关。如果长时间不稳定，可尝试开启 TUN 模式（需要管理员权限）。
         </p>
@@ -338,6 +408,13 @@ export default function ClashGuide() {
       <p className="text-xs text-slate-500">
         完成进度：{checked.size} / {steps.length} 步
       </p>
+
+      {appGuide && (
+        <div className="rounded-xl border border-sky-500/40 bg-sky-500/10 p-3 text-sm text-sky-300">
+          已识别你的设备（{currentPlatform}），适配客户端为 <strong>{appGuide.name}</strong>
+          ，下面步骤 3 与步骤 5 已按它的实际界面给出具体操作。
+        </div>
+      )}
 
       <div className="space-y-3">
         {steps.map((step, idx) => {
