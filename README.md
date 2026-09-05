@@ -72,7 +72,7 @@ cd pages && npm run build
 # 2. 部署 worker + 静态资产（需 CLOUDFLARE_API_TOKEN 环境变量）
 cd workers/api && npx wrangler deploy --config wrangler.cf.toml
 
-# 密钥管理（ADMIN_KEY / ALIYUN_* / ADMIN_NOTIFY_EMAIL / EPAY_*）
+# 密钥管理（ADMIN_KEY / ALIYUN_* / ADMIN_NOTIFY_EMAIL）
 npx wrangler secret put <KEY> --config wrangler.cf.toml
 ```
 
@@ -132,5 +132,5 @@ curl -s -X POST https://fastergamer.click/api/admin/seed \
 - 数据生命周期：expired/revoked 满 90 天的 token 由 notify-scan 自动清除（含 id 索引与全部设备索引）；closed 满 90 天的工单同样清理（已沉淀 FAQ 的保留）；token 过期后不可重新激活，需购买新套餐
 - 反馈渠道：用户在「帮助反馈」页提交问题（邮箱必填）→ 管理员通过 `/api/admin/tickets` 查看、`reply` 接口回复（自动发邮件）→ 有价值的问答标 `publish_faq` 沉淀到 FAQ 给新用户自助查阅
 - WebSocket 隧道仅支持 TCP，不支持 UDP/QUIC（游戏 UDP 类应用不可用）
-- 支付通道（易支付 pay.neil.asia）已摘除：下单/回调代码删除，交易状态机保留——POST /api/orders 与升级补差价照常落 pending 订单但无支付凭证（暂无法付款，待新通道接入）；EPAY_* 密钥保留，仅供管理端退款接口处理存量订单
+- 支付通道（易支付 pay.neil.asia）已彻底断开：下单/回调代码删除，交易状态机保留——POST /api/orders 与升级补差价照常落 pending 订单但无支付凭证（暂无法付款，待新通道接入）；EPAY_* 密钥已从生产删除，退款接口随之失效（lib/epay.ts 代码保留，重新配置密钥可恢复）
 - 请确保服务的运营符合你所在地区的法律法规

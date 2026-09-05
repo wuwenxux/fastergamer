@@ -25,7 +25,7 @@ export interface Env {
   ENVIRONMENT?: string;
   /** 新反馈工单的管理员通知邮箱（可选，不配置则不通知） */
   ADMIN_NOTIFY_EMAIL?: string;
-  /** 易支付商户ID（收款已停用，仅退款接口使用） */
+  /** 易支付商户ID（密钥已从生产删除，退款接口当前不可用；恢复时再 secret put） */
   EPAY_PID?: string;
   /** 易支付商户私钥（PKCS8 PEM，可单行存放） */
   EPAY_PRIVATE_KEY?: string;

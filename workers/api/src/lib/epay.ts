@@ -1,9 +1,10 @@
 /**
  * 易支付（pay.neil.asia）—— 仅退款保留
  *
- * 该平台收款已摘除（疑似诈骗）：下单、异步回调均已移除，订单交易状态机保留
- * （照常落 pending，但无支付凭证，待新通道接入）。本文件只为存量已支付订单的退款保留
- * （管理端 POST /api/admin/orders/:id/refund → refundEpayOrder）。
+ * 该平台已彻底断开（疑似诈骗）：下单、异步回调均已移除，订单交易状态机保留
+ * （照常落 pending，但无支付凭证，待新通道接入）。本文件只为存量已支付订单
+ * 的退款保留（管理端 POST /api/admin/orders/:id/refund → refundEpayOrder）；
+ * EPAY_* 密钥已从生产删除，退款接口当前不可用，需要时重新配置即可恢复。
  *
  * - 签名算法 SHA256WithRSA，见 rsa-sign.ts；签名时须剔除 sign 和 sign_type 字段
  *

@@ -43,8 +43,8 @@ Token 制 VPN 服务（对外品牌 GameBoost / FasterGamer）：用户无需注
   - `wrangler.toml`：本地 `wrangler dev`（miniflare 模拟 KV，占位 id，`ENVIRONMENT=dev` 放行 localhost CORS）。
   - `wrangler.cf.toml`：生产部署（真实 KV 命名空间 + Static Assets 托管 `../../pages/dist` + 自定义域名 fastergamer.click，`ENVIRONMENT=production`）。
 - KV 命名空间共 5 个绑定：`TOKENS / PLANS / ORDERS / NODES / TICKETS`。
-- 密钥（`ADMIN_KEY`、`ALIYUN_*`、`ADMIN_NOTIFY_EMAIL`、`EPAY_PRIVATE_KEY`、`CLOUDFLARE_API_TOKEN` 等）放 `workers/api/.dev.vars`（本地，git 已忽略）或用 `wrangler secret put --config wrangler.cf.toml`（生产），**绝不入库**。模板见 `.dev.vars.example`。
-- 支付通道（易支付 pay.neil.asia）**已摘除收款**：下单与回调代码已删除，但交易状态机保留——`POST /api/orders` 与升级补差价照常落 pending 订单（无支付凭证，暂无法付款，待新通道接入），状态查询/管理端取消/退款均可用。`lib/epay.ts` 仅保留退款（`refundEpayOrder`，SHA256WithRSA 签名，RSA 工具函数在 `lib/rsa-sign.ts`），供管理端 `/api/admin/orders/:id/refund` 处理存量订单；`EPAY_PID/PRIVATE_KEY/PLATFORM_KEY` 密钥因此仍需保留。
+- 密钥（`ADMIN_KEY`、`ALIYUN_*`、`ADMIN_NOTIFY_EMAIL`、`CLOUDFLARE_API_TOKEN` 等）放 `workers/api/.dev.vars`（本地，git 已忽略）或用 `wrangler secret put --config wrangler.cf.toml`（生产），**绝不入库**。模板见 `.dev.vars.example`。
+- 支付通道（易支付 pay.neil.asia）**已彻底断开**（疑似诈骗）：下单与回调代码已删除，交易状态机保留——`POST /api/orders` 与升级补差价照常落 pending 订单（无支付凭证，暂无法付款，待新通道接入），状态查询/管理端取消可用。`lib/epay.ts` 仅保留退款代码（`refundEpayOrder`，SHA256WithRSA 签名，RSA 工具函数在 `lib/rsa-sign.ts`），但 `EPAY_*` 密钥已从生产删除，退款接口当前不可用，确需退款时重新 `secret put` 三项配置即可恢复。
 - 邮件走阿里云 DirectMail（`lib/email-aliyun.ts`）。
 
 ## 常用命令

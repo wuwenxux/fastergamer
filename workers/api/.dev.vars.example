@@ -6,7 +6,8 @@
 ALIYUN_ACCESS_KEY_ID=LTAIxxxxxxxxxxxxxxxxxxxx
 ALIYUN_ACCESS_KEY_SECRET=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 
-# 易支付（pay.neil.asia）—— 收款已停用，以下三项仅供管理端退款接口使用（存量订单退款）
+# 易支付（pay.neil.asia）—— 已彻底断开：收款代码已摘除，密钥已从生产删除，退款接口随之失效。
+# 以下三项仅为退款代码（lib/epay.ts）保留模板；如确需恢复退款能力再重新配置。
 # 商户后台 → 个人资料 → API信息：pid、生成商户RSA密钥对（商户私钥自己保存，平台公钥用于验签）
 # EPAY_PID=1001
 # EPAY_PRIVATE_KEY=-----BEGIN PRIVATE KEY-----\nMIIE...(PKCS8)

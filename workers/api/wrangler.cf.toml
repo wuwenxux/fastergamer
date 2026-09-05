@@ -44,8 +44,9 @@ binding = "TICKETS"
 id = "f52063f8c3bf4c538ce26030fa2411db"
 
 # --- 环境变量 ---
-# ADMIN_KEY / ALIYUN_* / ADMIN_NOTIFY_EMAIL / EPAY_* 均为 secret，
+# ADMIN_KEY / ALIYUN_* / ADMIN_NOTIFY_EMAIL 均为 secret，
 # 用 wrangler secret put --config wrangler.cf.toml 管理，不入库
+# （EPAY_* 已随支付通道摘除从生产删除；如需恢复退款能力再 secret put 回来）
 [vars]
 # 生产环境标记：CORS 不放行 localhost 来源（仅 wrangler.toml 的 dev 放行）
 ENVIRONMENT = "production"
