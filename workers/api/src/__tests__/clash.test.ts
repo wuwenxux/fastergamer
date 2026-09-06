@@ -299,6 +299,15 @@ describe("DNS 解析", () => {
     expect(config).toContain("+.pool.ntp.org");
   });
 
+  it("fake-ip-filter 覆盖国内常见 App 主域名（省 sniffer 嗅探）", () => {
+    const config = buildClashConfig({ uuid: UUID, nodes: NODES, userAgent: NEW_UA });
+    expect(config).toContain('"+.qq.com"');
+    expect(config).toContain('"+.alipay.com"');
+    expect(config).toContain('"+.taobao.com"');
+    expect(config).toContain('"+.bilibili.com"');
+    expect(config).toContain('"+.12306.cn"');
+  });
+
   it("sniffer 仅对 mihomo 系下发，Premium 不下发", () => {
     const neo = buildClashConfig({ uuid: UUID, nodes: NODES, userAgent: NEW_UA });
     expect(neo).toContain("sniffer:");
