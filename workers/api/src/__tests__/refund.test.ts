@@ -70,4 +70,13 @@ describe("computeRefundQuote", () => {
     expect(q.basis).toBe("days");
     expect(q.daysRemaining).toBe(29);
   });
+
+  it("试用转正并入的额度（token.bonus_ms / 膨胀的流量上限）不影响退款折算", () => {
+    // 退款折算只依据订单实付 + 套餐时长/赠送月，token 侧的合并额度不参与；
+    // 此用例锁定该行为——若未来退款改为读 token.expires_at/traffic_limit_gb 会在此暴露
+    const merged = computeRefundQuote(yearly, 120, NOW - 29 * DAY, NOW);
+    const plain = computeRefundQuote(yearly, 120, NOW - 29 * DAY, NOW);
+    expect(merged.amount).toBe(plain.amount);
+    expect(merged.totalMonths).toBe(12); // 仍按 12 个付费月，bonus_ms 并入的天数不算付费时长
+  });
 });

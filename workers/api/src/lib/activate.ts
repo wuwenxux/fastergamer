@@ -18,7 +18,8 @@ export const activatePaidToken = async (env: Env, token: Token): Promise<Token> 
     ...token,
     status: "active",
     activated_at: now,
-    expires_at: now + durationDays * 86_400_000,
+    // bonus_ms：体验转正并入的剩余时长，激活这一刻才生效
+    expires_at: now + durationDays * 86_400_000 + (token.bonus_ms ?? 0),
   };
   // 月度配额制初始化：记录原始到期时间作为预支扣减基准
   if (plan?.monthly_quota_gb) {

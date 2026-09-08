@@ -23,6 +23,8 @@ interface TokenEmailContext {
   expiresAt?: number;
   /** 一键免登录管理链接（一次性 magic ticket，15 分钟有效） */
   magicUrl?: string;
+  /** 试用转正并入的额度说明（如 "试用剩余 2 天 + 15 GB 已并入"），有值时在邮件里展示 */
+  mergeNote?: string;
 }
 
 /**
@@ -160,6 +162,7 @@ export async function sendTokenEmail(
   <div style="margin-top: 24px; padding: 20px; background: #f8fafc; border-radius: 12px;">
     <p>你好，</p>
     <p>你购买的 <strong>${ctx.planName}</strong> 已生成 Token，请妥善保存以下信息：</p>
+    ${ctx.mergeNote ? `<p style="padding: 10px 14px; background: #ecfdf5; border: 1px solid #a7f3d0; border-radius: 8px; color: #065f46;">🎁 ${ctx.mergeNote}</p>` : ""}
 
     <table style="width: 100%; border-collapse: collapse; margin: 16px 0;">
       <tr>

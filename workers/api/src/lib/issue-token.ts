@@ -5,7 +5,7 @@
 import { KV, type Order, type Plan, type Token } from "../../../../shared/types";
 import { isEmail, sendMail, sendTokenEmail, shouldSendEmail } from "./email-aliyun";
 import { createMagicTicket } from "./accounts";
-import { deleteDeviceIndex, getPlans, getTokenById, saveOrder, saveToken } from "./kv";
+import { deleteDeviceIndex, getPlans, getTokenById, listTokensByContact, saveOrder, saveToken } from "./kv";
 import { newTokenId } from "./ids";
 import { currentMonthKey } from "./nodes";
 import { rewardReferrerOnPayment } from "./referral";
@@ -33,7 +33,28 @@ export const issueTokenForOrder = async (
     traffic_used_gb: 0,
     purchased_at: Date.now(),
   };
+  // 试用转正合并：同邮箱有仍在有效期内的体验 token 时，剩余流量直接加进新 token 上限，
+  // 剩余时长记 bonus_ms（激活计时时并入），体验 token 随即吊销，避免双份并行使用。
+  if (order.contact && isEmail(order.contact)) {
+    const now = Date.now();
+    const trials = (await listTokensByContact(env, order.contact)).filter(
+      (t) => t.plan_id === "plan_3days" && t.status === "active" && (t.expires_at ?? 0) > now
+    );
+    for (const t of trials) {
+      token.bonus_ms = (token.bonus_ms ?? 0) + Math.max(0, t.expires_at! - now);
+      token.traffic_limit_gb += Math.max(0, (t.traffic_limit_gb ?? 0) - (t.traffic_used_gb ?? 0));
+      t.status = "revoked";
+      await saveToken(env, t);
+    }
+  }
   await saveToken(env, token);
+
+  // 试用转正合并的额度说明（发货邮件里告知用户）
+  const mergedGb = token.traffic_limit_gb - (plan.traffic_limit_gb ?? 0);
+  const mergeNote =
+    (token.bonus_ms ?? 0) > 0 || mergedGb > 0
+      ? `试用剩余${token.bonus_ms ? ` ${Math.ceil(token.bonus_ms / 86_400_000)} 天` : ""}${mergedGb > 0 ? ` ${mergedGb} GB` : ""} 额度已并入本套餐，不会浪费`
+      : undefined;
 
   // 如果联系方式是邮箱，自动发送凭证邮件（附带一次性免登录管理链接，免去手动登录）
   if (shouldSendEmail(order.contact)) {
@@ -48,6 +69,7 @@ export const issueTokenForOrder = async (
           status: "paid", // 发货即 paid，激活后才开始计时
           contact: order.contact!,
           magicUrl: `${site}/auth/magic?ticket=${ticket}`,
+          mergeNote,
         });
       })()
     );
@@ -180,6 +202,8 @@ export const fulfillOrder = async (
   order.token_id = token.id;
   order.paid_at = Date.now();
   await saveOrder(env, order);
+  // 试用转正合并会吊销激活中的体验 token → 授权名单收缩，立即同步各节点
+  if (token.bonus_ms) ctx.waitUntil(pushAuthRefresh(env));
 
   // 防线 2：发货后对账自愈。订单上 token_id 指向别人且那个 token 真实存在 →
   // 本次是竞态 loser（锁因 KV 读延迟没拦住）：清理刚发的游离 token，返回胜者的 token。

@@ -117,6 +117,8 @@ export interface Token {
   purchased_at: number;
   activated_at?: number;
   expires_at?: number;
+  /** 体验转正并入的剩余时长（毫秒）：下单时从同邮箱激活中的体验 token 折算，激活计时一次性加进 expires_at */
+  bonus_ms?: number;
   /** 上次重新生成订阅链接的时间（unix 毫秒），仅作记录，不限次数 */
   rotated_at?: number;
 }
