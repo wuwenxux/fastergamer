@@ -9,7 +9,7 @@
  * month80（月度配额预警）、borrow_N（预支提醒）等预警/催续费类邮件已全部下线。
  */
 
-import type { Node, Token } from "../../../../shared/types";
+import type { Node, Presence, Token } from "../../../../shared/types";
 import { sendMail, shouldSendEmail } from "./email-aliyun";
 import { currentMonthKey } from "./nodes";
 import type { Env } from "../types";
@@ -110,8 +110,16 @@ export async function checkTokenRisks(env: Env, token: Token): Promise<void> {
 
 // ---------- 管理员告警 ----------
 
+/** IP 归属地查询结果（ipwho.is 免费接口） */
+export interface IpGeo {
+  country?: string;
+  region?: string;
+  city?: string;
+  isp?: string;
+}
+
 /** IP 归属地查询（ipwho.is 免费接口，3s 超时；失败返回 null 不影响主流程） */
-async function lookupIpGeo(ip: string): Promise<string | null> {
+export async function lookupIpGeo(ip: string): Promise<IpGeo | null> {
   try {
     const res = await fetch(`https://ipwho.is/${encodeURIComponent(ip)}`, {
       signal: AbortSignal.timeout(3000),
@@ -124,37 +132,102 @@ async function lookupIpGeo(ip: string): Promise<string | null> {
       connection?: { isp?: string };
     };
     if (!data.success) return null;
-    const parts = [data.country, data.region, data.city, data.connection?.isp].filter(Boolean);
-    return parts.length > 0 ? parts.join(" / ") : null;
+    return {
+      country: data.country,
+      region: data.region,
+      city: data.city,
+      isp: data.connection?.isp,
+    };
   } catch {
     return null;
   }
 }
 
+/** 位置键：国家/省份/城市拼接。不含 isp——运营商标签抖动（家宽换 IP、WiFi 切 4G）不算接入地点变更 */
+export function geoLocationKey(geo: IpGeo): string {
+  return [geo.country, geo.region, geo.city].filter(Boolean).join(" / ");
+}
+
+/** 邮件展示用归属地：位置 + 运营商 */
+function geoDisplay(geo: IpGeo): string {
+  return [geo.country, geo.region, geo.city, geo.isp].filter(Boolean).join(" / ");
+}
+
+/** 接入地点变更判定结果 */
+export interface IpLocationChange {
+  /** 是否按「接入地点变更」处理（需要发邮件） */
+  changed: boolean;
+  /** 上次确认的接入位置键（首次建基线时无） */
+  oldLocation?: string;
+  /** 本次接入位置键（geo 查询失败时无） */
+  newLocation?: string;
+  /** 新 IP 归属地展示串（含运营商，查询失败时无） */
+  display?: string;
+}
+
 /**
- * 接入地址变更提醒：当前活跃接入 IP 与上一上报周期不一致时邮件通知本人。
- * 触发即「地址变了」，无论该 IP 是否历史见过；首次使用建基线不提醒。
- * 限流：每个 token 12 小时最多一封（动态 IP 用户换地址是常态，不能刷屏）。
+ * 接入地点变更判定：查新接入 IP 的地理位置，与 presence.active_geo[key] 基线比较。
+ * - 首次建基线（无基线）：不提醒，只记录；
+ * - 位置相同（同城动态 IP 漂移）：不提醒，基线原值不变；
+ * - 位置不同：提醒并更新基线；
+ * - geo 查询失败：保守按「位置不同」处理（安全提醒宁可误发），但基线不动，
+ *   等下次查询成功再校准，避免把失败当新位置固化下来。
+ * 会原地更新 presence.active_geo；调用方负责随后 savePresenceIfChanged 落库。
+ */
+export async function resolveIpLocationChange(
+  presence: Presence,
+  key: string,
+  ips: string[]
+): Promise<IpLocationChange> {
+  const prev = presence.active_geo?.[key];
+  const geo = await lookupIpGeo(ips[0]);
+  const cur = geo ? geoLocationKey(geo) : "";
+  if (!geo || !cur) {
+    // 查询失败：有基线才提醒（无基线 = 首次使用，没有任何变更证据）
+    return { changed: prev !== undefined, oldLocation: prev };
+  }
+  presence.active_geo = presence.active_geo ?? {};
+  presence.active_geo[key] = cur;
+  if (prev === undefined) return { changed: false, newLocation: cur, display: geoDisplay(geo) };
+  return {
+    changed: prev !== cur,
+    oldLocation: prev,
+    newLocation: cur,
+    display: geoDisplay(geo),
+  };
+}
+
+/**
+ * 接入地点变更提醒：接入地理位置（城市级）发生变化时邮件通知本人。
+ * 同城换 IP（家宽动态漂移、WiFi 切 4G）由 resolveIpLocationChange 拦下，不会走到这里。
+ * 限流：每个 token 12 小时最多一封（差旅/跨省移动属常态，不能刷屏）。
  * 调用方负责把 notify_log 变更键级合并写回（mergeTokenSettlement）。
  */
-export async function notifyIpChange(env: Env, token: Token, ips: string[]): Promise<void> {
+export async function notifyIpChange(
+  env: Env,
+  token: Token,
+  ips: string[],
+  loc: IpLocationChange
+): Promise<void> {
   if (ips.length === 0 || !shouldSendEmail(token.contact)) return;
   token.notify_log = token.notify_log ?? {};
   const now = Date.now();
   if (now - (token.notify_log["ip_change"] ?? 0) < 12 * 3_600_000) return;
 
   const ip = ips[0];
-  const geo = await lookupIpGeo(ip);
-  const geoText = geo ?? "归属地查询失败";
+  const oldText = loc.oldLocation ?? "未知";
+  const newText = loc.newLocation ?? "归属地查询失败";
+  const ipText = loc.display ? `${ip}（${loc.display}）` : ip;
   const manageUrl = `${siteUrl(env)}/tokens?id=${token.id}`;
   const { subject, html, text } = shell(
     env,
-    "账号安全提醒：接入地址发生变更",
-    `<p>你好，你的 Token（<strong>${token.id}</strong>）的接入地址刚刚发生变更，新接入 IP：</p>
-     <p style="font-size:16px;"><strong>${ip}</strong>（${geoText}）</p>
-     <p>如果是你本人换了网络（如 WiFi 切到 4G/5G、换了宽带、开了手机热点），可忽略本邮件；否则说明订阅链接可能已泄露，他人正在盗用你的流量。</p>
+    "账号安全提醒：接入地点发生变更",
+    `<p>你好，你的 Token（<strong>${token.id}</strong>）的接入地点刚刚发生变更：</p>
+     <p style="font-size:16px;">${oldText} → <strong>${newText}</strong></p>
+     <p>新接入 IP：<strong>${ipText}</strong></p>
+     <p>如果是你本人换了城市/网络（如出差、跨省移动），可忽略本邮件；否则说明订阅链接可能已泄露，他人正在盗用你的流量。</p>
      <p><strong>你可以自己处理：</strong>登录 <a href="${manageUrl}">Token 管理页</a>，在「接入 IP 统计」里点击该 IP 旁的「封禁」，该 IP 将在 30 秒内被所有节点拒绝连接；误封可随时解除。</p>`,
-    `你的 Token（${token.id}）接入地址发生变更，新 IP：${ip}（${geoText}）。\n如果是你本人换网络可忽略；否则订阅可能泄露。\n处理：登录管理页 ${manageUrl} 在「接入 IP 统计」中封禁该 IP（30 秒内全节点生效，可随时解除）。`
+    `你的 Token（${token.id}）接入地点发生变更：${oldText} → ${newText}，新 IP：${ipText}。\n如果是你本人换城市/网络可忽略；否则订阅可能泄露。\n处理：登录管理页 ${manageUrl} 在「接入 IP 统计」中封禁该 IP（30 秒内全节点生效，可随时解除）。`
   );
   const res = await sendMail(env, token.contact, subject, html, text);
   if (res.ok) {

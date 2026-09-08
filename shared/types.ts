@@ -143,6 +143,8 @@ export interface Presence {
   traffic_by_ip?: Record<string, IpStat>;
   /** 上一上报周期的活跃接入 IP（key：node.id 或 node.id:设备uuid），用于接入地址变更检测 */
   active_ips?: Record<string, string[]>;
+  /** 各 key 最近一次确认的接入地理位置键（country / region / city 拼接，不含运营商），与 active_ips 同步更新；同城换 IP 只更新基线不提醒 */
+  active_geo?: Record<string, string>;
 }
 
 /** 订单 —— 一次购买行为 */
