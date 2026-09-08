@@ -82,7 +82,7 @@ export default function Home() {
         <p className="text-sm text-slate-400 text-center mb-5">
           按团队人数和稳定性要求选：日常办公选共享版，不能接受晚高峰抖动选专用节点，要国内中转专线
           <a href="mailto:support@fastergamer.cn" className="text-sky-400 hover:underline"> 邮件面议 </a>。
-          <Link to="/enterprise" className="text-sky-400 hover:underline">查看企业服务全貌 →</Link>
+          <a href="https://fastergamer.cn" className="text-sky-400 hover:underline">查看企业服务全貌 →</a>
         </p>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-5 max-w-3xl mx-auto">
           {plans

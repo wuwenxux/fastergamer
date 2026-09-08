@@ -24,7 +24,7 @@ Token 制 VPN 服务（对外品牌 GameBoost / FasterGamer）：用户无需注
 | `infra/xray` | VPS 落地节点：vpn-agent（`agent.py`）+ 部署脚本 | Python 3 标准库（无三方依赖） |
 | `shared/types.ts` | API 与前端共享的 TypeScript 类型（Worker 经 `@shared/*` 路径别名引用） | TypeScript |
 | `scripts` | 运维脚本：部署、探测、拨测、初始化套餐、DNS、端到端测试 | bash / Node.mjs / Python |
-| `site-cn` | 企业门面静态页（fastergamer.cn，已退役为跳转的留档） | 纯 HTML |
+| `site-cn` | 企业门面静态页（fastergamer.cn，纯 B2B 企业合作内容，无个人付款入口） | 纯 HTML |
 | `docs` | 架构图与定价文档 | HTML / Markdown |
 
 ### Worker 代码组织（`workers/api/src`）
@@ -77,7 +77,7 @@ bash scripts/deploy-cf.sh --build   # 前端有改动，先构建 pages/dist
 
 ## 部署架构
 
-- 生产唯一中心是 `fastergamer.click`：CF Worker + KV + Static Assets（前端 `pages/dist` 由 Worker 托管，前后端同源）。`fastergamer.cn` 已退役为整站 301 跳转（`scripts/deploy-site-local.sh` 仅留档）。
+- 生产唯一中心是 `fastergamer.click`：CF Worker + KV + Static Assets（前端 `pages/dist` 由 Worker 托管，前后端同源）。`fastergamer.cn` 是本机 nginx 托管的企业门面静态站（源文件 `site-cn/`，`scripts/deploy-site-local.sh` 发布到 /var/www/fastergamer.cn），整站静态、仅 `/api/*` 301 到 fastergamer.click 兼容老订阅链接；企业内容只放 .cn，click 站不放企业页。
 - 部署链路：本机在大陆，到 CF 上传不稳定，故 `deploy-cf.sh` rsync 代码到香港跳板机 hk02 再 `wrangler deploy`；脚本保持仓库相对结构（worker 引用 `../../shared`、资产引用 `../../pages/dist`），token 自动从 `.dev.vars` 读取。
 - `*.workers.dev` 在大陆被封，用户入口是自定义域名；CF 管理 API 大陆可直连。
 - 落地节点接入：`bash infra/xray/onboard-node.sh <IP> <ROOT密码> <地区代码> <节点名>` 一键完成（DNS → Xray → Caddy TLS → 注册 → agent → ufw）；详见 `infra/xray/README.md`。
