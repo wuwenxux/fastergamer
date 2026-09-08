@@ -155,7 +155,7 @@ adminRoutes.get("/xray-clients", async (c) => {
   return c.json({ ok: true, data: { count: uuids.length, uuids } });
 });
 
-/** GET /api/admin/tokens —— 列出所有 token（含流量、在线状态） */
+/** GET /api/admin/tokens —— 列出所有 token（含流量、在线状态）；?presence=1 时合并 presence（接入 IP 统计等），供运营分析 */
 adminRoutes.get("/tokens", async (c) => {
   const keys = await listKeys(c.env.TOKENS, KV.TOKEN);
   const tokens: Token[] = [];
@@ -164,6 +164,11 @@ adminRoutes.get("/tokens", async (c) => {
     if (raw) tokens.push(JSON.parse(raw) as Token);
   }
   tokens.sort((a, b) => (b.purchased_at ?? 0) - (a.purchased_at ?? 0));
+  if (c.req.query("presence") === "1") {
+    const merged = [];
+    for (const t of tokens) merged.push({ ...t, presence: await getTokenPresence(c.env, t) });
+    return c.json({ ok: true, data: merged });
+  }
   return c.json({ ok: true, data: tokens });
 });
 

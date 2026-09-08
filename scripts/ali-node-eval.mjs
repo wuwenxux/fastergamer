@@ -103,7 +103,7 @@ for (const t of targets) {
     const opts = t.port ? { port: t.port } : null;
     if (opts && t.type === "UDP") Object.assign(opts, { request_format: "hex", request_content: QUIC_INIT_HEX });
     const r = await call("CreateInstantSiteMonitor", {
-      TaskName: `eval-${t.name}-${t.ip}${t.port ? `-${t.port}-${t.type}` : ""}-${c}`,
+      TaskName: `eval-${t.name.replace(/\s+/g, "-")}-${t.ip}${t.port ? `-${t.port}-${t.type}` : ""}-${c}`,
       Address: t.ip,
       TaskType: t.type,
       ...(opts ? { OptionsJson: JSON.stringify(opts) } : {}),
