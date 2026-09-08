@@ -1,8 +1,6 @@
 import { Link, Route, Routes } from "react-router-dom";
 import AuthMagic from "./pages/AuthMagic";
 import Enterprise from "./pages/Enterprise";
-import EnterpriseSolutions from "./pages/EnterpriseSolutions";
-import EnterpriseWhitepaper from "./pages/EnterpriseWhitepaper";
 import Home from "./pages/Home";
 import Guide from "./pages/Guide";
 import Purchase from "./pages/Purchase";
@@ -46,9 +44,6 @@ export default function App() {
           <Route path="/register" element={<Register />} />
           <Route path="/guide" element={<Guide />} />
           <Route path="/enterprise" element={<Enterprise />} />
-          {/* 企业内容页：行业方案与白皮书，入口在 /enterprise 底部，不进导航 */}
-          <Route path="/enterprise/solutions" element={<EnterpriseSolutions />} />
-          <Route path="/enterprise/whitepaper" element={<EnterpriseWhitepaper />} />
           <Route path="/support" element={<Support />} />
         </Routes>
       </main>

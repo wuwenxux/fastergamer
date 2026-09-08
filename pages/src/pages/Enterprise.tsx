@@ -1,6 +1,4 @@
 /** 企业服务页：面向出海企业的网络加速方案总览，供客户了解与渠道洽谈展示 */
-import { Link } from "react-router-dom";
-
 export default function Enterprise() {
   return (
     <div className="space-y-12">
@@ -83,28 +81,6 @@ export default function Enterprise() {
         <p className="text-xs text-slate-500">
           说明公司、团队人数、主要业务，24 小时内回复方案与报价
         </p>
-      </section>
-
-      {/* 企业内容入口 */}
-      <section className="grid grid-cols-1 sm:grid-cols-2 gap-4 max-w-3xl mx-auto">
-        <Link
-          to="/enterprise/solutions"
-          className="rounded-2xl border border-slate-700 bg-slate-900 p-6 space-y-2 hover:border-sky-500/60 transition-colors"
-        >
-          <div className="font-semibold">行业解决方案 →</div>
-          <p className="text-sm text-slate-400">
-            跨境电商、游戏发行、外贸与远程办公四类场景的痛点拆解与方案映射
-          </p>
-        </Link>
-        <Link
-          to="/enterprise/whitepaper"
-          className="rounded-2xl border border-slate-700 bg-slate-900 p-6 space-y-2 hover:border-amber-500/60 transition-colors"
-        >
-          <div className="font-semibold">跨境网络白皮书 →</div>
-          <p className="text-sm text-slate-400">
-            常见风险、自建 vs 采购对比与选型清单，帮助决策者做判断
-          </p>
-        </Link>
       </section>
     </div>
   );
