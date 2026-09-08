@@ -1,0 +1,5 @@
+# 允许所有搜索引擎抓取全站
+User-agent: *
+Allow: /
+
+Sitemap: https://fastergamer.click/sitemap.xml
