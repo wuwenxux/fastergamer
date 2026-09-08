@@ -106,6 +106,14 @@ export const api = {
       headers: sessionHeaders(),
     }),
 
+  /** 设备改名（只改展示名，uuid/订阅链接不变）；需本人登录，否则 401 */
+  renameDevice: (tokenId: string, deviceId: string, name: string) =>
+    request<Device>(`/api/tokens/${tokenId}/devices/${deviceId}`, {
+      method: "PATCH",
+      headers: sessionHeaders(),
+      body: JSON.stringify({ name }),
+    }),
+
   /** 封禁接入 IP（30 秒内全节点生效）；需本人登录，否则 401 */
   blockIp: (tokenId: string, ip: string) =>
     request<{ blocked_ips: string[] }>(`/api/tokens/${tokenId}/blocked-ips`, {
