@@ -9,7 +9,7 @@ import {
   mergeTokenSettlement,
   type TokenSettlementPatch,
 } from "../lib/kv";
-import { checkNodeBudget, checkTokenRisks, updateSpikeWindow, sendSpikeAlert, notifyIpChange } from "../lib/risk-notify";
+import { checkNodeBudget, checkTokenRisks, updateSpikeWindow, sendSpikeAlert, notifyIpChange, resolveIpLocationChange } from "../lib/risk-notify";
 import { getAuthSnapshot, TRAFFIC_GRACE_MS } from "../lib/authsnapshot";
 import { pushAuthRefresh } from "../lib/authpush";
 import type { Env } from "../types";
@@ -261,7 +261,11 @@ async function applyTrafficDelta(
   const notifyBase = JSON.stringify(token.notify_log ?? {});
   if (spike) await sendSpikeAlert(env, token);
   if (changedIps.length > 0) {
-    await notifyIpChange(env, token, changedIps);
+    // IP 变了再细分是否「接入地点变了」：同城动态 IP 漂移只更新基线，不打扰客户
+    const loc = await resolveIpLocationChange(presence, nodeKey, changedIps);
+    // active_geo 基线可能更新，补一次「有变化才写」
+    await savePresenceIfChanged(env, token.uuid, presenceBase, presence);
+    if (loc.changed) await notifyIpChange(env, token, changedIps, loc);
   }
   // 客户要求只保留交易/安全类邮件：月度配额 80% 预警（month80）与预支提醒（borrow_N）已下线
   // 风险检测：流量耗尽 / 多设备时提醒客户（幂等，每类只发一次）
@@ -364,10 +368,14 @@ agentRoutes.post("/traffic", async (c) => {
     await savePresenceIfChanged(c.env, found.token.uuid, presenceBase, presence);
     if (changedIps.length > 0) {
       // 邮件 await 在 presence 写库之后；notify_log 变更按键级合并写回
-      const notifyBase = JSON.stringify(found.token.notify_log ?? {});
-      await notifyIpChange(c.env, found.token, changedIps);
-      if (JSON.stringify(found.token.notify_log ?? {}) !== notifyBase) {
-        await mergeTokenSettlement(c.env, found.token.uuid, { notify_log: found.token.notify_log });
+      const loc = await resolveIpLocationChange(presence, ipKey, changedIps);
+      await savePresenceIfChanged(c.env, found.token.uuid, presenceBase, presence);
+      if (loc.changed) {
+        const notifyBase = JSON.stringify(found.token.notify_log ?? {});
+        await notifyIpChange(c.env, found.token, changedIps, loc);
+        if (JSON.stringify(found.token.notify_log ?? {}) !== notifyBase) {
+          await mergeTokenSettlement(c.env, found.token.uuid, { notify_log: found.token.notify_log });
+        }
       }
     }
   }
