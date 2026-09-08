@@ -17,3 +17,4 @@ __pycache__/
 
 # 拨测原始数据
 scripts/.probe/
+scripts/.stats/
