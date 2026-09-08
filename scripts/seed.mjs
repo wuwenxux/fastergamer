@@ -6,9 +6,9 @@
  *   node scripts/seed.mjs [API_BASE] [ADMIN_KEY]
  * 默认 API_BASE=http://localhost:8787，ADMIN_KEY=change-me-in-production
  *
- * 注意：此文件与线上 PLANS KV 保持一致（2026-09-02 同步）。
- * 个人付费套餐统一 3 台设备；免费体验 1 台；企业套餐单独档位
- * （20 台共享池 ¥998/年起，30 台独享 VPS 大带宽 ¥1988/年）。
+ * 注意：此文件与线上 PLANS KV 保持一致（2026-09-06 同步）。
+ * 个人付费最低档为 ¥120 年付（月付/季付已下线）；免费体验 1 台设备；
+ * 企业套餐单独档位（20 台共享池 ¥998/年起，30 台独享 VPS 大带宽 ¥1988/年）。
  */
 const [base = "http://localhost:8787", adminKey = "change-me-in-production"] =
   process.argv.slice(2);
@@ -31,39 +31,6 @@ const plans = [
     "pitch": "先试用，好用再买"
   },
   {
-    "id": "plan_monthly",
-    "name": "月付套餐",
-    "duration_days": 30,
-    "price_cny": 12,
-    "traffic_limit_gb": 20,
-    "max_devices": 3,
-    "tag": "个人轻量",
-    "description": "30 天有效，20 GB 总流量，3 台设备",
-    "features": [
-      "20 GB / 30 天",
-      "3 台设备",
-      "多地域自动切换"
-    ],
-    "pitch": "一个人的日常加速"
-  },
-  {
-    "id": "plan_quarterly",
-    "name": "季付套餐",
-    "duration_days": 90,
-    "price_cny": 30,
-    "traffic_limit_gb": 60,
-    "max_devices": 3,
-    "monthly_quota_gb": 20,
-    "tag": "个人常用",
-    "description": "90 天有效，每月 20GB（用超预支下月，有效期提前），3 台设备",
-    "features": [
-      "每月 20 GB",
-      "3 台设备",
-      "多地域自动切换"
-    ],
-    "pitch": "手机电脑同时在线"
-  },
-  {
     "id": "plan_yearly",
     "name": "年付套餐",
     "duration_days": 395,
@@ -80,24 +47,6 @@ const plans = [
       "多地域自动切换"
     ],
     "pitch": "买 12 个月送 1 个月，最划算"
-  },
-  {
-    "id": "plan_yearly_renew",
-    "name": "年付续费",
-    "duration_days": 395,
-    "bonus_days": 30,
-    "price_cny": 100,
-    "traffic_limit_gb": 260,
-    "max_devices": 3,
-    "monthly_quota_gb": 20,
-    "tag": "老用户优惠",
-    "description": "连续包年 13 个月（买一年送一月），每月 20GB（用超预支下月，有效期提前），3 台设备",
-    "features": [
-      "每月 20 GB",
-      "3 台设备",
-      "年付到期续费专用"
-    ],
-    "pitch": "老用户续一年，省 20 元"
   },
   {
     "id": "plan_yearly_plus",

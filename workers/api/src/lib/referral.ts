@@ -2,9 +2,9 @@
  * 推广邀请：邀请人持有推广码，新用户通过推广链接领取试用或下单即记录归因（待结算），
  * 被邀请人首次付费成功（订单发货）时才计为「成功邀请」，邀请人余额 +10 元。
  * 余额三种用法：
- *   1. 已开通（有激活中的付费 token）：余额满 100 元（年付续费价）自动为其套餐续期一年；
- *   2. 未开通且余额满 100 元：直接发放一个年付 token（待激活，首次导入订阅开始计时）；
- *   3. 未开通且余额不足 100 元：下单时直接抵扣，可叠加，最多减到 0 元。
+ *   1. 已开通（有激活中的付费 token）：余额满 120 元（年付续费价）自动为其套餐续期一年；
+ *   2. 未开通且余额满 120 元：直接发放一个年付 token（待激活，首次导入订阅开始计时）；
+ *   3. 未开通且余额不足 120 元：下单时直接抵扣，可叠加，最多减到 0 元。
  *
  * 防刷设计：试用每邮箱限领一次（trial 标记），referral 记录以被邀请人邮箱去重且只结算一次，
  * 自己邀请自己被忽略。所有记录存 TOKENS namespace。
@@ -130,8 +130,8 @@ export const rewardReferrerOnPayment = async (env: Env, inviteeEmail: string): P
     "【GameBoost】你邀请的用户已完成付费",
     `<p>你好，你邀请的用户（${inviteeEmail}）已成功付费开通。</p>
      <p>你的推广余额 <strong>+${DISCOUNT_PER_CREDIT} 元</strong>，当前余额 <strong>${balance} 元</strong>。</p>
-     <p>余额满 <strong>100 元</strong>（累计 10 人付费）：已开通套餐的自动<strong>续期一年</strong>；未开通的直接<strong>送一年年付套餐</strong>，也可在下单时抵扣。</p>`,
-    `你邀请的用户（${inviteeEmail}）已成功付费开通，推广余额 +${DISCOUNT_PER_CREDIT} 元（当前 ${balance} 元）。余额满 100 元：已开通套餐的自动续期一年，未开通的直接送一年年付套餐，也可下单抵扣。`
+     <p>余额满 <strong>120 元</strong>（累计 12 人付费）：已开通套餐的自动<strong>续期一年</strong>；未开通的直接<strong>送一年年付套餐</strong>，也可在下单时抵扣。</p>`,
+    `你邀请的用户（${inviteeEmail}）已成功付费开通，推广余额 +${DISCOUNT_PER_CREDIT} 元（当前 ${balance} 元）。余额满 120 元：已开通套餐的自动续期一年，未开通的直接送一年年付套餐，也可下单抵扣。`
   );
   if (!res.ok) console.error(`[referral] reward mail failed for ${maskEmail(referrer)}: ${res.error}`);
 
@@ -189,7 +189,7 @@ export const restoreCredit = async (env: Env, email: string, discountCny: number
   await saveCredit(env, email, credit);
 };
 
-/** 自动续期结果：renewed 为 true 时表示已扣 100 元余额并给 token 续了一年 */
+/** 自动续期结果：renewed 为 true 时表示已扣 120 元余额并给 token 续了一年 */
 export interface AutoRenewResult {
   renewed: boolean;
   tokenId?: string;
@@ -198,15 +198,15 @@ export interface AutoRenewResult {
 }
 
 /**
- * 已开通用户的余额自动续期：可用余额满年付续费价（plan_yearly_renew，默认 100 元）时，
+ * 已开通用户的余额自动续期：可用余额满年付价（plan_yearly，默认 120 元）时，
  * 为其最新的激活中付费 token 延长一年（expires_at 与 base_expires_at 同步顺延，
  * 预支月数账务不变），并从余额扣费。余额够多年就连扣多年；没有激活中的付费
  * token（试用/未激活）时不扣，余额留着下单抵扣。
  */
 export const tryAutoRenewWithBalance = async (env: Env, email: string): Promise<AutoRenewResult> => {
   const plans = await getPlans(env);
-  const renewPlan = plans.find((p) => p.id === "plan_yearly_renew");
-  const renewCost = renewPlan?.price_cny ?? 100;
+  const renewPlan = plans.find((p) => p.id === "plan_yearly");
+  const renewCost = renewPlan?.price_cny ?? 120;
   const renewMs = (renewPlan?.duration_days ?? 365) * 86_400_000;
   const result: AutoRenewResult = { renewed: false, renewCostCny: renewCost };
 
@@ -243,14 +243,14 @@ export interface RewardTokenResult {
 }
 
 /**
- * 未开通用户的余额兑现：没有激活中的付费 token 且余额满年付续费价（默认 100 元）时，
- * 扣 100 元余额发放一个年付 token（paid 待激活，首次导入订阅开始计时），
+ * 未开通用户的余额兑现：没有激活中的付费 token 且余额满年付价（默认 120 元）时，
+ * 扣 120 元余额发放一个年付 token（paid 待激活，首次导入订阅开始计时），
  * 邮件附带一键管理链接。余额够多份就连发多份。
  */
 export const tryIssueRewardToken = async (env: Env, email: string): Promise<RewardTokenResult> => {
   const plans = await getPlans(env);
-  const renewPlan = plans.find((p) => p.id === "plan_yearly_renew");
-  const cost = renewPlan?.price_cny ?? 100;
+  const renewPlan = plans.find((p) => p.id === "plan_yearly");
+  const cost = renewPlan?.price_cny ?? 120;
   const yearly = plans.find((p) => p.id === "plan_yearly");
   const need = Math.ceil(cost / DISCOUNT_PER_CREDIT);
 
