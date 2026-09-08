@@ -1,6 +1,5 @@
 import { Link, Route, Routes } from "react-router-dom";
 import AuthMagic from "./pages/AuthMagic";
-import Enterprise from "./pages/Enterprise";
 import Home from "./pages/Home";
 import Guide from "./pages/Guide";
 import Purchase from "./pages/Purchase";
@@ -22,9 +21,12 @@ export default function App() {
           <Link to="/tokens" className="hover:text-sky-400 transition-colors">
             我的 Token
           </Link>
-          <Link to="/enterprise" className="hover:text-sky-400 transition-colors">
+          <a
+            href="https://fastergamer.cn"
+            className="hover:text-sky-400 transition-colors"
+          >
             企业服务
-          </Link>
+          </a>
           <Link to="/guide" className="hover:text-sky-400 transition-colors">
             使用教程
           </Link>
@@ -43,7 +45,6 @@ export default function App() {
           {/* 防失联登记：隐藏路由，不进导航，仅登录用户从「我的 Token」页进入 */}
           <Route path="/register" element={<Register />} />
           <Route path="/guide" element={<Guide />} />
-          <Route path="/enterprise" element={<Enterprise />} />
           <Route path="/support" element={<Support />} />
         </Routes>
       </main>
