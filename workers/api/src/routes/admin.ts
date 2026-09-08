@@ -3,7 +3,7 @@ import { KV } from "../../../../shared/types";
 import type { Plan, Presence, Registration, Token } from "../../../../shared/types";
 import { adminAuth } from "../middleware/admin";
 import { deleteDeviceIndex, deleteTokenByUuid, getOrder, getPlans, getTicket, getTokenById, getTokenPresence, listKeys, listOrders, listTickets, listTokensByContact, mergeTokenSettlement, rotateTokenUuid, saveOrder, savePlans, savePresenceIfChanged, saveTicket, saveToken } from "../lib/kv";
-import { checkExpiringToken, notifyAdmin } from "../lib/risk-notify";
+import { notifyAdmin } from "../lib/risk-notify";
 import { getNodes } from "../lib/nodes";
 import { isEmail, sendMail, shouldSendEmail } from "../lib/email-aliyun";
 import { getEpayConfig, refundEpayOrder } from "../lib/epay";
@@ -413,9 +413,10 @@ adminRoutes.put("/tokens/:id", async (c) => {
 
 /**
  * POST /api/admin/notify-scan —— 定时风险扫描（cron 每 15 分钟调用）
- * 做三件事：24h 内到期提醒；清理过期 90 天的 token 与已结工单；
+ * 做两件事：清理过期 90 天的 token 与已结工单；
  * 清理超 3 天未激活的免费体验 token（白嫖/假邮箱垃圾）
- * （节点失联告警由 probe-nodes.sh 主动探测承担，agent 事件驱动后 last_seen 不再可靠）
+ * （24h 到期提醒已按客户要求下线——只保留交易/安全类邮件；
+ *  节点失联告警由 probe-nodes.sh 主动探测承担，agent 事件驱动后 last_seen 不再可靠）
  */
 adminRoutes.post("/notify-scan", async (c) => {
   const now = Date.now();
@@ -423,7 +424,8 @@ adminRoutes.post("/notify-scan", async (c) => {
 
   const keys = await listKeys(c.env.TOKENS, KV.TOKEN);
   let scanned = 0;
-  let notified = 0;
+  // 到期提醒邮件已下线，保留该字段只为响应结构兼容运维脚本
+  const notified = 0;
   let purgedTokens = 0;
   let expiredNow = 0;
   for (const key of keys) {
@@ -489,14 +491,6 @@ adminRoutes.post("/notify-scan", async (c) => {
       }
     }
     await savePresenceIfChanged(c.env, token.uuid, presenceBase, presence);
-
-    const before = token.notify_log?.expire_24h;
-    await checkExpiringToken(c.env, token);
-    if (token.notify_log?.expire_24h && token.notify_log.expire_24h !== before) {
-      // 只键级合并 notify_log，不整写 token（结算路径可能正在并发更新流量字段）
-      await mergeTokenSettlement(c.env, token.uuid, { notify_log: token.notify_log });
-      notified++;
-    }
   }
 
   // 已结工单满 90 天清理；沉淀为 FAQ 的保留

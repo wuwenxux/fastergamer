@@ -1,10 +1,12 @@
 /**
  * 风险检测与客户提醒
  *
- * 触发点：/api/agent/traffic（结算事件）与 /api/admin/notify-scan（cron 每 15min）
+ * 触发点：/api/agent/traffic（结算事件）
  * 幂等：token.notify_log 记录每类提醒的发送时间，同类提醒不重复发送
- *   - traffic_80 / exhausted / multi_device：每个 token 只发一次
- *   - expire_24h：每个 token 只发一次
+ *   - exhausted / multi_device：每个 token 只发一次
+ *
+ * 客户要求只保留交易类与安全类邮件：traffic_80（流量 80%）、expire_24h（到期提醒）、
+ * month80（月度配额预警）、borrow_N（预支提醒）等预警/催续费类邮件已全部下线。
  */
 
 import type { Node, Token } from "../../../../shared/types";
@@ -67,10 +69,8 @@ async function notifyOnce(
   return res.ok;
 }
 
-const fmtGb = (n: number) => n.toFixed(2);
-
 /**
- * 在 token 数据更新后调用：检查流量阈值与多设备风险，必要时提醒客户。
+ * 在 token 数据更新后调用：检查流量耗尽与多设备风险，必要时提醒客户。
  * 注意：本函数可能修改 notify_log；调用方负责在此函数返回后把 notify_log 变更
  * 键级合并写回（mergeTokenSettlement），且必须在结算字段写库之后调用。
  */
@@ -78,18 +78,7 @@ export async function checkTokenRisks(env: Env, token: Token): Promise<void> {
   const limit = token.traffic_limit_gb ?? 0;
   const used = token.traffic_used_gb ?? 0;
 
-  // 流量用到 80%
-  if (limit > 0 && used >= limit * 0.8 && used < limit) {
-    await notifyOnce(
-      env,
-      token,
-      "traffic_80",
-      "流量余额提醒",
-      `<p>你好，你的 Token（<strong>${token.id}</strong>）流量已使用 <strong>${fmtGb(used)} / ${limit} GB</strong>（80%）。</p>
-       <p>剩余流量约 <strong>${fmtGb(limit - used)} GB</strong>。用完后还有 <strong>48 小时宽限期</strong>可以正常使用，建议提前到 <a href="${siteUrl(env)}" style="color: #0ea5e9;">官网</a> 续费，避免宽限期结束后服务暂停。</p>`,
-      `你的 Token（${token.id}）流量已使用 ${fmtGb(used)} / ${limit} GB（80%）。\n剩余约 ${fmtGb(limit - used)} GB。用完后还有 48 小时宽限期，建议提前到官网续费：${siteUrl(env)}`
-    );
-  }
+  // 客户要求只保留交易/安全类邮件，流量 80% 预警（traffic_80）已下线
 
   // 流量耗尽：进入 48 小时宽限期，优先引导续费，不立即断连
   if (limit > 0 && used >= limit) {
@@ -116,94 +105,6 @@ export async function checkTokenRisks(env: Env, token: Token): Promise<void> {
        <p><strong>建议措施：</strong>联系售后重置连接凭证（UUID）。重置后旧凭证立即失效，你的设备更新订阅即可恢复，盗用者将被断开。</p>`,
       `检测到你的 Token（${token.id}）在多个节点同时在线。\n如果是你自己多台设备使用可忽略；否则订阅链接可能已泄露。\n建议：联系售后重置连接凭证（UUID），旧凭证将立即失效。`
     );
-  }
-}
-
-/**
- * 到期提醒（由 notify-scan 定时调用）：active 且 24h 内到期时提醒一次
- */
-export async function checkExpiringToken(env: Env, token: Token): Promise<void> {
-  const now = Date.now();
-  if (token.status !== "active" || !token.expires_at) return;
-  if (token.expires_at <= now || token.expires_at > now + 24 * 3_600_000) return;
-  await notifyOnce(
-    env,
-    token,
-    "expire_24h",
-    "服务即将到期",
-    `<p>你好，你的 Token（<strong>${token.id}</strong>）将于 <strong>${new Date(token.expires_at).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" })}</strong> 到期。</p>
-     <p>到期后服务自动停止。如需继续使用，请提前购买新套餐。</p>`,
-    `你的 Token（${token.id}）将于 ${new Date(token.expires_at).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" })} 到期，到期后服务自动停止。\n如需继续使用请提前购买新套餐。`
-  );
-}
-
-/**
- * 月度配额预支提醒：当月用量每预支一个月档位时通知客户一次（borrow_1 / borrow_2 …）。
- * 调用方负责在此函数返回后把 notify_log 变更键级合并写回（mergeTokenSettlement）。
- */
-/**
- * 月度配额 80% 提前预警（每自然月一次）。
- * 在流量上报循环里调用（此时 month_used_bytes 已含本次增量）。
- * 文案同步说明预支机制，让用户在「被扣有效期」之前有心理预期。
- */
-export async function notifyMonth80(
-  env: Env,
-  token: Token,
-  quotaGb: number
-): Promise<void> {
-  if (!quotaGb || quotaGb <= 0 || !shouldSendEmail(token.contact)) return;
-  const usedGb = (token.month_used_bytes ?? 0) / 1024 ** 3;
-  if (usedGb < quotaGb * 0.8) return;
-
-  token.notify_log = token.notify_log ?? {};
-  const key = `month80_${token.month_key ?? currentMonthKey()}`;
-  if (token.notify_log[key]) return;
-
-  const { subject, html, text } = shell(
-    env,
-    "本月流量即将用完",
-    `<p>你好，你的 Token（<strong>${token.id}</strong>）本月额度已使用 <strong>${fmtGb(usedGb)} / ${quotaGb} GB</strong>（80%）。</p>
-     <p>本月额度用完后不会断网：系统将自动<strong>预支后续月份的额度</strong>继续为你服务，每预支一个月，总有效期提前一个月。下月 1 日（UTC）恢复新的 ${quotaGb} GB 额度。</p>
-     <p>如非本人大量使用，请登录管理页检查设备列表，解绑可疑设备。</p>`,
-    `你的 Token（${token.id}）本月额度已用 ${fmtGb(usedGb)} / ${quotaGb} GB（80%）。\n用完后将自动预支后续月份额度继续使用（每预支一个月，总有效期提前一个月）。\n下月 1 日恢复新的月度额度。如非本人使用请检查设备列表。`
-  );
-  const res = await sendMail(env, token.contact, subject, html, text);
-  if (res.ok) {
-    token.notify_log[key] = Date.now();
-    console.log(`[risk] month80 notified ${token.id} (${usedGb.toFixed(1)}/${quotaGb} GB)`);
-  } else {
-    console.error(`[risk] month80 mail failed ${token.id}: ${res.error}`);
-  }
-}
-
-export async function notifyBorrow(
-  env: Env,
-  token: Token,
-  borrowed: number,
-  quotaGb: number
-): Promise<void> {
-  if (borrowed <= 0 || !shouldSendEmail(token.contact)) return;
-  token.notify_log = token.notify_log ?? {};
-  const key = `borrow_${borrowed}`;
-  if (token.notify_log[key]) return;
-
-  const expiryText = token.expires_at
-    ? new Date(token.expires_at).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" })
-    : "未知";
-  const { subject, html, text } = shell(
-    env,
-    "本月流量已用完，已预支下月额度",
-    `<p>你好，你的 Token（<strong>${token.id}</strong>）本月 ${quotaGb} GB 额度已用完，已自动<strong>预支后续月份额度</strong>继续为你服务（第 ${borrowed} 次预支）。</p>
-     <p>注意：每预支一个月，有效期永久提前一个月，当前有效期至 <strong>${expiryText}</strong>。下月 1 日（UTC）将恢复新的 ${quotaGb} GB 月度额度。</p>
-     <p>如非本人大量使用，请登录管理页检查设备列表，解绑可疑设备。</p>`,
-    `你的 Token（${token.id}）本月 ${quotaGb} GB 已用完，已自动预支后续月份额度（第 ${borrowed} 次）。\n每预支一个月，有效期永久提前一个月，当前有效期至 ${expiryText}。\n下月 1 日恢复新的月度额度。如非本人使用请检查设备列表。`
-  );
-  const res = await sendMail(env, token.contact, subject, html, text);
-  if (res.ok) {
-    token.notify_log[key] = Date.now();
-    console.log(`[risk] borrow notified ${token.id} level=${borrowed}`);
-  } else {
-    console.error(`[risk] borrow mail failed ${token.id}: ${res.error}`);
   }
 }
 

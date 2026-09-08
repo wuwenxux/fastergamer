@@ -9,7 +9,7 @@ import {
   mergeTokenSettlement,
   type TokenSettlementPatch,
 } from "../lib/kv";
-import { checkNodeBudget, checkTokenRisks, updateSpikeWindow, sendSpikeAlert, notifyBorrow, notifyMonth80, notifyIpChange } from "../lib/risk-notify";
+import { checkNodeBudget, checkTokenRisks, updateSpikeWindow, sendSpikeAlert, notifyIpChange } from "../lib/risk-notify";
 import { getAuthSnapshot, TRAFFIC_GRACE_MS } from "../lib/authsnapshot";
 import { pushAuthRefresh } from "../lib/authpush";
 import type { Env } from "../types";
@@ -263,12 +263,8 @@ async function applyTrafficDelta(
   if (changedIps.length > 0) {
     await notifyIpChange(env, token, changedIps);
   }
-  if (quotaGb && quotaGb > 0) {
-    // 80% 提前预警（每月一次）→ 用超时自动预支（每档一次）
-    await notifyMonth80(env, token, quotaGb);
-    await notifyBorrow(env, token, borrowed, quotaGb);
-  }
-  // 风险检测：流量 80% / 耗尽时提醒客户（幂等，每类只发一次）
+  // 客户要求只保留交易/安全类邮件：月度配额 80% 预警（month80）与预支提醒（borrow_N）已下线
+  // 风险检测：流量耗尽 / 多设备时提醒客户（幂等，每类只发一次）
   await checkTokenRisks(env, token);
   // 通知产生的 notify_log 变更按键级合并写回（不覆盖并发路径新增的记录）
   if (JSON.stringify(token.notify_log ?? {}) !== notifyBase) {
