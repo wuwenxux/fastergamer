@@ -325,6 +325,32 @@ tokensRoutes.delete("/:id/devices/:deviceId", async (c) => {
 });
 
 /**
+ * PATCH /api/tokens/:id/devices/:deviceId —— 设备改名，仅本人可操作
+ * body: { name: "新名字" }；名称 trim 后必填、最长 30 字
+ * 只改展示名，uuid/订阅链接不变，无需推送白名单刷新
+ */
+tokensRoutes.patch("/:id/devices/:deviceId", async (c) => {
+  const token = await getTokenById(c.env, c.req.param("id"));
+  if (!token) return c.json({ ok: false, error: "token not found" }, 404);
+  if (!(await isOwner(c.env, c.req.header("authorization"), token))) {
+    return c.json({ ok: false, error: "请先通过邮箱登录链接进入后再管理设备" }, 401);
+  }
+
+  const device = token.devices?.find((d) => d.id === c.req.param("deviceId"));
+  if (!device) return c.json({ ok: false, error: "device not found" }, 404);
+
+  const body = (await c.req.json().catch(() => null)) as { name?: string } | null;
+  const name = body?.name?.trim() ?? "";
+  if (!name || name.length > 30) {
+    return c.json({ ok: false, error: "设备名称必填，最长 30 字" }, 400);
+  }
+
+  device.name = name;
+  await saveToken(c.env, token);
+  return c.json({ ok: true, data: device });
+});
+
+/**
  * POST /api/tokens/:id/rotate-uuid —— 自助重新生成订阅链接（不限次数）
  * 仅本人可操作。旧 UUID 立即从全节点失效；套餐、到期时间、已用流量不变。
  * 用于订阅域名迁移、链接泄露等自助场景，免找售后人工 rotate。
