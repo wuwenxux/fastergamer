@@ -16,10 +16,14 @@ IP="${1:-}"
 ROOT_PASS="${2:-}"
 REGION="${3:-}"
 NAME="${4:-}"
+# AWS 等密钥登录镜像没有 root 密码：用 SSH_BOOTSTRAP 指定引导方式（需免密 sudo），
+# 例如 SSH_BOOTSTRAP="ssh -i ~/.ssh/ssh_proxy.pem ubuntu@1.2.3.4"，此时 ROOT_PASS 可传占位符
+SSH_BOOTSTRAP="${SSH_BOOTSTRAP:-}"
 
-if [ -z "$IP" ] || [ -z "$ROOT_PASS" ] || [ -z "$REGION" ] || [ -z "$NAME" ]; then
-  echo "Usage: NODE_SUDO_PASS=xxx bash infra/xray/onboard-node.sh <IP> <ROOT密码> <地区代码> <节点名>"
+if [ -z "$IP" ] || { [ -z "$ROOT_PASS" ] && [ -z "$SSH_BOOTSTRAP" ]; } || [ -z "$REGION" ] || [ -z "$NAME" ]; then
+  echo "Usage: NODE_SUDO_PASS=xxx bash infra/xray/onboard-node.sh <IP> <ROOT密码|占位符> <地区代码> <节点名>"
   echo "Example: NODE_SUDO_PASS=xxx bash infra/xray/onboard-node.sh 203.0.113.10 'pass' HK \"香港 05\""
+  echo "AWS:     SSH_BOOTSTRAP=\"ssh -i key.pem ubuntu@IP\" NODE_SUDO_PASS=xxx bash infra/xray/onboard-node.sh <IP> - JP \"日本 07\""
   exit 1
 fi
 
@@ -42,7 +46,7 @@ step() { echo; echo "===== [$1] $2 ====="; }
 # ---------- 0. 派生参数：下一个地理子域名、节点 id ----------
 step 0 "计算子域名与节点 id"
 PREFIX=$(echo "$REGION" | tr 'A-Z' 'a-z')
-SEQ=$(node "$ROOT_DIR/scripts/cf-dns.mjs" list "$PREFIX" | grep -oE "^${PREFIX}[0-9]+" | sed "s/${PREFIX}//" | sort -n | tail -1)
+SEQ=$(node "$ROOT_DIR/scripts/cf-dns.mjs" list "$PREFIX" | grep -oE "^${PREFIX}[0-9]+" | sed "s/${PREFIX}//" | sort -n | tail -1 || true)
 SEQ=$(( ${SEQ:-0} + 1 ))
 RR=$(printf "%s%02d" "$PREFIX" "$SEQ")
 NODE_ID="node-${PREFIX}-$(printf '%02d' "$SEQ")"
@@ -59,7 +63,7 @@ echo "RR=$RR  DOMAIN=$DOMAIN  NODE_ID=$NODE_ID"
 # ---------- 1. wafer 用户 + SSH 互信 ----------
 step 1 "创建 wafer 用户并配置密钥登录"
 PUB_KEY=$(cat "$SSH_KEY.pub")
-$SSH_ROOT "
+STEP1_CMD="
 useradd -m -s /bin/bash wafer 2>/dev/null || true
 echo 'wafer:$WAFER_PASS' | chpasswd
 echo 'wafer ALL=(ALL) ALL' > /etc/sudoers.d/wafer && chmod 440 /etc/sudoers.d/wafer
@@ -78,6 +82,12 @@ systemctl enable --now fail2ban unattended-upgrades >/dev/null 2>&1
 printf 'net.core.default_qdisc=fq\nnet.ipv4.tcp_congestion_control=bbr\n' > /etc/sysctl.d/99-bbr.conf
 sysctl --system >/dev/null 2>&1
 "
+if [ -n "$SSH_BOOTSTRAP" ]; then
+  # 引导用户免密 sudo：远程命令经 stdin 交给 root bash 执行
+  echo "$STEP1_CMD" | $SSH_BOOTSTRAP "sudo bash -s"
+else
+  $SSH_ROOT "$STEP1_CMD"
+fi
 $SSH_WAFER "$SUDO whoami" | grep -q root
 echo "✓ wafer 密钥登录 + sudo 就绪"
 
@@ -140,8 +150,8 @@ $SSH_WAFER "$SUDO bash /tmp/deploy-agent.sh $NODE_KEY >/dev/null && rm /tmp/depl
 echo "✓ agent 已部署"
 
 # ---------- 7. 防火墙 ----------
-step 7 "配置 ufw（仅 22/80/443）"
-$SSH_WAFER "$SUDO bash -c 'ufw allow 22/tcp && ufw allow 80/tcp && ufw allow 443/tcp && ufw default deny incoming && ufw default allow outgoing && yes | ufw enable' >/dev/null 2>&1"
+step 7 "配置 ufw（22/80/443 + 8444 Reality + 8445 hy2）"
+$SSH_WAFER "$SUDO bash -c 'ufw allow 22/tcp && ufw allow 80/tcp && ufw allow 443/tcp && ufw allow 8444/tcp && ufw allow 8445/udp && ufw default deny incoming && ufw default allow outgoing && yes | ufw enable' >/dev/null 2>&1"
 echo "✓ ufw 已启用"
 
 # ---------- 8. 验证 ----------

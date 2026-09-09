@@ -55,7 +55,7 @@ ENVIRONMENT = "production"
 DEFAULT_PLANS = "[]"
 
 # Clash 订阅展示的地区列表
-CLASH_REGIONS = '[{"code":"HK","flag":"🇭🇰","name":"香港"},{"code":"JP","flag":"🇯🇵","name":"日本"},{"code":"MY","flag":"🇲🇾","name":"马来西亚"},{"code":"SG","flag":"🇸🇬","name":"新加坡"},{"code":"US","flag":"🇺🇸","name":"美国"}]'
+CLASH_REGIONS = '[{"code":"HK","flag":"🇭🇰","name":"香港"},{"code":"JP","flag":"🇯🇵","name":"日本"},{"code":"TW","flag":"🌐","name":"台湾"},{"code":"KR","flag":"🇰🇷","name":"韩国"},{"code":"MY","flag":"🇲🇾","name":"马来西亚"},{"code":"SG","flag":"🇸🇬","name":"新加坡"},{"code":"US","flag":"🇺🇸","name":"美国"}]'
 
 # 官网地址，用于邮件内链接
 SITE_URL = "https://fastergamer.click"
