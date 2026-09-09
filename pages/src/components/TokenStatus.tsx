@@ -42,9 +42,10 @@ export default function TokenStatus({ token }: { token: Token }) {
   const [activatedRestricted, setActivatedRestricted] = useState(false);
   const [rotating, setRotating] = useState(false);
   const [resetting, setResetting] = useState(false);
-  // 升级套餐：已下单待支付的升级订单（扫码轮询中）
+  // 升级套餐：已下单待支付的升级订单（扫码轮询中）；showUpgrade 控制套餐列表展开
   const [upgradeOrder, setUpgradeOrder] = useState<Order | null>(null);
   const [upgrading, setUpgrading] = useState<string | null>(null);
+  const [showUpgrade, setShowUpgrade] = useState(false);
 
   // 套餐带月度配额时拉取配额值用于展示
   useEffect(() => {
@@ -245,6 +246,14 @@ export default function TokenStatus({ token }: { token: Token }) {
     current.status === "revoked" || !currentPlan
       ? []
       : plans.filter((p) => p.id !== "plan_3days" && p.price_cny > currentPlan.price_cny);
+
+  // 升级入口只在「不够用」时出现：流量剩余 ≤10%，或设备槽（主设备+子设备）已满
+  const trafficLow =
+    current.traffic_limit_gb > 0 &&
+    (current.traffic_limit_gb - current.traffic_used_gb) / current.traffic_limit_gb <= 0.1;
+  const maxDevices = current.max_devices ?? currentPlan?.max_devices ?? 2;
+  const deviceFull = 1 + (current.devices?.length ?? 0) >= maxDevices;
+  const needUpgrade = upgradeTargets.length > 0 && (trafficLow || deviceFull);
 
   // 预估补差价（与后端同公式：旧套餐价 × 剩余有效期比例折抵；未激活按全额剩余）
   const estimatePayable = (target: Plan): number => {
@@ -563,9 +572,26 @@ export default function TokenStatus({ token }: { token: Token }) {
         </div>
       )}
 
-      {upgradeTargets.length > 0 && !upgradeOrder && (
+      {needUpgrade && !upgradeOrder && !showUpgrade && (
+        <button
+          onClick={() => setShowUpgrade(true)}
+          className="w-full rounded-xl border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-amber-300 hover:bg-amber-500/20 transition-colors"
+        >
+          {trafficLow ? "流量快用完了" : "设备槽已满"}，点这里升级套餐 →
+        </button>
+      )}
+
+      {needUpgrade && !upgradeOrder && showUpgrade && (
         <div className="rounded-xl border border-slate-700 bg-slate-950 p-4 space-y-3">
-          <div className="text-sm font-medium text-slate-300">升级套餐</div>
+          <div className="flex items-center justify-between">
+            <div className="text-sm font-medium text-slate-300">升级套餐</div>
+            <button
+              onClick={() => setShowUpgrade(false)}
+              className="text-xs text-slate-500 hover:text-slate-300"
+            >
+              收起
+            </button>
+          </div>
           <div className="space-y-2">
             {upgradeTargets.map((p) => (
               <div key={p.id} className="flex items-center justify-between gap-3 text-sm">
