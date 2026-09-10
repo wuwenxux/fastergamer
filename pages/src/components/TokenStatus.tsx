@@ -406,12 +406,12 @@ export default function TokenStatus({ token }: { token: Token }) {
       {active && (
         <div className="flex flex-col gap-3 rounded-xl border border-slate-700 bg-slate-950 p-4">
           <div>
-            <div className="text-slate-400 text-xs mb-1">Clash 订阅链接（复制后粘贴到 Clash/Stash）</div>
-            <div className="font-mono text-sm break-all text-slate-300">{api.subUrl(current.uuid)}</div>
+            <div className="text-sky-300 text-xs mb-1 font-medium">Clash 订阅链接（复制后粘贴到 Clash/Stash）</div>
+            <div className="font-mono text-sm break-all text-sky-200 rounded-lg border border-sky-500/50 bg-sky-500/15 p-2.5 select-all">{api.subUrl(current.uuid)}</div>
           </div>
 
-          <p className="text-xs text-slate-400">
-            这个链接不是用浏览器直接打开的，而是 Clash 用来下载配置的地址。复制链接 → 打开 Clash → 粘贴到「订阅/Profiles」里即可自动导入节点。
+          <p className="text-xs text-slate-300">
+            这个链接<span className="text-sky-300">不是用浏览器直接打开的</span>，而是 Clash 用来下载配置的地址。复制链接 → 打开 Clash → 粘贴到「订阅/Profiles」里即可自动导入节点。
           </p>
 
           <p className="text-xs text-emerald-300/90 rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-2.5">
