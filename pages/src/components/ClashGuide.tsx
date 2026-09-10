@@ -341,14 +341,14 @@ export default function ClashGuide() {
         <div className="text-slate-400 space-y-2">
           <p>
             客户端默认用 Google 测延迟，显示值会包含「节点 → Google」的国际段，比真实接入延迟高很多。
-            把测速地址改成我方节点的本地端点，显示的就是你到节点的真实延迟：
+            把测速地址改成我方共享测速端点，每个节点都在本地直接响应，显示的就是你到节点的真实延迟：
           </p>
           <code className="block rounded-lg bg-slate-950 px-3 py-2 text-xs text-emerald-300 select-all">
-            https://hk01.fastergamer.click/generate_204
+            http://ping.fastergamer.click/generate_204
           </code>
           <p className="text-xs">
             Clash Verge Rev：设置 → 代理测速链接；FlClash：设置 → 通用 → 延迟测试链接；Stash：设置 → 延迟测试 URL。
-            改完后香港节点显示的就是纯接入延迟，日本/台湾节点仅多 5-15ms 回程。
+            改完后所有地区节点显示的都是纯接入延迟（香港约 40-60ms、日本约 55-70ms）。
           </p>
         </div>
       ),

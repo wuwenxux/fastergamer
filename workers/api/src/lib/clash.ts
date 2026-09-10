@@ -8,10 +8,9 @@
  * 自动落 ⚡/WS 三层兜底）。老内核（Premium）只收 WS 条目。
  * 节点显示名统一为「区域代码 中文地区名 全局序号」，如 "MY 马来西亚 01"（序号按节点列表顺序全局递增）。
  * 分组结构（按区域）：
- *   🚀 节点选择（select）→ ♻️ 自动选择（全部节点 url-test，测首节点 /generate_204，
- *                          显示值 ≈ 客户端→节点接入成本）
- *                        → 🇭🇰 香港 / 🇯🇵 日本 …（各区域 url-test，测本区域节点 /generate_204，
- *                          显示值 ≈ 客户端→节点延迟）
+ *   🚀 节点选择（select）→ ♻️ 自动选择（全部节点 url-test，测共享域名 ping.fastergamer.click
+ *                          ——各节点 hosts 本地终结，显示值 = 客户端→节点纯接入延迟）
+ *                        → 🇭🇰 香港 / 🇯🇵 日本 …（各区域 url-test，同口径）
  *                        → 各节点（手动指定）
  * 规则：OpenAI/ChatGPT 固定走日本区域组（OpenAI 封锁香港出口），局域网与国内流量
  * （GEOIP CN）直连，其余走代理。
@@ -66,7 +65,9 @@ export const supportsGeosite = (ua: string | undefined): boolean =>
 
 const AUTO_GROUP = "♻️ 自动选择";
 const MAIN_GROUP = "🚀 节点选择";
-const TEST_URL = "http://www.gstatic.com/generate_204";
+// url-test 测速目标：共享域名,所有节点 /etc/hosts 指回 127.0.0.1 本地 Caddy 响应 204,
+// 任意节点测速都是本地终结(HTTP 免证书),显示值 = 客户端→节点纯接入延迟
+const SPEED_TEST_URL = "http://ping.fastergamer.click/generate_204";
 
 export const buildClashConfig = ({ uuid, nodes, regions, userAgent, nodeIps, isp }: BuildConfigInput): string => {
   const lines: string[] = [];
@@ -325,27 +326,20 @@ export const buildClashConfig = ({ uuid, nodes, regions, userAgent, nodeIps, isp
     for (const name of byRegion.get(code)!) lines.push(`      - "${name}"`);
 
   // 全局自动选择：url-test 覆盖自动池全部条目，单节点故障无需手动干预。
-  // 测速目标用 HK 首节点的 /generate_204（HK 是主力区域、内核间互访 <1ms）：
-  // 显示值 ≈ 客户端→节点接入延迟，不含节点→外网段与目标站 DNS，读数稳定；
-  // 跨区成员带一个固定的「本区→HK」小段偏移（JP→HK ≈45ms、MY→HK ≈75ms）。
-  // 代价是自动选择不再感知节点出口抽风——出口段各节点实测均匀（→Google <40ms），可接受
-  const anchor = proxies.find((p) => p.region === "HK") ?? proxies[0];
-  const autoTestUrl = anchor ? `https://${anchor.host}/generate_204` : TEST_URL;
+  // 测速目标统一用共享域名 ping.fastergamer.click(HTTP)：所有节点的 /etc/hosts
+  // 把它指到 127.0.0.1 由本机 Caddy 响应,从任意节点出去都在本地终结——
+  // 显示值 = 客户端→节点纯接入延迟(仅 1 RTT),不含握手、节点→外网段与目标站 DNS。
+  // 代价是自动选择不再感知节点出口抽风——出口段各节点实测均匀(→Google <40ms),可接受
   lines.push(`  - name: "${AUTO_GROUP}"`, "    type: url-test", "    proxies:");
   for (const p of autoPool) lines.push(`      - "${p.name}"`);
-  lines.push(`    url: ${autoTestUrl}`, "    interval: 300", "    tolerance: 50");
+  lines.push(`    url: ${SPEED_TEST_URL}`, "    interval: 300", "    tolerance: 50");
 
   // 每个区域一个 url-test 分组：锁定区域时仍享受区域内故障切换。
-  // 测速目标用本区域首节点的 /generate_204：显示值 ≈ 客户端→节点延迟（区域内核间 <1ms），
-  // 不含节点→外网段；节点故障时该节点本身测速失败会被自动剔除，不影响选择正确性。
-  const regionTestUrl = (code: string) => {
-    const host = proxies.find((p) => p.region === code)?.host;
-    return host ? `https://${host}/generate_204` : TEST_URL;
-  };
+  // 测速同样走共享域名本地终结(与全局组同口径);节点故障时测速失败会被自动剔除。
   for (const code of orderedCodes) {
     lines.push(`  - name: "${regionGroupName(code)}"`, "    type: url-test", "    proxies:");
     for (const name of byRegion.get(code)!) lines.push(`      - "${name}"`);
-    lines.push(`    url: ${regionTestUrl(code)}`, "    interval: 300", "    tolerance: 50");
+    lines.push(`    url: ${SPEED_TEST_URL}`, "    interval: 300", "    tolerance: 50");
   }
 
   lines.push("", "rules:");

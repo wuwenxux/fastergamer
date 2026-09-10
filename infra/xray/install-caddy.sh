@@ -23,8 +23,7 @@ if ! command -v caddy >/dev/null 2>&1; then
 fi
 
 sudo tee /etc/caddy/Caddyfile <<EOF
-${DOMAIN} {
-    # PROXY protocol v1：把真实客户端 IP 带给 Xray（access log 按接入 IP 统计依赖它）
+${DOMAIN} {    # PROXY protocol v1：把真实客户端 IP 带给 Xray（access log 按接入 IP 统计依赖它）
     # 注意：Xray 侧必须同步开启 acceptProxyProtocol，否则连接无法建立
     reverse_proxy /vless-ws 127.0.0.1:8443 {
         transport http {
@@ -55,7 +54,16 @@ ${DOMAIN} {
         Cache-Control "no-store"
     }
 }
+
+# 共享测速域名:hosts 指回 127.0.0.1,任意节点本地响应(HTTP 免证书分发)
+http://ping.fastergamer.click {
+    respond /generate_204 204
+    respond /ping "pong" 200
+}
 EOF
+
+# 共享测速域名指回本机:客户端经任意节点测速时在本地终结,显示值 = 客户端→节点纯接入延迟
+grep -q "ping.fastergamer.click" /etc/hosts || echo "127.0.0.1 ping.fastergamer.click" | sudo tee -a /etc/hosts
 
 sudo systemctl enable caddy
 sudo systemctl restart caddy
