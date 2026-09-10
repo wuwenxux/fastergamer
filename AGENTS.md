@@ -70,6 +70,9 @@ node scripts/test-plan.mjs [N] [API_BASE] [ADMIN_KEY]   # 多用户购买→订�
 bash scripts/test-client.sh <订阅uuid>                  # 客户端视角全链路测速
 bash scripts/test-node.sh [过滤词]                      # 运维视角（本机自动取 active token）
 
+# 日常运维统一入口（查用户/延期/改设备/节点列表/SSH/拨测/onboard/部署，密钥自动读 .dev.vars）
+node scripts/fg                                         # 无参数打印全部子命令用法；详见 .kimi-code/skills/fg-ops
+
 # 部署（推荐一键脚本，经 hk02 跳板避开本机到 CF 的不稳定链路）
 bash scripts/deploy-cf.sh           # 仅 API/配置改动
 bash scripts/deploy-cf.sh --build   # 前端有改动，先构建 pages/dist
