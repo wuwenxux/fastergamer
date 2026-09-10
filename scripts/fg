@@ -1,0 +1,206 @@
+#!/usr/bin/env node
+/**
+ * fg —— fastergamer 日常运维统一入口（在中心服务器本机执行）。
+ *
+ * 用法：
+ *   node scripts/fg user <邮箱|token id|uuid>     查用户：套餐/流量/设备/到期/在线
+ *   node scripts/fg extend <关键词> <天数>         延长有效期（从今天起算）
+ *   node scripts/fg devices <关键词> <数量>        改设备槽位上限（1-50）
+ *   node scripts/fg unbind <关键词> <设备id>       解绑指定设备（设备 id 用 user 命令查）
+ *   node scripts/fg rotate <关键词>                重置订阅链接（换 uuid，保留额度/设备）
+ *   node scripts/fg reset <关键词> [惩罚天数=30]   流量耗尽售后：用量清零恢复，有效期 -N 天
+ *   node scripts/fg rm <关键词> --yes              删除 token（不可恢复）
+ *   node scripts/fg nodes                          节点列表：名称/域名/地区/在线
+ *   node scripts/fg ssh <节点名|域名|IP|id>        SSH 到节点（wafer 用户 + 运维密钥）
+ *   node scripts/fg stats [天数=14]                用户增长与流量分析（转发 user-stats.mjs）
+ *   node scripts/fg probe <参数...>                阿里云全国拨测（转发 ali-node-eval.mjs）
+ *   node scripts/fg onboard <IP> <密码|-> <地区> <节点名>   新节点接入（自动带 NODE_SUDO_PASS）
+ *   node scripts/fg deploy [--build]               部署到 CF（--build 含前端构建）
+ *
+ * 密钥统一从 workers/api/.dev.vars 读取（ADMIN_KEY / NODE_SUDO_PASS），无需手动传。
+ */
+import fs from "node:fs";
+import path from "node:path";
+import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
+
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const API = "https://fastergamer.click";
+const SSH_KEY = `${process.env.HOME}/.ssh/id_ed25519_cloudvpn`;
+
+const env = Object.fromEntries(
+  fs.readFileSync(path.join(ROOT, "workers/api/.dev.vars"), "utf8")
+    .split("\n").filter((l) => l.includes("=") && !l.startsWith("#"))
+    .map((l) => l.split("=", 2).map((s) => s.trim()))
+);
+const ADMIN_KEY = env.ADMIN_KEY;
+if (!ADMIN_KEY) { console.error("workers/api/.dev.vars 缺少 ADMIN_KEY"); process.exit(1); }
+
+const fmtTime = (ts) => ts ? new Date(ts).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai", hour12: false }) : "-";
+const fmtGB = (n) => `${(n ?? 0).toFixed(2)} GB`;
+
+async function api(method, p, body) {
+  const res = await fetch(`${API}/api/admin${p}`, {
+    method,
+    headers: { "x-admin-key": ADMIN_KEY, "content-type": "application/json" },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  const json = await res.json().catch(() => null);
+  if (!res.ok || !json?.ok) {
+    console.error(`API ${method} ${p} 失败: ${res.status} ${json?.error ?? ""}`);
+    process.exit(1);
+  }
+  return json.data;
+}
+
+/** 按 id / uuid / 邮箱模糊匹配 token；多个匹配则列出并退出 */
+async function findToken(kw) {
+  const tokens = await api("GET", "/tokens?presence=1");
+  const lower = kw.toLowerCase();
+  const hits = tokens.filter((t) =>
+    t.id === kw || t.uuid === kw || (t.contact ?? "").toLowerCase().includes(lower));
+  if (!hits.length) { console.error(`没有匹配「${kw}」的 token`); process.exit(1); }
+  if (hits.length > 1) {
+    console.error(`匹配到 ${hits.length} 个，请用精确 token id：`);
+    for (const t of hits) console.error(`  ${t.id}  ${t.contact ?? "-"}  ${t.plan_id}  到期 ${fmtTime(t.expires_at)}`);
+    process.exit(1);
+  }
+  return hits[0];
+}
+
+function showToken(t) {
+  const p = t.presence ?? {};
+  console.log(`token:    ${t.id}  (${t.status})`);
+  console.log(`联系:     ${t.contact ?? "-"}`);
+  console.log(`套餐:     ${t.plan_id}   流量 ${fmtGB(t.traffic_used_gb)} / ${t.traffic_limit_gb === 0 ? "不限量" : fmtGB(t.traffic_limit_gb)}`);
+  console.log(`设备:     ${(t.devices ?? []).length} / ${t.max_devices ?? "套餐默认"}`);
+  for (const d of t.devices ?? []) {
+    console.log(`          ${d.id}  ${d.name || "-"}  ${fmtGB(d.traffic_used_gb)}  最近活跃 ${fmtTime(d.last_active_at)}`);
+  }
+  console.log(`uuid:     ${t.uuid}`);
+  console.log(`订阅:     ${API}/api/sub?uuid=${t.uuid}`);
+  console.log(`购买:     ${fmtTime(t.purchased_at)}   到期: ${fmtTime(t.expires_at)}`);
+  console.log(`在线:     ${p.online ? "是" : "否"}   最近活跃: ${fmtTime(p.last_active_at)}`);
+  const ips = Object.entries(p.traffic_by_ip ?? {}).sort((a, b) => (b[1].last_seen_at ?? 0) - (a[1].last_seen_at ?? 0)).slice(0, 5);
+  if (ips.length) {
+    console.log(`接入 IP:`);
+    for (const [ip, s] of ips) {
+      console.log(`          ${ip}  ~${fmtGB((s.bytes ?? 0) / 1e9)}  ${s.conns ?? 0} 次连接  最近 ${fmtTime(s.last_seen_at)}`);
+    }
+  }
+}
+
+function run(cmd, args, opts = {}) {
+  const r = spawnSync(cmd, args, { stdio: "inherit", cwd: ROOT, ...opts });
+  process.exit(r.status ?? 1);
+}
+
+const [cmd, ...args] = process.argv.slice(2);
+
+switch (cmd) {
+  case "user": {
+    if (!args[0]) { console.error("用法: fg user <邮箱|token id|uuid>"); process.exit(1); }
+    showToken(await findToken(args[0]));
+    break;
+  }
+  case "extend": {
+    const days = Number(args[1]);
+    if (!args[0] || !days) { console.error("用法: fg extend <关键词> <天数>"); process.exit(1); }
+    const t = await findToken(args[0]);
+    const r = await api("PUT", `/tokens/${t.id}`, { extend_days: days });
+    console.log(`已延期 ${days} 天: ${r.id}  新到期时间 ${fmtTime(r.expires_at)}`);
+    break;
+  }
+  case "devices": {
+    const n = Number(args[1]);
+    if (!args[0] || !n) { console.error("用法: fg devices <关键词> <数量>"); process.exit(1); }
+    const t = await findToken(args[0]);
+    const r = await api("PUT", `/tokens/${t.id}`, { max_devices: n });
+    console.log(`设备上限已改为 ${r.max_devices}: ${r.id}`);
+    break;
+  }
+  case "unbind": {
+    if (!args[0] || !args[1]) { console.error("用法: fg unbind <关键词> <设备id>"); process.exit(1); }
+    const t = await findToken(args[0]);
+    await api("DELETE", `/tokens/${t.id}/devices/${args[1]}`);
+    console.log(`已解绑设备 ${args[1]}（${t.id}）`);
+    break;
+  }
+  case "rotate": {
+    if (!args[0]) { console.error("用法: fg rotate <关键词>"); process.exit(1); }
+    const t = await findToken(args[0]);
+    const r = await api("POST", `/tokens/${t.id}/rotate-uuid`);
+    console.log(`已重置订阅链接: ${t.id}`);
+    console.log(`新订阅: ${API}/api/sub?uuid=${r.uuid ?? r.new_uuid ?? ""}`);
+    break;
+  }
+  case "reset": {
+    if (!args[0]) { console.error("用法: fg reset <关键词> [惩罚天数=30]"); process.exit(1); }
+    const t = await findToken(args[0]);
+    const body = args[1] ? { days_penalty: Number(args[1]) } : {};
+    await api("POST", `/tokens/${t.id}/reset-penalty`, body);
+    console.log(`已重置续用: ${t.id}（流量清零，有效期 -${args[1] ?? 30} 天）`);
+    break;
+  }
+  case "rm": {
+    if (!args[0] || args[1] !== "--yes") { console.error("用法: fg rm <关键词> --yes （不可恢复，需显式 --yes）"); process.exit(1); }
+    const t = await findToken(args[0]);
+    await api("DELETE", `/tokens/${t.id}`);
+    console.log(`已删除 token ${t.id}（${t.contact ?? "-"}）`);
+    break;
+  }
+  case "nodes": {
+    const nodes = await api("GET", "/nodes");
+    for (const n of nodes) {
+      console.log(`${n.active ? "●" : "○"} ${n.name.padEnd(12)} ${(n.host ?? "").padEnd(28)} ${n.region}  ${n.id}${n.reality ? "  ⚡Reality" : ""}${n.hy2 ? "  🚀hy2" : ""}`);
+    }
+    break;
+  }
+  case "ssh": {
+    if (!args[0]) { console.error("用法: fg ssh <节点名|域名|IP|id>"); process.exit(1); }
+    const kw = args[0];
+    let ip = /^[\d.]+$/.test(kw) ? kw : null;
+    let label = ip;
+    if (!ip) {
+      // 优先查台账拿真实 IP（节点域名可能指向 GA 等入口，22 端口不通）
+      const ledger = `${process.env.HOME}/fastergamer-nodes.txt`;
+      if (fs.existsSync(ledger)) {
+        for (const line of fs.readFileSync(ledger, "utf8").split("\n")) {
+          if (!line.includes("|") || line.trim().startsWith("#")) continue;
+          const [name, id, host, nip] = line.split("|").map((s) => s.trim());
+          if (!/^\d+\.\d+\.\d+\.\d+$/.test(nip ?? "")) continue;
+          if (id === kw || host === kw || name.includes(kw)) { ip = nip; label = `${name} (${nip})`; break; }
+        }
+      }
+    }
+    if (!ip) {
+      const nodes = await api("GET", "/nodes");
+      const n = nodes.find((x) => x.id === kw || x.host === kw || x.name.includes(kw));
+      if (!n) { console.error(`没有匹配「${kw}」的节点`); process.exit(1); }
+      ip = n.host;
+      label = `${n.name} (${ip})`;
+    }
+    console.log(`→ ${label}`);
+    run("ssh", ["-i", SSH_KEY, "-o", "StrictHostKeyChecking=no", "-o", "ConnectTimeout=10", `wafer@${ip}`, ...args.slice(1)]);
+    break;
+  }
+  case "stats":
+    run("node", [path.join(ROOT, "scripts/user-stats.mjs"), ...args]);
+    break;
+  case "probe":
+    if (!args.length) { console.error('用法: fg probe [--points N] [--isp 移动|电信|联通] "名称=IP[:端口[:TCP|UDP]]" ...'); process.exit(1); }
+    run("node", [path.join(ROOT, "scripts/ali-node-eval.mjs"), ...args]);
+    break;
+  case "onboard":
+    if (args.length < 4) { console.error('用法: fg onboard <IP> <ROOT密码|-> <地区代码> <节点名>'); process.exit(1); }
+    run("bash", [path.join(ROOT, "infra/xray/onboard-node.sh"), ...args], {
+      env: { ...process.env, NODE_SUDO_PASS: env.NODE_SUDO_PASS },
+    });
+    break;
+  case "deploy":
+    run("bash", [path.join(ROOT, "scripts/deploy-cf.sh"), ...args]);
+    break;
+  default:
+    console.log(fs.readFileSync(fileURLToPath(import.meta.url), "utf8").match(/\/\*\*([\s\S]*?)\*\//)[1]);
+    if (cmd) process.exit(1);
+}
