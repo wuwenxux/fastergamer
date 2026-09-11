@@ -135,6 +135,23 @@ export const buildClashConfig = ({ uuid, nodes, regions, userAgent, nodeIps, isp
     "    - swscan.apple.com",
     "    - mesu.apple.com",
     "    - localhost.ptlogin2.qq.com",
+    // 游戏主机联机与对战平台：需要真实 IP 做 NAT 打洞/UDP 互联，fake-ip 会直接坏掉
+    "    - \"*.*.*.srv.nintendo.net\"",
+    "    - \"*.*.stun.playstation.net\"",
+    "    - \"xbox.*.*.microsoft.com\"",
+    "    - \"*.*.xboxlive.com\"",
+    "    - \"teredo.*.*\"",
+    "    - \"teredo.*.*.*\"",
+    "    - \"+.wotgame.cn\"",
+    "    - \"+.wggames.cn\"",
+    "    - \"+.wowsgame.cn\"",
+    "    - \"+.wargaming.net\"",
+    // 音乐平台防盗链校验域（QQ 音乐系已被 +.qq.com 覆盖）
+    "    - \"songsearch.kugou.com\"",
+    "    - \"trackercdn.kugou.com\"",
+    "    - \"+.kuwo.cn\"",
+    "    - \"+.music.migu.cn\"",
+    "    - \"+.xiami.com\"",
     // 国内常见 App 主域名进白名单：这些域名按规则本来就直连（GEOSITE,CN），
     // 进白名单后直接拿真实 IP，省掉 fake-ip → sniffer 嗅回域名 → 重新解析的一圈，
     // App 首屏/首连更快，也不依赖 sniffer 对非主流协议（MMTLS 等）的识别率
@@ -162,6 +179,8 @@ export const buildClashConfig = ({ uuid, nodes, regions, userAgent, nodeIps, isp
     "    - \"+.biliapi.net\"",
     "    - \"+.hdslb.com\"",
     "    - \"+.douyin.com\"",
+    "    - \"+.douyu.com\"",
+    "    - \"+.huya.com\"",
     "    - \"+.amap.com\"",
     "    - \"+.12306.cn\"",
     // 目标域名解析：阿里 DoH 放最前（防 UDP 53 被劫持/慢），纯 IP 递归做 bootstrap 兜底
