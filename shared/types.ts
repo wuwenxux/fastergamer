@@ -233,6 +233,18 @@ export interface Node {
   /** 该节点对哪些运营商线路做了优化（可选，"移动"/"电信"/"联通"）。
    *  订阅生成时按用户 ASN 识别运营商，匹配节点静默排在前面；用户无感知、无可选项 */
   prefer_isp?: string[];
+  /** 全国拨测回写的延迟画像（scripts/push-node-scores.mjs 每晚写入）。
+   *  订阅排序用：同 prefer_isp 层级内按分数升序，失联/超 36h 未更新自动沉底或失效 */
+  probe?: {
+    /** 全国三网中位数（ms） */
+    median: number;
+    /** 全国 P95（ms），抖动观察用 */
+    p95: number;
+    /** 分运营商中位数：移动/电信/联通 → ms（无样本的运营商缺省） */
+    per_isp?: Record<string, number>;
+    /** 数据产生时间（unix 毫秒） */
+    at: number;
+  };
   /** 最后一次心跳时间（unix 毫秒） */
   last_seen_at?: number;
   /** 节点累计总流量（bytes，部署以来） */

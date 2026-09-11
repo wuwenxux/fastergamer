@@ -29,14 +29,52 @@ export const ispFromAsn = (asn: unknown): string | null =>
  * 稳定排序：prefer_isp 命中用户运营商的节点排到前面，其余保持注册表顺序。
  * 命中不改变节点分组归属，只影响 url-test/select 组内的成员顺序
  * （url-test 首个成员有粘滞优势，首屏连接即落在最优线路上）。
+ *
+ * 拨测反哺：节点带新鲜（≤36h）probe 数据时，同 prefer_isp 层级内再按
+ * 拨测分数升序（用户运营商的分运营商中位数，缺省用全国中位数）；
+ * 无数据/失联节点沉底。没有任何有效 probe 数据时行为与纯 prefer_isp 排序一致。
  */
-export const orderNodesForIsp = <T extends { prefer_isp?: string[] }>(
+
+/** probe 数据保鲜期：超过视为失效，不参与排序 */
+export const PROBE_STALE_MS = 36 * 3600_000;
+
+interface ProbeLike {
+  median: number;
+  per_isp?: Record<string, number>;
+  at: number;
+}
+
+/** 节点对该用户的拨测分数（ms，越低越好）；无数据/过期返回 null */
+const probeScore = (
+  n: { probe?: ProbeLike },
+  isp: string | null,
+  now: number
+): number | null => {
+  const p = n.probe;
+  if (!p || typeof p.median !== "number" || now - p.at > PROBE_STALE_MS) return null;
+  return (isp && p.per_isp?.[isp]) || p.median;
+};
+
+export const orderNodesForIsp = <T extends { prefer_isp?: string[]; probe?: ProbeLike }>(
   nodes: T[],
-  isp: string | null
+  isp: string | null,
+  now: number = Date.now()
 ): T[] => {
-  if (!isp) return nodes;
-  const hit = nodes.filter((n) => n.prefer_isp?.includes(isp));
-  if (hit.length === 0 || hit.length === nodes.length) return nodes;
-  const rest = nodes.filter((n) => !n.prefer_isp?.includes(isp));
-  return [...hit, ...rest];
+  // 无任何拨测数据：退化为纯 prefer_isp 排序（保持历史行为）
+  if (!nodes.some((n) => probeScore(n, isp, now) !== null)) {
+    if (!isp) return nodes;
+    const hit = nodes.filter((n) => n.prefer_isp?.includes(isp));
+    if (hit.length === 0 || hit.length === nodes.length) return nodes;
+    const rest = nodes.filter((n) => !n.prefer_isp?.includes(isp));
+    return [...hit, ...rest];
+  }
+  return nodes
+    .map((n, i) => ({
+      n,
+      i,
+      tier: isp && n.prefer_isp?.includes(isp) ? 0 : 1,
+      s: probeScore(n, isp, now) ?? Infinity,
+    }))
+    .sort((a, b) => a.tier - b.tier || a.s - b.s || a.i - b.i)
+    .map((x) => x.n);
 };
