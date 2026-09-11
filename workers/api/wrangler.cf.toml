@@ -11,9 +11,11 @@ compatibility_flags = ["nodejs_compat"]
 workers_dev = true
 
 # 自定义域名（Workers Custom Domain，自动签发证书并创建 DNS 记录）
+# uluw.kdns.fr 为备用订阅域：主域被 DNS 污染时用户整体切换入口，zone 需先在 CF 激活
 routes = [
   { pattern = "fastergamer.click", custom_domain = true },
   { pattern = "www.fastergamer.click", custom_domain = true },
+  { pattern = "uluw.kdns.fr", custom_domain = true },
 ]
 
 # 前端静态站（pages/dist，先 cd pages && npm run build）

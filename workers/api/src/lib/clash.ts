@@ -364,9 +364,11 @@ export const buildClashConfig = ({ uuid, nodes, regions, userAgent, nodeIps, isp
   lines.push("", "rules:");
   // 订阅/官网域名强制直连：防止全局模式或 TUN 下访问订阅域名被送进代理节点，
   // 节点异常时订阅更新失败（GEOIP 规则在全局模式下不生效）。
-  // fastergamer.click 是订阅+API 中心，必须覆盖（GEOIP 判定为境外 CF IP，会走代理）
-  lines.push("  - DOMAIN-SUFFIX,fastergamer.cn,DIRECT");
-  lines.push("  - DOMAIN-SUFFIX,fastergamer.click,DIRECT");
+  // fastergamer.click 是订阅+API 中心，必须覆盖（GEOIP 判定为境外 CF IP，会走代理）。
+  // 备用域名注册后往这个列表加一行即可（Workers 自定义域名挂在同一 Worker，无需改后端）
+  // uluw.kdns.fr：备用订阅域（DuckDNS 系免费域，kdns.fr 在 PSL 上故可作 CF 独立 zone）
+  const DIRECT_SERVICE_DOMAINS = ["fastergamer.cn", "fastergamer.click", "uluw.kdns.fr"];
+  for (const d of DIRECT_SERVICE_DOMAINS) lines.push(`  - DOMAIN-SUFFIX,${d},DIRECT`);
   // 局域网/本机直连
   lines.push(
     "  - IP-CIDR,10.0.0.0/8,DIRECT,no-resolve",
