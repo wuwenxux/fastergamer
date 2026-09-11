@@ -13,6 +13,7 @@
  *   node scripts/fg nodes                          节点列表：名称/域名/地区/在线
  *   node scripts/fg ssh <节点名|域名|IP|id>        SSH 到节点（wafer 用户 + 运维密钥）
  *   node scripts/fg stats [天数=14]                用户增长与流量分析（转发 user-stats.mjs）
+ *   node scripts/fg push-scores [--dry-run] [文件]  最新拨测结果回写注册表，订阅按延迟排序
  *   node scripts/fg probe <参数...>                阿里云全国拨测（转发 ali-node-eval.mjs）
  *   node scripts/fg onboard <IP> <密码|-> <地区> <节点名>   新节点接入（自动带 NODE_SUDO_PASS）
  *   node scripts/fg deploy [--build]               部署到 CF（--build 含前端构建）
@@ -186,6 +187,9 @@ switch (cmd) {
   }
   case "stats":
     run("node", [path.join(ROOT, "scripts/user-stats.mjs"), ...args]);
+    break;
+  case "push-scores":
+    run("node", [path.join(ROOT, "scripts/push-node-scores.mjs"), ...args]);
     break;
   case "probe":
     if (!args.length) { console.error('用法: fg probe [--points N] [--isp 移动|电信|联通] "名称=IP[:端口[:TCP|UDP]]" ...'); process.exit(1); }
