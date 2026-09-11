@@ -144,8 +144,17 @@ export const api = {
       body: JSON.stringify({ target_plan_id }),
     }),
 
-  /** Clash 订阅链接（需 token 处于 active）；走主域 fastergamer.click，由 CF Worker 渲染 */
-  subUrl: (uuid: string) => `https://fastergamer.click/api/sub?uuid=${encodeURIComponent(uuid)}`,
+  /**
+   * Clash 订阅链接（需 token 处于 active）；由 CF Worker 渲染。
+   * 同源优先：从备用域名访问时给出备用域名的链接，主域被污染时用户复制即用；
+   * 本地开发（localhost）仍指向主域，避免发出不可分享的本地链接
+   */
+  subUrl: (uuid: string) => {
+    const origin = absoluteBase();
+    const local = !origin || /^https?:\/\/(localhost|127\.0\.0\.1)(:|\/|$)/.test(origin);
+    const base = local ? "https://fastergamer.click" : origin;
+    return `${base}/api/sub?uuid=${encodeURIComponent(uuid)}`;
+  },
 
   /** 自助重新生成订阅链接（不限次数；旧链接立即失效）；需本人登录，否则 401 */
   rotateUuid: (tokenId: string) =>
