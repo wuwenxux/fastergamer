@@ -38,6 +38,11 @@ function sessionHeaders(): Record<string, string> {
   }
 }
 
+/** 人机验证头：启用了 Turnstile 的匿名表单提交时带上 widget 产出的一次性 token（未启用/未接入时传 undefined 即不带） */
+function turnstileHeaders(token?: string): Record<string, string> {
+  return token ? { "x-turnstile-token": token } : {};
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${BASE}${path}`, {
     cache: "no-store", // API 数据一律不缓存，避免拿到过期响应
@@ -58,11 +63,14 @@ export const api = {
   /** 套餐列表 */
   plans: () => request<Plan[]>("/api/plans"),
 
+  /** 公开运行时配置；turnstile_site_key 为 null 表示未启用人机验证 */
+  config: () => request<{ turnstile_site_key: string | null }>("/api/config"),
+
   /** 创建订单（返回 pending 订单；支付通道已摘除，暂无支付二维码；带登录会话时自动使用推广余额抵扣；ref 为推广码） */
-  createOrder: (plan_id: string, contact?: string, ref?: string) =>
+  createOrder: (plan_id: string, contact?: string, ref?: string, turnstileToken?: string) =>
     request<CreateOrderResponse>("/api/orders", {
       method: "POST",
-      headers: sessionHeaders(),
+      headers: { ...sessionHeaders(), ...turnstileHeaders(turnstileToken) },
       body: JSON.stringify({ plan_id, contact, ref }),
     }),
 
@@ -193,16 +201,21 @@ export const api = {
     request<MagicSession>(`/api/tokens/magic/consume?ticket=${encodeURIComponent(ticket)}`),
 
   /** 提交问题反馈（邮箱必填，回复发到邮箱） */
-  feedback: (input: { contact: string; message: string; category?: string; token_id?: string }) =>
+  feedback: (
+    input: { contact: string; message: string; category?: string; token_id?: string },
+    turnstileToken?: string
+  ) =>
     request<{ id: string }>("/api/feedback", {
       method: "POST",
+      headers: turnstileHeaders(turnstileToken),
       body: JSON.stringify(input),
     }),
 
   /** 发送免密登录链接到邮箱（链接带一次性 ticket，点开即登录进入管理页） */
-  loginLink: (contact: string) =>
+  loginLink: (contact: string, turnstileToken?: string) =>
     request<null>("/api/tokens/login-link", {
       method: "POST",
+      headers: turnstileHeaders(turnstileToken),
       body: JSON.stringify({ contact }),
     }),
 
@@ -219,9 +232,10 @@ export const api = {
     }),
 
   /** 领取免费体验（每邮箱一次，3 天 20GB，凭证发到邮箱）；ref 为推广码 */
-  claimTrial: (email: string, ref?: string) =>
+  claimTrial: (email: string, ref?: string, turnstileToken?: string) =>
     request<{ token_id: string }>("/api/tokens/trial", {
       method: "POST",
+      headers: turnstileHeaders(turnstileToken),
       body: JSON.stringify({ email, ref: ref || undefined }),
     }),
 

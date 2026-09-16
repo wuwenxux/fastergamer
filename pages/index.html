@@ -8,6 +8,8 @@
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
     <link rel="manifest" href="/manifest.webmanifest" />
     <meta name="theme-color" content="#0f172a" />
+    <!-- Cloudflare Turnstile 人机验证脚本（async defer 不阻塞渲染；组件内显式 render，脚本未就绪时短轮询等待） -->
+    <script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>
     <title>GameBoost — Token 制游戏加速器</title>
   </head>
   <body>

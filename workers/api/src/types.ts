@@ -31,4 +31,8 @@ export interface Env {
   EPAY_PRIVATE_KEY?: string;
   /** 易支付平台公钥（SPKI PEM，用于退款响应验签） */
   EPAY_PLATFORM_KEY?: string;
+  /** Turnstile 服务端校验密钥（wrangler secret 管理；未配置则跳过人机验证，本地/灰度期无感） */
+  TURNSTILE_SECRET_KEY?: string;
+  /** Turnstile 站点密钥（公开，经 /api/config 下发给前端，避免打进构建产物） */
+  TURNSTILE_SITE_KEY?: string;
 }

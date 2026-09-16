@@ -13,6 +13,7 @@ import { referralRoutes } from "./routes/referral";
 import { registerRoutes } from "./routes/register";
 import { ticketsRoutes } from "./routes/tickets";
 import { rateLimit } from "./middleware/rateLimit";
+import { turnstile } from "./middleware/turnstile";
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -39,22 +40,33 @@ app.use(
       }
       return "";
     },
-    allowHeaders: ["Content-Type", "Authorization", "x-admin-key", "x-node-key"],
+    allowHeaders: ["Content-Type", "Authorization", "x-admin-key", "x-node-key", "x-turnstile-token"],
     allowMethods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
   })
 );
 
 app.get("/health", (c) => c.json({ ok: true, service: "vpn-api" }));
 
+// 公共只读配置：前端拉取 Turnstile sitekey 决定是否渲染验证组件，
+// 避免把 sitekey 打进前端构建产物；未配置返回 null，前端据此跳过验证
+app.use("/api/config", rateLimit(30, 60_000));
+app.get("/api/config", (c) =>
+  c.json({ ok: true, data: { turnstile_site_key: c.env.TURNSTILE_SITE_KEY ?? null } })
+);
+
 // 敏感接口限流：找回、下单、反馈、登录链接、magic 核销
 app.use("/api/tokens/recover", rateLimit(10, 60_000));
-app.use("/api/tokens/trial", rateLimit(3, 60_000));
-app.use("/api/tokens/login-link", rateLimit(5, 60_000));
+// 匿名表单接口在限流之后追加 Turnstile 人机校验（先限流后人机校验，
+// 未配置 TURNSTILE_SECRET_KEY 时 turnstile 中间件自动放行）
+app.use("/api/tokens/trial", rateLimit(3, 60_000), turnstile);
+app.use("/api/tokens/login-link", rateLimit(5, 60_000), turnstile);
 app.use("/api/tokens/magic/consume", rateLimit(10, 60_000));
 app.use("/api/tokens/*/reset-penalty", rateLimit(5, 60_000));
 app.use("/api/tokens/*/upgrade", rateLimit(10, 60_000));
-app.use("/api/orders", rateLimit(20, 60_000));
-app.use("/api/feedback", rateLimit(5, 60_000));
+app.use("/api/orders", rateLimit(20, 60_000), turnstile);
+// 「我已支付」是公开接口且会触发站长邮件，限流防刷（订单级 6h 节流之外的第二道防线）
+app.use("/api/orders/*/notify-paid", rateLimit(10, 60_000), turnstile);
+app.use("/api/feedback", rateLimit(5, 60_000), turnstile);
 app.use("/api/register", rateLimit(10, 60_000));
 
 app.route("/api/plans", plansRoutes);

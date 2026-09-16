@@ -32,7 +32,7 @@ Token 制 VPN 服务（对外品牌 GameBoost / FasterGamer）：用户无需注
 - `index.ts`：Hono 入口。CORS 中间件、敏感接口限流、路由挂载；`fetch` 导出里检测 `env.ASSETS` 绑定，非 `/api` 请求转给 Static Assets（404 回退 `index.html` 实现 SPA）。
 - `routes/`：按资源分文件（`plans / orders / tokens / sub / register / referral / tickets / admin / nodes / agent`）。
 - `lib/`：业务逻辑库（激活、签发、订阅生成 `clash.ts`、授权快照/推送、邮件 `email-aliyun.ts`、风控通知、推荐返利等）。
-- `middleware/`：`admin.ts`（x-admin-key 鉴权）、`rateLimit.ts`。
+- `middleware/`：`admin.ts`（x-admin-key 鉴权）、`rateLimit.ts`、`turnstile.ts`（人机验证）。
 - `__tests__/`：vitest 测试，与被测模块的 lib 一一对应。
 
 ## 技术栈与配置要点
@@ -43,7 +43,8 @@ Token 制 VPN 服务（对外品牌 GameBoost / FasterGamer）：用户无需注
   - `wrangler.toml`：本地 `wrangler dev`（miniflare 模拟 KV，占位 id，`ENVIRONMENT=dev` 放行 localhost CORS）。
   - `wrangler.cf.toml`：生产部署（真实 KV 命名空间 + Static Assets 托管 `../../pages/dist` + 自定义域名 fastergamer.click，`ENVIRONMENT=production`）。
 - KV 命名空间共 5 个绑定：`TOKENS / PLANS / ORDERS / NODES / TICKETS`。
-- 密钥（`ADMIN_KEY`、`ALIYUN_*`、`ADMIN_NOTIFY_EMAIL`、`CLOUDFLARE_API_TOKEN` 等）放 `workers/api/.dev.vars`（本地，git 已忽略）或用 `wrangler secret put --config wrangler.cf.toml`（生产），**绝不入库**。模板见 `.dev.vars.example`。
+- 密钥（`ADMIN_KEY`、`ALIYUN_*`、`ADMIN_NOTIFY_EMAIL`、`CLOUDFLARE_API_TOKEN`、`TURNSTILE_SECRET_KEY` 等）放 `workers/api/.dev.vars`（本地，git 已忽略）或用 `wrangler secret put --config wrangler.cf.toml`（生产），**绝不入库**。模板见 `.dev.vars.example`。
+- 人机验证用 Cloudflare Turnstile：匿名表单接口（试用/下单/notify-paid/反馈/登录链接）在 rateLimit 后挂 `middleware/turnstile.ts`（token 走 `x-turnstile-token` 头，只校验 POST，GET 轮询不受影响）；前端 sitekey 经 `GET /api/config` 下发，组件在 `pages/src/components/Turnstile.tsx`。**未配置 `TURNSTILE_SECRET_KEY` 时全链路自动放行**（本地开发/灰度期），sitekey 配在 wrangler.cf.toml 的 vars（`TURNSTILE_SITE_KEY`），secret 用 secret put。
 - 支付通道（易支付 pay.neil.asia）**已彻底断开**（疑似诈骗）：下单与回调代码已删除，交易状态机保留——`POST /api/orders` 与升级补差价照常落 pending 订单（无支付凭证，暂无法付款，待新通道接入），状态查询/管理端取消可用。`lib/epay.ts` 仅保留退款代码（`refundEpayOrder`，SHA256WithRSA 签名，RSA 工具函数在 `lib/rsa-sign.ts`），但 `EPAY_*` 密钥已从生产删除，退款接口当前不可用，确需退款时重新 `secret put` 三项配置即可恢复。
 - 邮件走阿里云 DirectMail（`lib/email-aliyun.ts`）。
 

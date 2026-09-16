@@ -1,5 +1,6 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { FaqItem } from "../../../shared/types";
+import Turnstile, { type TurnstileHandle, type TurnstileState } from "../components/Turnstile";
 import { api } from "../services/api";
 
 const CATEGORIES = [
@@ -75,22 +76,30 @@ function FeedbackForm() {
   const [message, setMessage] = useState("");
   const [state, setState] = useState<"idle" | "sending" | "done">("idle");
   const [error, setError] = useState("");
+  // 人机验证：未启用时不拦截；启用后需先过验证拿到一次性 token
+  const [ts, setTs] = useState<TurnstileState>({ enabled: false });
+  const tsRef = useRef<TurnstileHandle>(null);
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (ts.enabled && !ts.token) return; // 已启用但验证未通过，按钮已禁用，这里兜底
     setError("");
     setState("sending");
     try {
-      await api.feedback({
-        contact,
-        message,
-        category,
-        token_id: tokenId.trim() || undefined,
-      });
+      await api.feedback(
+        {
+          contact,
+          message,
+          category,
+          token_id: tokenId.trim() || undefined,
+        },
+        ts.token
+      );
       setState("done");
     } catch (err) {
       setError((err as Error).message);
       setState("idle");
+      tsRef.current?.reset(); // token 一次性且 300s 过期，失败后重置重新获取
     }
   };
 
@@ -162,9 +171,10 @@ function FeedbackForm() {
           />
         </label>
         {error && <p className="text-sm text-rose-400">{error}</p>}
+        <Turnstile ref={tsRef} onStateChange={setTs} />
         <button
           type="submit"
-          disabled={state === "sending"}
+          disabled={state === "sending" || (ts.enabled && !ts.token)}
           className="rounded-lg bg-sky-500 px-6 py-2 text-sm font-medium hover:bg-sky-400 transition-colors disabled:opacity-50"
         >
           {state === "sending" ? "提交中…" : "提交反馈"}

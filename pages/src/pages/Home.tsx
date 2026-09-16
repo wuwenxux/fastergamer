@@ -1,7 +1,8 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import type { Plan } from "../../../shared/types";
 import PlanCard from "../components/PlanCard";
+import Turnstile, { type TurnstileHandle, type TurnstileState } from "../components/Turnstile";
 import { CLASH_DOWNLOADS, platformMatches, usePlatform } from "../components/ClashGuide";
 import { api } from "../services/api";
 
@@ -170,16 +171,21 @@ function TrialCard() {
   const [email, setEmail] = useState("");
   const [state, setState] = useState<"idle" | "sending" | "done">("idle");
   const [error, setError] = useState("");
+  // 人机验证：未启用时不拦截；启用后需先过验证拿到一次性 token
+  const [ts, setTs] = useState<TurnstileState>({ enabled: false });
+  const tsRef = useRef<TurnstileHandle>(null);
 
   const claim = async () => {
+    if (ts.enabled && !ts.token) return; // 已启用但验证未通过，按钮已禁用，这里兜底拦 Enter 提交
     setError("");
     setState("sending");
     try {
-      await api.claimTrial(email.trim(), savedRefCode());
+      await api.claimTrial(email.trim(), savedRefCode(), ts.token);
       setState("done");
     } catch (e) {
       setError((e as Error).message);
       setState("idle");
+      tsRef.current?.reset(); // token 一次性且 300s 过期，失败后重置重新获取
     }
   };
 
@@ -203,6 +209,7 @@ function TrialCard() {
         <h2 className="text-lg font-semibold">新用户免费体验 3 天</h2>
         <p className="text-sm text-slate-400">20GB 流量，输入邮箱立即领取，每个邮箱限领一次</p>
       </div>
+      <Turnstile ref={tsRef} onStateChange={setTs} />
       <div className="flex gap-2">
         <input
           type="email"
@@ -214,7 +221,7 @@ function TrialCard() {
         />
         <button
           onClick={claim}
-          disabled={state === "sending"}
+          disabled={state === "sending" || (ts.enabled && !ts.token)}
           className="rounded-lg bg-sky-500 px-5 py-2.5 text-sm font-medium hover:bg-sky-400 transition-colors disabled:opacity-50"
         >
           {state === "sending" ? "领取中…" : "免费领取"}
