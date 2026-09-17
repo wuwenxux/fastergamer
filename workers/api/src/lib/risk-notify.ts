@@ -7,16 +7,20 @@
  *
  * 客户要求只保留交易类与安全类邮件：traffic_80（流量 80%）、expire_24h（到期提醒）、
  * month80（月度配额预警）、borrow_N（预支提醒）等预警/催续费类邮件已全部下线。
+ * 例外：trial_convert（试用转化）——试用到期/流量耗尽时发一次性的同 token 充值引导，
+ * 属交易类触达，两条触发路径共用幂等键，只发一次。
  */
 
 import type { Node, Presence, Token } from "../../../../shared/types";
+import { createMagicTicket } from "./accounts";
 import { sendMail, shouldSendEmail } from "./email-aliyun";
 import { currentMonthKey } from "./nodes";
 import { siteUrl } from "./site-url";
 import type { Env } from "../types";
 
-function shell(env: Env, title: string, bodyHtml: string, bodyText: string) {
-  const tokenUrl = `${siteUrl(env)}/tokens`;
+function shell(env: Env, title: string, bodyHtml: string, bodyText: string, cta?: { url: string; label: string }) {
+  const ctaUrl = cta?.url ?? `${siteUrl(env)}/tokens`;
+  const ctaLabel = cta?.label ?? "查看我的 Token";
   const subject = `【GameBoost】${title}`;
   const html = `
 <!DOCTYPE html>
@@ -30,7 +34,7 @@ function shell(env: Env, title: string, bodyHtml: string, bodyText: string) {
   <div style="margin-top: 24px; padding: 20px; background: #f8fafc; border-radius: 12px;">
     ${bodyHtml}
     <div style="text-align: center; margin: 24px 0;">
-      <a href="${tokenUrl}" style="display: inline-block; background: #0ea5e9; color: #fff; padding: 12px 28px; border-radius: 8px; text-decoration: none; font-weight: 500;">查看我的 Token</a>
+      <a href="${ctaUrl}" style="display: inline-block; background: #0ea5e9; color: #fff; padding: 12px 28px; border-radius: 8px; text-decoration: none; font-weight: 500;">${ctaLabel}</a>
     </div>
   </div>
   <p style="margin-top: 24px; font-size: 13px; color: #94a3b8; text-align: center;">
@@ -39,7 +43,7 @@ function shell(env: Env, title: string, bodyHtml: string, bodyText: string) {
 </body>
 </html>
   `.trim();
-  const text = `${title}\n\n${bodyText}\n\n查看 Token：${tokenUrl}\n\n本邮件由 GameBoost 自动发送，如有疑问请联系售后。`;
+  const text = `${title}\n\n${bodyText}\n\n${ctaLabel}：${ctaUrl}\n\n本邮件由 GameBoost 自动发送，如有疑问请联系售后。`;
   return { subject, html, text };
 }
 
@@ -67,6 +71,39 @@ async function notifyOnce(
 }
 
 /**
+ * 试用转化邮件（一次性）：试用到期（notify-scan 翻转 expired）或试用流量提前耗尽时发送。
+ * 此刻剩余额度本就为零，不谈结转，只讲三件事：邮箱保留（token 可失效，邮箱永是续用凭证）、
+ * 随时可用它付费继续用、现在开通送一个月。免登录链接直达管理页。
+ * 两条触发路径共用幂等键 notify_log.trial_convert，不重复打扰；
+ * 调用方负责在返回后把 notify_log 变更键级合并写回（与 checkTokenRisks 同一约定）。
+ */
+export async function sendTrialConvertEmail(env: Env, token: Token): Promise<boolean> {
+  if (!shouldSendEmail(token.contact)) return false;
+  token.notify_log = token.notify_log ?? {};
+  if (token.notify_log.trial_convert) return false;
+  const ticket = await createMagicTicket(env, token.contact!, token.id, "login");
+  const magicUrl = `${siteUrl(env)}/auth/magic?ticket=${ticket}`;
+  const { subject, html, text } = shell(
+    env,
+    "体验已结束，现在开通送一个月",
+    `<p>你好，你的免费体验 Token（<strong>${token.id}</strong>）的额度已用完或已到期。</p>
+     <p>你的邮箱会保留：<strong>随时可以用它付费继续用</strong>；90 天内原 Token 可直接充值，订阅链接和已配置的设备都不用动。</p>
+     <p>现在开通付费套餐，<strong>额外赠送一个月（30 天）</strong>。</p>
+     <p style="color:#64748b;font-size:13px;">上面的按钮链接 72 小时内有效；过期了也没关系，随时可到 <a href="${siteUrl(env)}/recover" style="color:#0ea5e9;">找回页面</a> 输入邮箱重新获取。</p>`,
+    `你的免费体验 Token（${token.id}）的额度已用完或已到期。\n你的邮箱会保留：随时可以用它付费继续用；90 天内原 Token 可直接充值，订阅链接和设备不变。\n现在开通付费套餐，额外赠送一个月（30 天）。\n按钮链接 72 小时内有效；过期后可到找回页面重新获取：${siteUrl(env)}/recover`,
+    { url: magicUrl, label: "免登录开通，送一个月" }
+  );
+  const res = await sendMail(env, token.contact!, subject, html, text);
+  if (res.ok) {
+    token.notify_log.trial_convert = Date.now();
+    console.log(`[risk] notified ${token.id} kind=trial_convert`);
+  } else {
+    console.error(`[risk] notify failed ${token.id} kind=trial_convert: ${res.error}`);
+  }
+  return res.ok;
+}
+
+/**
  * 在 token 数据更新后调用：检查流量耗尽与多设备风险，必要时提醒客户。
  * 注意：本函数可能修改 notify_log；调用方负责在此函数返回后把 notify_log 变更
  * 键级合并写回（mergeTokenSettlement），且必须在结算字段写库之后调用。
@@ -79,15 +116,20 @@ export async function checkTokenRisks(env: Env, token: Token): Promise<void> {
 
   // 流量耗尽：进入 48 小时宽限期，优先引导续费，不立即断连
   if (limit > 0 && used >= limit) {
-    await notifyOnce(
-      env,
-      token,
-      "exhausted",
-      "流量已用完，请续费",
-      `<p>你好，你的 Token（<strong>${token.id}</strong>）流量额度 <strong>${limit} GB</strong> 已全部用完。</p>
-       <p>不会立即断线：<strong>48 小时内服务照常可用</strong>。请尽快到 <a href="${siteUrl(env)}" style="color: #0ea5e9;">官网</a> 购买新套餐；超过 48 小时未续费，服务才会暂停。</p>`,
-      `你的 Token（${token.id}）流量 ${limit} GB 已用完。\n48 小时内服务照常可用，请尽快到官网续费：${siteUrl(env)}\n超过 48 小时未续费，服务将暂停。`
-    );
+    // 试用 token 流量提前跑完：与到期共用转化邮件（同一幂等键），不发普通续费提醒
+    if (token.plan_id === "plan_3days") {
+      await sendTrialConvertEmail(env, token);
+    } else {
+      await notifyOnce(
+        env,
+        token,
+        "exhausted",
+        "流量已用完，请续费",
+        `<p>你好，你的 Token（<strong>${token.id}</strong>）流量额度 <strong>${limit} GB</strong> 已全部用完。</p>
+         <p>不会立即断线：<strong>48 小时内服务照常可用</strong>。请尽快到 <a href="${siteUrl(env)}" style="color: #0ea5e9;">官网</a> 购买新套餐；超过 48 小时未续费，服务才会暂停。</p>`,
+        `你的 Token（${token.id}）流量 ${limit} GB 已用完。\n48 小时内服务照常可用，请尽快到官网续费：${siteUrl(env)}\n超过 48 小时未续费，服务将暂停。`
+      );
+    }
   }
 
   // 疑似多设备/分享使用

@@ -148,6 +148,111 @@ describe("fulfillOrder · 升级订单（upgrade_token_id）", () => {
   });
 });
 
+describe("试用转正充值（plan_3days → 付费套餐，同一 token）", () => {
+  const makeTrial = (overrides: Partial<Token> = {}): Token => ({
+    id: "tk_trial",
+    uuid: "uuid-trial",
+    plan_id: "plan_3days",
+    status: "active",
+    contact: "user@example.com",
+    traffic_limit_gb: 20,
+    traffic_used_gb: 5,
+    purchased_at: Date.now() - 86_400_000,
+    activated_at: Date.now() - 86_400_000,
+    expires_at: Date.now() + 2 * 86_400_000, // 还剩 2 天
+    ...overrides,
+  });
+
+  const trialOrder = (targetPlan: string): Order => ({
+    id: "or_cv1",
+    plan_id: targetPlan,
+    status: "pending",
+    contact: "user@example.com",
+    payable_cny: 30,
+    upgrade_token_id: "tk_trial",
+    created_at: Date.now(),
+  });
+
+  it("月配额目标：+30 天 + 剩余时长并入，流量不结转（账期从零起）", async () => {
+    const { env, tokens, orders } = mockEnv();
+    seedToken(tokens, makeTrial({ traffic_by_node: { "node-hk": 5 * 1024 ** 3 } }));
+    const order = trialOrder("plan_quarterly");
+    orders.store.set(KV.ORDER + order.id, JSON.stringify(order));
+
+    const before = Date.now();
+    const result = await fulfillOrder(env, mockCtx(), order);
+    const upgraded = result.token!;
+
+    // 同一 token，uuid 不变
+    expect(upgraded.uuid).toBe("uuid-trial");
+    expect(upgraded.plan_id).toBe("plan_quarterly");
+    // 有效期 = 90 天套餐 + 30 天赠送 + 剩余约 2 天 ≈ 122 天
+    expect(upgraded.expires_at!).toBeGreaterThanOrEqual(before + 122 * 86_400_000 - 5000);
+    expect(upgraded.expires_at!).toBeLessThanOrEqual(before + 122 * 86_400_000 + 5000);
+    expect(upgraded.base_expires_at).toBe(upgraded.expires_at);
+    // 流量不结转：账期从零起，offset 只对齐当前 Xray 累计
+    expect(upgraded.month_used_bytes).toBe(0);
+    expect(upgraded.traffic_offset_bytes).toBe(5 * 1024 ** 3);
+    expect(upgraded.traffic_used_gb).toBe(0);
+    expect(upgraded.status).toBe("active");
+  });
+
+  it("无月配额目标：offset 只对齐当前累计，不加结转", async () => {
+    const { env, tokens, orders } = mockEnv();
+    seedToken(tokens, makeTrial({ traffic_by_node: { "node-hk": 5 * 1024 ** 3 } }));
+    const order = trialOrder("plan_monthly");
+    orders.store.set(KV.ORDER + order.id, JSON.stringify(order));
+
+    const before = Date.now();
+    const result = await fulfillOrder(env, mockCtx(), order);
+    const upgraded = result.token!;
+
+    // 有效期 = 30 天套餐 + 30 天赠送 + 剩余约 2 天 ≈ 62 天
+    expect(upgraded.expires_at!).toBeGreaterThanOrEqual(before + 62 * 86_400_000 - 5000);
+    expect(upgraded.traffic_offset_bytes).toBe(5 * 1024 ** 3);
+    expect(upgraded.month_used_bytes).toBeUndefined();
+    expect(upgraded.months_borrowed).toBeUndefined();
+  });
+
+  it("已过期的试用 token 充值：剩余时长为 0 仍送 30 天，状态恢复 active", async () => {
+    const { env, tokens, orders } = mockEnv();
+    seedToken(tokens, makeTrial({ status: "expired", expires_at: Date.now() - 86_400_000 }));
+    const order = trialOrder("plan_quarterly");
+    orders.store.set(KV.ORDER + order.id, JSON.stringify(order));
+
+    const before = Date.now();
+    const result = await fulfillOrder(env, mockCtx(), order);
+    const upgraded = result.token!;
+
+    expect(upgraded.status).toBe("active");
+    // 90 天套餐 + 30 天赠送，无剩余时长
+    expect(upgraded.expires_at!).toBeGreaterThanOrEqual(before + 120 * 86_400_000 - 5000);
+    expect(upgraded.expires_at!).toBeLessThanOrEqual(before + 120 * 86_400_000 + 5000);
+    // 流量不结转
+    expect(upgraded.month_used_bytes).toBe(0);
+  });
+
+  it("该邮箱已消费过转正赠送（marker.converted_at）：不再送 30 天，剩余时长仍照常并入", async () => {
+    const { env, tokens, orders } = mockEnv();
+    seedToken(tokens, makeTrial());
+    tokens.store.set(
+      KV.TRIAL + "user@example.com",
+      JSON.stringify({ token_id: "tk_trial", created_at: 1, converted_at: 2 })
+    );
+    const order = trialOrder("plan_quarterly");
+    orders.store.set(KV.ORDER + order.id, JSON.stringify(order));
+
+    const before = Date.now();
+    const result = await fulfillOrder(env, mockCtx(), order);
+    const upgraded = result.token!;
+
+    // 只有 90 天套餐 + 剩余约 2 天，无 30 天赠送
+    expect(upgraded.expires_at!).toBeGreaterThanOrEqual(before + 92 * 86_400_000 - 5000);
+    expect(upgraded.expires_at!).toBeLessThanOrEqual(before + 92 * 86_400_000 + 5000);
+    expect(upgraded.month_used_bytes).toBe(0);
+  });
+});
+
 describe("resetPenalty", () => {
   it("用量清零、有效期 -30 天（含 base_expires_at 同步），恢复 active", async () => {
     const tokens = mockNs();

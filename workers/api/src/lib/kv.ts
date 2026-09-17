@@ -287,6 +287,37 @@ export const listTokensByContact = async (env: Env, contact: string): Promise<To
   return tokens.sort((a, b) => (b.purchased_at ?? 0) - (a.purchased_at ?? 0));
 };
 
+/**
+ * 试用领取标记（trial:{email}）：试用转正激励的锚点。
+ * token 本身可被正常清理（未激活 3 天 / 过期 90 天），但只要这个邮箱领过试用，
+ * 首次付费都享受转正赠送（converted_at 消费标记，防重复领取赠送）。
+ */
+export interface TrialMarker {
+  token_id: string;
+  created_at: number;
+  /** 首次转正（付费）时间；已设置则转正赠送已消费，不再重复赠送 */
+  converted_at?: number;
+}
+
+export const getTrialMarker = async (env: Env, email: string): Promise<TrialMarker | null> => {
+  const raw = await env.TOKENS.get(KV.TRIAL + email.trim().toLowerCase());
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw) as TrialMarker;
+  } catch {
+    return null;
+  }
+};
+
+/** 消费转正赠送（读-改-写，KV 无 CAS，并发双赠窗口可接受） */
+export const markTrialConverted = async (env: Env, email: string): Promise<void> => {
+  const key = KV.TRIAL + email.trim().toLowerCase();
+  const marker = await getTrialMarker(env, email);
+  if (!marker || marker.converted_at) return;
+  marker.converted_at = Date.now();
+  await env.TOKENS.put(key, JSON.stringify(marker));
+};
+
 /** 列出所有订单（按前缀扫描） */
 export const listOrders = async (env: Env): Promise<Order[]> => {
   const keys = await listKeys(env.ORDERS, KV.ORDER);

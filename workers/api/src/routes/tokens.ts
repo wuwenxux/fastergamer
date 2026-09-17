@@ -19,7 +19,7 @@ import type { Env } from "../types";
 export const tokensRoutes = new Hono<{ Bindings: Env }>();
 
 /**
- * POST /api/tokens/trial —— 新用户免费体验：每个邮箱限领一次 3 天体验 token
+ * POST /api/tokens/trial —— 新用户免费体验：每个邮箱限领一次 7 天体验 token
  * 以 paid 状态发放（激活或首次导入订阅后才计时），凭证发到邮箱，
  * 响应只回 token 短 ID，不含 uuid。
  */
@@ -54,7 +54,7 @@ tokensRoutes.post("/trial", async (c) => {
     plan_id: plan?.id ?? "plan_3days",
     status: "paid", // 待激活，点击「激活」后开始计时
     contact: email,
-    traffic_limit_gb: plan?.traffic_limit_gb ?? 20,
+    traffic_limit_gb: plan?.traffic_limit_gb ?? 8,
     traffic_used_gb: 0,
     purchased_at: Date.now(),
   };
@@ -84,7 +84,7 @@ tokensRoutes.post("/trial", async (c) => {
       await sendTokenEmail(c.env, {
         tokenId: token.id,
         uuid: token.uuid,
-        planName: plan?.name ?? "3 天免费体验",
+        planName: plan?.name ?? "7 天免费体验",
         status: "paid",
         contact: email,
         magicUrl: `${site}/auth/magic?ticket=${ticket}`,

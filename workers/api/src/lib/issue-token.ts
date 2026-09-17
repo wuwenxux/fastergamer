@@ -7,7 +7,7 @@
 import { KV, type Order, type Plan, type Token } from "../../../../shared/types";
 import { isEmail, sendMail, sendTokenEmail, shouldSendEmail } from "./email-aliyun";
 import { createMagicTicket } from "./accounts";
-import { deleteTokenCascade, getPlans, getTokenById, listTokensByContact, saveOrder, saveToken } from "./kv";
+import { deleteTokenCascade, getPlans, getTokenById, getTrialMarker, listTokensByContact, markTrialConverted, saveOrder, saveToken } from "./kv";
 import { newTokenId } from "./ids";
 import { currentMonthKey } from "./nodes";
 import { rewardReferrerOnPayment } from "./referral";
@@ -36,35 +36,43 @@ export const issueTokenForOrder = async (
     traffic_used_gb: 0,
     purchased_at: Date.now(),
   };
-  // 试用转正合并：同邮箱有仍在有效期内的体验 token 时，剩余流量直接加进新 token 上限，
-  // 剩余时长记 bonus_ms（激活计时时并入），体验 token 随即吊销，避免双份并行使用。
+  // 试用转正合并：同邮箱有仍在有效期内的体验 token 时，剩余时长记 bonus_ms（激活计时时并入），
+  // 体验 token 随即吊销，避免双份并行使用。剩余流量不并入（客户决策：提前充值不送流量）。
   if (order.contact && isEmail(order.contact)) {
+    const email = order.contact.trim().toLowerCase();
     const now = Date.now();
-    const trials = (await listTokensByContact(env, order.contact)).filter(
+    const trials = (await listTokensByContact(env, email)).filter(
       (t) => t.plan_id === "plan_3days" && t.status === "active" && (t.expires_at ?? 0) > now
     );
     for (const t of trials) {
       token.bonus_ms = (token.bonus_ms ?? 0) + Math.max(0, t.expires_at! - now);
-      token.traffic_limit_gb += Math.max(0, (t.traffic_limit_gb ?? 0) - (t.traffic_used_gb ?? 0));
       t.status = "revoked";
       await saveToken(env, t);
+    }
+    // 试用转正激励（一次性，锚定邮箱的试用标记而非 token 存活）：
+    // 有激活中的试用 → 并入剩余时长 + 送 30 天；试用 token 已清理/从未激活 → 也送 30 天。
+    // 邮箱不变即权益不变——token 可以失效被清理，邮箱永远是续用凭证
+    const marker = await getTrialMarker(env, email);
+    if ((trials.length > 0 || marker) && !marker?.converted_at) {
+      token.bonus_ms = (token.bonus_ms ?? 0) + TRIAL_CONVERT_BONUS_MS;
+      if (marker) await markTrialConverted(env, email);
     }
   }
   await saveToken(env, token);
 
-  // 试用转正合并的额度说明（发货邮件里告知用户）
-  const mergedGb = token.traffic_limit_gb - (plan.traffic_limit_gb ?? 0);
+  // 试用转正合并的时长说明（发货邮件里告知用户）
+  const remainingDays = Math.max(0, Math.round(((token.bonus_ms ?? 0) - TRIAL_CONVERT_BONUS_MS) / 86_400_000));
   const mergeNote =
-    (token.bonus_ms ?? 0) > 0 || mergedGb > 0
-      ? `试用剩余${token.bonus_ms ? ` ${Math.ceil(token.bonus_ms / 86_400_000)} 天` : ""}${mergedGb > 0 ? ` ${mergedGb} GB` : ""} 额度已并入本套餐，不会浪费`
+    (token.bonus_ms ?? 0) > 0
+      ? `试用转正专享：另赠 30 天${remainingDays > 0 ? `；试用剩余 ${remainingDays} 天已并入本套餐，不会浪费` : ""}`
       : undefined;
 
-  // 如果联系方式是邮箱，自动发送凭证邮件（附带一次性免登录管理链接，免去手动登录）
+  // 如果联系方式是邮箱，自动发送凭证邮件（附带免登录管理链接，免去手动登录）
   if (shouldSendEmail(order.contact)) {
     ctx.waitUntil(
       (async () => {
         const site = siteUrl(env);
-        const ticket = await createMagicTicket(env, order.contact!, token.id);
+        const ticket = await createMagicTicket(env, order.contact!, token.id, "import");
         await sendTokenEmail(env, {
           tokenId: token.id,
           uuid: token.uuid,
@@ -81,10 +89,18 @@ export const issueTokenForOrder = async (
   return token;
 };
 
+/** 试用转正激励：赠送时长（30 天）。试用 token 充值/合并到付费套餐时生效，天然一次性（转正后 plan_id 已变更） */
+export const TRIAL_CONVERT_BONUS_MS = 30 * 86_400_000;
+
 /**
  * 升级订单发货：支付成功后升级既有 token（保留 id/uuid/设备槽位）。
  * 套餐、流量上限、设备上限换新；有效期从升级时刻按新套餐时长重计；
  * 流量记账清零（offset 基准对齐当前 Xray 累计值），月度配额账期重置。
+ *
+ * 试用转正（plan_3days → 付费套餐，即「给试用 token 充值」）额外激励：
+ * +30 天赠送时长（每邮箱一次性，由试用标记 trial:{email} 的 converted_at 把关，
+ * 防止「新购已赠送后又给同一邮箱的过期试用充值」重复赠送）、
+ * 试用期内的剩余时长并入有效期；剩余流量不结转（客户决策：提前充值不送流量）。
  */
 export const upgradeTokenForOrder = async (
   env: Env,
@@ -96,11 +112,22 @@ export const upgradeTokenForOrder = async (
   if (!token) throw new Error(`upgrade token '${order.upgrade_token_id}' not found`);
 
   const now = Date.now();
+  const fromTrial = token.plan_id === "plan_3days";
+  const trialRemainingMs = fromTrial ? Math.max(0, (token.expires_at ?? 0) - now) : 0;
+  // 30 天赠送每邮箱一次：标记缺失（存量数据/直接建站导入）视为未消费，照常赠送
+  let grantBonus = fromTrial;
+  if (fromTrial && token.contact && isEmail(token.contact)) {
+    const marker = await getTrialMarker(env, token.contact);
+    grantBonus = !marker?.converted_at;
+    if (grantBonus && marker) await markTrialConverted(env, token.contact);
+  }
+
   token.plan_id = plan.id;
   token.traffic_limit_gb = plan.traffic_limit_gb ?? 0;
   token.max_devices = plan.max_devices;
   if (!token.activated_at) token.activated_at = now;
-  token.expires_at = now + plan.duration_days * 86_400_000;
+  token.expires_at =
+    now + plan.duration_days * 86_400_000 + (grantBonus ? TRIAL_CONVERT_BONUS_MS : 0) + trialRemainingMs;
   if (plan.monthly_quota_gb) {
     token.base_expires_at = token.expires_at;
     token.months_borrowed = 0;
@@ -119,7 +146,7 @@ export const upgradeTokenForOrder = async (
   delete token.rate_window_bytes;
   delete token.traffic_exhausted_at;
   if (token.status !== "revoked") token.status = "active";
-  // 流量类提醒升级后可重新触发
+  // 流量类提醒升级后可重新触发；traffic_80 提醒已下线，删键仅为清理存量旧数据
   if (token.notify_log) {
     delete token.notify_log.traffic_80;
     delete token.notify_log.exhausted;
@@ -128,14 +155,23 @@ export const upgradeTokenForOrder = async (
   await saveToken(env, token);
 
   if (shouldSendEmail(order.contact)) {
+    const bonusParts: string[] = [];
+    if (grantBonus) bonusParts.push("已额外赠送 <strong>30 天</strong>");
+    if (trialRemainingMs > 0) bonusParts.push("试用剩余时长已并入有效期");
+    const bonusTextParts: string[] = [];
+    if (grantBonus) bonusTextParts.push("已额外赠送 30 天");
+    if (trialRemainingMs > 0) bonusTextParts.push("试用剩余时长已并入有效期");
+    const bonusHtml = bonusParts.length > 0 ? `<p>试用转正专享：${bonusParts.join("，")}。</p>` : "";
+    const bonusText = bonusTextParts.length > 0 ? `\n试用转正专享：${bonusTextParts.join("，")}。` : "";
     ctx.waitUntil(
       sendMail(
         env,
         order.contact!,
         "【GameBoost】套餐升级成功",
         `<p>你好，你的 Token（<strong>${token.id}</strong>）已升级为 <strong>${plan.name}</strong>。</p>
+         ${bonusHtml}
          <p>新有效期至 <strong>${new Date(token.expires_at!).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" })}</strong>，流量额度已重置为满额。订阅链接与设备保持不变，无需重新配置。</p>`,
-        `你的 Token（${token.id}）已升级为 ${plan.name}。新有效期至 ${new Date(token.expires_at!).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" })}，流量已重置为满额。订阅链接与设备不变。`
+        `你的 Token（${token.id}）已升级为 ${plan.name}。${bonusText}\n新有效期至 ${new Date(token.expires_at!).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" })}，流量已重置为满额。订阅链接与设备不变。`
       )
     );
   }

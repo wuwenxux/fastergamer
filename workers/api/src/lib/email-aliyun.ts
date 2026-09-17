@@ -20,7 +20,7 @@ interface TokenEmailContext {
   expiresAt?: number;
   /** 一键免登录管理链接（magic ticket，72 小时有效、期内可重复打开） */
   magicUrl?: string;
-  /** 试用转正并入的额度说明（如 "试用剩余 2 天 + 15 GB 已并入"），有值时在邮件里展示 */
+  /** 试用转正并入的时长说明（如 "另赠 30 天；试用剩余 2 天已并入"），有值时在邮件里展示 */
   mergeNote?: string;
 }
 
