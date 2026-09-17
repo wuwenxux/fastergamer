@@ -134,11 +134,6 @@ export const getNodeByKey = async (env: Env, key: string): Promise<Node | null> 
   return nodes.find((n) => n.key === key) ?? null;
 };
 
-export const getNodeById = async (env: Env, id: string): Promise<Node | null> => {
-  const nodes = await getNodes(env);
-  return nodes.find((n) => n.id === id) ?? null;
-};
-
 /** 当前自然月账期标识（UTC），如 "2026-08" */
 export const currentMonthKey = (now = new Date()): string =>
   `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, "0")}`;

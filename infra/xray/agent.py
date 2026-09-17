@@ -158,7 +158,6 @@ metrics_state = {
     "node_total_bytes": 0,
     "online_count": 0,
     "whitelist_size": 0,
-    "nodes_cached": 0,
     "last_sync_ok": False,
     "last_sync_at": 0,
     "users": {},
@@ -183,9 +182,6 @@ class AgentHandler(BaseHTTPRequestHandler):
         self.end_headers()
         if not head_only:
             self.wfile.write(data)
-
-    def do_HEAD(self):
-        self._handle(head_only=True)
 
     def do_GET(self):
         self._handle(head_only=False)
@@ -820,13 +816,13 @@ def main():
         f"listen={listen_addr}, xray_api={xray_api}"
     )
 
-    start_agent_server(env.get("AGENT_LISTEN", env.get("SUB_LISTEN", DEFAULT_AGENT_LISTEN)))
+    start_agent_server(env.get("AGENT_LISTEN", DEFAULT_AGENT_LISTEN))
 
     ledger = Ledger(env.get("LEDGER_FILE", DEFAULT_LEDGER_FILE))
     usage_map: dict[str, dict] = {}  # 快照下发的用量基数：uuid -> {used, limit, exhausted_at}
     quota_settled: set[str] = set()  # 已因触线结算过的 uuid（用量回落前不重复触发）
     allowed_list: list = []
-    nodes_cached = 0  # 最近一次同步快照里的节点数（仅用于 /api/metrics 展示）
+    last_sync_ok = False  # 最近一次配置拉取是否成功（跨周期保持，供 /api/metrics 展示）
     ever_synced = False  # 是否已完成过一次成功的配置拉取（未完成前 allowed 兜底读磁盘配置）
 
     cycle = 0
@@ -847,9 +843,9 @@ def main():
                             request_config_refresh()
                     else:
                         ever_synced = True
+                        last_sync_ok = True
                         allowed_list = sanitize_uuids(resp["data"]["uuids"])
                         usage_map = resp["data"].get("usage", {})
-                        nodes_cached = len(resp["data"].get("nodes", []))
                         new_config = build_xray_config(allowed_list, listen_addr, access_log=access_log, reality=reality)
                         # 同步用户自助封禁的 IP 到防火墙（与 Xray 配置变更无关）
                         sync_blocked_ips(resp["data"].get("blocked_ips", []))
@@ -920,7 +916,7 @@ def main():
                         else:
                             print(f"[info] no config change, {len(allowed_list)} active uuids")
                 except URLError as e:
-                    metrics_state["last_sync_ok"] = False
+                    last_sync_ok = False
                     print(f"[error] config fetch failed: {e}", file=sys.stderr)
                     if refresh:
                         # 推送触发的拉取失败：重新置标志，下个周期重试，别吞掉事件
@@ -1085,8 +1081,7 @@ def main():
                 "node_total_bytes": node_total_bytes,
                 "online_count": online_count,
                 "whitelist_size": len(allowed),
-                "nodes_cached": nodes_cached,
-                "last_sync_ok": True,
+                "last_sync_ok": last_sync_ok,
                 "last_sync_at": int(now),
                 "users": {
                     u: {"downlink_bytes": b, "online": bool(user_online.get(u))}

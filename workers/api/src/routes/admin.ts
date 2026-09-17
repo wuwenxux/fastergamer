@@ -10,7 +10,6 @@ import { getEpayConfig, refundEpayOrder } from "../lib/epay";
 import { computeRefundQuote } from "../lib/refund";
 import { resetPenalty } from "../lib/reset-penalty";
 import { restoreCredit } from "../lib/referral";
-import { withinTrafficAllowance } from "../lib/authsnapshot";
 import { pushAuthRefresh } from "../lib/authpush";
 import { escapeHtml } from "../lib/escape-html";
 import type { Env } from "../types";
@@ -127,35 +126,7 @@ adminRoutes.post("/seed", async (c) => {
 });
 
 /**
- * GET /api/admin/xray-clients —— 返回当前允许接入的 token UUID 列表（active、未过期、流量在额度或宽限期内）
- * 供 VPS 上的 Xray 同步脚本拉取使用
- * query raw=1 时只返回每行一个 UUID 的纯文本，方便 shell 处理
- */
-adminRoutes.get("/xray-clients", async (c) => {
-  const keys = await listKeys(c.env.TOKENS, KV.TOKEN);
-  const now = Date.now();
-  const uuids: string[] = [];
-  for (const key of keys) {
-    const raw = await c.env.TOKENS.get(key.name);
-    if (!raw) continue;
-    const token = JSON.parse(raw) as Token;
-    if (
-      token.status === "active" &&
-      (token.expires_at ?? 0) > now &&
-      withinTrafficAllowance(token, now)
-    ) {
-      uuids.push(token.uuid);
-      for (const d of token.devices ?? []) uuids.push(d.uuid);
-    }
-  }
-
-  if (c.req.query("raw") === "1") {
-    return c.text(uuids.join("\n"), 200, { "content-type": "text/plain" });
-  }
-  return c.json({ ok: true, data: { count: uuids.length, uuids } });
-});
-
-/** GET /api/admin/tokens —— 列出所有 token（含流量、在线状态）；?presence=1 时合并 presence（接入 IP 统计等），供运营分析 */
+ * GET /api/admin/tokens —— 列出所有 token（含流量、在线状态）；?presence=1 时合并 presence（接入 IP 统计等），供运营分析 */
 adminRoutes.get("/tokens", async (c) => {
   const keys = await listKeys(c.env.TOKENS, KV.TOKEN);
   const tokens: Token[] = [];

@@ -64,8 +64,8 @@ export const NODE_STAT_WRITE_MIN_INTERVAL_MS = 30 * 60_000;
 /**
  * GET /api/agent/config —— 节点 Agent 拉取本节点配置
  * 认证方式：header x-node-key
- * 返回：{ node: {...}, nodes: [...全部可用节点], uuids: [...active token uuid] }
- * nodes 仅用于节点侧 /api/metrics 的 nodes_cached 指标；订阅统一由中心 /api/sub 渲染
+ * 返回：{ node: {本节点连接配置}, uuids: [active token uuid], blocked_ips, usage }
+ * 订阅统一由中心 /api/sub 渲染，快照不再携带全节点列表
  */
 agentRoutes.get("/config", async (c) => {
   const key = c.req.header("x-node-key");
@@ -83,13 +83,9 @@ agentRoutes.get("/config", async (c) => {
   // 月流量超配额的节点返回空名单，agent 会清空 Xray clients，已连接设备随连接断开被切断
   const uuids = isBudgetExhausted(node) ? [] : snap.uuids;
   const allow = new Set(uuids);
-  // 部署初期 KV 里可能还躺着旧格式快照（无 usage/blockedByUuid 字段），兜底为空表
+  // 部署初期 KV 里可能还躺着旧格式快照（无 usage 字段），兜底为空表
   const usage = Object.fromEntries(
     Object.entries(snap.usage ?? {}).filter(([u]) => allow.has(u))
-  );
-  // per-(uuid, IP) 封禁表同样只下发名单内 uuid（节点超配时随空名单一起收敛）
-  const blockedByUuid = Object.fromEntries(
-    Object.entries(snap.blockedByUuid ?? {}).filter(([u]) => allow.has(u))
   );
 
   return c.json({
@@ -104,10 +100,8 @@ agentRoutes.get("/config", async (c) => {
         tls: node.tls,
         ws_path: node.ws_path,
       },
-      nodes: snap.nodes,
       uuids,
-      blocked_ips: snap.blockedIps, // 旧 agent 兼容（全局 iptables 封禁）；新 agent 用 blocked_by_uuid
-      blocked_by_uuid: blockedByUuid,
+      blocked_ips: snap.blockedIps, // 全局 iptables 封禁（agent 唯一消费的封禁路径）
       usage,
     },
   });
