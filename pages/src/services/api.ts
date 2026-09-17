@@ -15,11 +15,15 @@ interface Envelope<T = unknown> {
   error?: string;
 }
 
-/** Magic link 核销结果：会话凭证 + 邮箱 + 目标 token */
+/** Magic link 核销结果：会话凭证 + 邮箱 + 目标 token（sub_url/status 供落地页直接展示一键导入） */
 export interface MagicSession {
   session_token: string;
   email: string;
   token_id: string;
+  sub_url?: string;
+  status?: string;
+  /** 来源邮件用途：import=新 token 凭证邮件（落地导入卡片）；login=登录/转化邮件（落地管理页） */
+  purpose?: "import" | "login";
 }
 
 /**

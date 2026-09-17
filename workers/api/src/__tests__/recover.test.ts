@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { Hono } from "hono";
 import { KV, type Token } from "../../../../shared/types";
 import { tokensRoutes } from "../routes/tokens";
+import { MAIL_THROTTLE_LIMIT } from "../lib/mail-throttle";
 import type { Env } from "../types";
 
 /** 假 KV：map 实现，支持 list 前缀扫描（listTokensByContact 依赖） */
@@ -96,18 +97,19 @@ describe("POST /api/tokens/login-link（收件人节流）", () => {
   const app = new Hono<{ Bindings: Env }>();
   app.route("/api/tokens", tokensRoutes);
 
-  it("同一邮箱第 4 次起静默 ok，不发信（不跑 list）", async () => {
+  it("同一邮箱超小时后限返回 throttled 标记，不发信（不跑 list）", async () => {
     const { ns, store, list } = fakeNs();
     seedToken(store, "user@example.com", "tk_login_1");
     const env = makeEnv(ns);
-    for (let i = 0; i < 3; i++) {
+    for (let i = 0; i < MAIL_THROTTLE_LIMIT; i++) {
       const res = await post(app, "/api/tokens/login-link", "user@example.com", env);
       expect(res.status).toBe(200);
+      expect((await res.json()).data?.throttled).toBe(false);
     }
-    expect(list).toHaveBeenCalledTimes(3);
+    expect(list).toHaveBeenCalledTimes(MAIL_THROTTLE_LIMIT);
     const res = await post(app, "/api/tokens/login-link", "user@example.com", env);
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ ok: true });
-    expect(list).toHaveBeenCalledTimes(3);
+    expect(await res.json()).toEqual({ ok: true, data: { throttled: true } });
+    expect(list).toHaveBeenCalledTimes(MAIL_THROTTLE_LIMIT);
   });
 });

@@ -80,7 +80,7 @@ tokensRoutes.post("/trial", async (c) => {
       // 每邮箱限领一次之外再叠加收件人邮件节流（防邮件炸弹），超限静默不发
       if (!(await mailThrottleAllows(c.env, email))) return;
       const site = siteUrl(c.env);
-      const ticket = await createMagicTicket(c.env, email, token.id);
+      const ticket = await createMagicTicket(c.env, email, token.id, "import");
       await sendTokenEmail(c.env, {
         tokenId: token.id,
         uuid: token.uuid,
@@ -123,6 +123,10 @@ const isOwner = async (
   return !!account && !!token.contact && account.email === token.contact.trim().toLowerCase();
 };
 
+/** token 状态的中文标签（找回/登录链接邮件里的列表文案共用） */
+const statusLabel = (t: Token): string =>
+  t.status === "active" ? "使用中" : t.status === "paid" ? "待激活" : t.status === "expired" ? "已过期" : "已撤销";
+
 /**
  * POST /api/tokens/recover —— 凭联系方式找回 token
  * 安全考量：与 login-link 对齐——token 列表只发到邮箱，HTTP 响应无论邮箱是否
@@ -143,11 +147,9 @@ tokensRoutes.post("/recover", async (c) => {
   const tokens = await listTokensByContact(c.env, contact);
   if (tokens.length > 0) {
     const lines = tokens.map((t) => {
-      const statusLabel =
-        t.status === "active" ? "使用中" : t.status === "paid" ? "待激活" : t.status === "expired" ? "已过期" : "已撤销";
       const expiry = t.expires_at ? `，有效期至 ${new Date(t.expires_at).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" })}` : "";
       const usage = t.traffic_limit_gb > 0 ? `，已用流量 ${t.traffic_used_gb}/${t.traffic_limit_gb} GB` : "";
-      return { id: t.id, label: `${t.id} · ${statusLabel}${expiry}${usage}` };
+      return { id: t.id, label: `${t.id} · ${statusLabel(t)}${expiry}${usage}` };
     });
     const html = `
       <p>你好，以下是与该邮箱关联的 Token：</p>
@@ -173,8 +175,8 @@ tokensRoutes.get("/:id", async (c) => {
 
 /**
  * POST /api/tokens/login-link —— 发送免密登录链接（magic link）
- * 输入购买邮箱，把一次性登录链接发到邮箱（点开即登录进入管理页）。
- * 安全考量：链接带一次性 ticket（15 分钟有效、用后即焚），完整 token（含 uuid）
+ * 输入购买邮箱，把登录链接发到邮箱（点开即登录进入管理页）。
+ * 安全考量：链接带 ticket（72 小时有效，期内可重复打开），完整 token（含 uuid）
  * 只在登录后的 session 下返回。固定返回 ok，不泄露该邮箱是否购买过。
  */
 tokensRoutes.post("/login-link", async (c) => {
@@ -184,9 +186,10 @@ tokensRoutes.post("/login-link", async (c) => {
     return c.json({ ok: false, error: "请输入有效的邮箱地址" }, 400);
   }
 
-  // 收件人邮件节流（防邮件炸弹）：超限静默返回 ok，不发信也不跑全量 list
+  // 收件人邮件节流（防邮件炸弹）：超限返回 throttled 标记，前端提示用户去翻已发邮件
+  // （链接 72 小时有效）——静默 ok 会让真实用户误以为发送成功而干等
   if (!(await mailThrottleAllows(c.env, contact))) {
-    return c.json({ ok: true });
+    return c.json({ ok: true, data: { throttled: true } });
   }
 
   const tokens = await listTokensByContact(c.env, contact);
@@ -194,39 +197,46 @@ tokensRoutes.post("/login-link", async (c) => {
     const site = siteUrl(c.env);
     const items = await Promise.all(
       tokens.map(async (t) => {
-        const ticket = await createMagicTicket(c.env, contact, t.id);
+        const ticket = await createMagicTicket(c.env, contact, t.id, "login");
         const url = `${site}/auth/magic?ticket=${ticket}`;
-        const statusLabel =
-          t.status === "active" ? "使用中" : t.status === "paid" ? "待激活" : t.status === "expired" ? "已过期" : "已撤销";
         const expiry = t.expires_at ? `（有效期至 ${new Date(t.expires_at).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" })}）` : "";
-        return { url, label: `${t.id} · ${statusLabel}${expiry}` };
+        return { url, label: `${t.id} · ${statusLabel(t)}${expiry}` };
       })
     );
     const html = `
       <p>你好，点击以下链接即可直接登录并进入你的 Token 管理页（查看订阅链接、设备与用量）：</p>
       ${items.map((i) => `<p style="margin:12px 0;"><a href="${i.url}" style="color:#0ea5e9;">${i.label}</a></p>`).join("")}
-      <p style="color:#64748b;font-size:13px;">链接 15 分钟内有效、用一次即失效。如果这不是你本人的操作，请忽略本邮件；链接即登录凭证，请勿转发给他人。</p>`.trim();
-    const text = `点击以下链接直接登录你的 Token 管理页：\n\n${items.map((i) => `${i.label}\n${i.url}`).join("\n\n")}\n\n链接 15 分钟内有效、用一次即失效。如非本人操作请忽略。`;
+      <p style="color:#64748b;font-size:13px;">链接 72 小时内有效，可重复打开。如果这不是你本人的操作，请忽略本邮件；链接即登录凭证，请勿转发给他人。</p>`.trim();
+    const text = `点击以下链接直接登录你的 Token 管理页：\n\n${items.map((i) => `${i.label}\n${i.url}`).join("\n\n")}\n\n链接 72 小时内有效，可重复打开。如非本人操作请忽略。`;
     const res = await sendMail(c.env, contact, "【GameBoost】一键登录链接", html, text);
     if (!res.ok) console.error(`[login-link] mail failed for ${maskEmail(contact)}: ${res.error}`);
   }
-  return c.json({ ok: true });
+  return c.json({ ok: true, data: { throttled: false } });
 });
 
 /**
- * GET /api/tokens/magic/consume?ticket=xxx —— 核销一次性 ticket，换取 30 天 session
- * ticket 无论成功与否都会立即焚毁（防重放）
+ * GET /api/tokens/magic/consume?ticket=xxx —— 核销 ticket，换取长期 session
+ * ticket 72 小时内可重复核销（邮箱客户端预扫描/用户重复打开不失效）。
+ * 响应带 sub_url/status：落地页核销后直接展示一键导入，无需二次请求
  */
 tokensRoutes.get("/magic/consume", async (c) => {
   const ticket = c.req.query("ticket") ?? "";
   const data = await consumeMagicTicket(c.env, ticket);
   if (!data) {
-    return c.json({ ok: false, error: "登录链接已失效（过期或已被使用），请重新获取" }, 401);
+    return c.json({ ok: false, error: "登录链接已失效（过期），请重新获取" }, 401);
   }
   const sessionToken = await createSession(c.env, data.email);
+  const token = await getTokenById(c.env, data.token_id);
   return c.json({
     ok: true,
-    data: { session_token: sessionToken, email: data.email, token_id: data.token_id },
+    data: {
+      session_token: sessionToken,
+      email: data.email,
+      token_id: data.token_id,
+      sub_url: token ? `${siteUrl(c.env)}/api/sub?uuid=${token.uuid}` : undefined,
+      status: token?.status,
+      purpose: data.purpose ?? "login",
+    },
   });
 });
 

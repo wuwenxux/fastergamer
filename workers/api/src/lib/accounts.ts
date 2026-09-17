@@ -1,8 +1,8 @@
 /**
  * 会话与 magic link 免密登录
  *
- * 账号体系已简化为「邮箱即身份」：没有密码/注册，用户点邮件里的一次性
- * magic 链接换取 30 天会话。会话与 ticket 都存 TOKENS namespace。
+ * 账号体系已简化为「邮箱即身份」：没有密码/注册，用户点邮件里的 magic
+ * 链接换取长期会话。会话与 ticket 都存 TOKENS namespace。
  * 注意：KV TTL 不作为过期依据，过期时间一律手动判断。
  */
 import { KV, type MagicTicket } from "../../../../shared/types";
@@ -10,8 +10,10 @@ import type { Env } from "../types";
 
 /** 会话有效期 180 天，覆盖套餐周期，用户基本感知不到"登录" */
 export const SESSION_TTL_MS = 180 * 86_400_000;
-/** magic ticket 有效期 15 分钟，一次性使用 */
-export const MAGIC_TTL_MS = 15 * 60_000;
+/** magic ticket 有效期 72 小时：邮件里的链接会被邮箱客户端预扫描、也会被用户
+ *  隔天/重复打开，15 分钟一次性会导致大量「链接已失效」误报。邮件正文本身已携带
+ *  完整订阅链接（uuid 直连凭证），ticket 在 TTL 内可重复核销不扩大风险面 */
+export const MAGIC_TTL_MS = 72 * 3_600_000;
 
 interface SessionData {
   email: string;
@@ -46,31 +48,35 @@ export const getSessionAccount = async (
   }
 };
 
-/** 签发一次性 magic ticket，返回票据串（拼进登录链接） */
+/** 签发 magic ticket，返回票据串（拼进登录链接）；purpose 见 MagicTicket */
 export const createMagicTicket = async (
   env: Env,
   email: string,
-  tokenId: string
+  tokenId: string,
+  purpose?: MagicTicket["purpose"]
 ): Promise<string> => {
   const ticket = crypto.randomUUID() + crypto.randomUUID();
-  const data: MagicTicket = { email, token_id: tokenId, created_at: Date.now() };
+  const data: MagicTicket = { email, token_id: tokenId, created_at: Date.now(), purpose };
   await env.TOKENS.put(KV.MAGIC + ticket, JSON.stringify(data));
   return ticket;
 };
 
-/** 核销 magic ticket：无论成功与否都立即焚毁（一次性），过期/不存在返回 null */
+/** 核销 magic ticket：TTL 内可重复核销（邮箱预扫描/用户重复打开都安全），
+ *  过期或不存在返回 null。不再用后即焚——见 MAGIC_TTL_MS 注释 */
 export const consumeMagicTicket = async (
   env: Env,
   ticket: string
 ): Promise<MagicTicket | null> => {
   if (!/^[0-9a-f-]{36,}$/.test(ticket)) return null;
   const raw = await env.TOKENS.get(KV.MAGIC + ticket);
-  // 用后即焚，防重放；注意 workerd 磁盘 KV 删除不存在的 key 会抛 404，须先判断
-  if (raw) await env.TOKENS.delete(KV.MAGIC + ticket);
   if (!raw) return null;
   try {
     const data = JSON.parse(raw) as MagicTicket;
-    if (Date.now() - data.created_at > MAGIC_TTL_MS) return null;
+    if (Date.now() - data.created_at > MAGIC_TTL_MS) {
+      // 过期才焚毁，腾出 KV；有效期内的票据保留供重复打开
+      await env.TOKENS.delete(KV.MAGIC + ticket);
+      return null;
+    }
     return data;
   } catch {
     return null;

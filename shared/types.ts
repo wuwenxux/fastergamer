@@ -306,11 +306,13 @@ export interface FaqItem {
   category?: string;
 }
 
-/** 一次性 magic link 票据（登录用） */
+/** magic link 票据（登录用）：purpose 区分来源邮件——import=新 token 凭证邮件
+ * （落地展示一键导入卡片），login/缺省=登录链接/转化邮件（落地直接进管理页） */
 export interface MagicTicket {
   email: string;
   token_id: string;
   created_at: number;
+  purpose?: "import" | "login";
 }
 
 /**

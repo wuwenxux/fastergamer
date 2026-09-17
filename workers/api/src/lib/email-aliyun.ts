@@ -18,7 +18,7 @@ interface TokenEmailContext {
   status: "paid" | "active";
   contact: string;
   expiresAt?: number;
-  /** 一键免登录管理链接（一次性 magic ticket，15 分钟有效） */
+  /** 一键免登录管理链接（magic ticket，72 小时有效、期内可重复打开） */
   magicUrl?: string;
   /** 试用转正并入的额度说明（如 "试用剩余 2 天 + 15 GB 已并入"），有值时在邮件里展示 */
   mergeNote?: string;
@@ -183,7 +183,7 @@ export async function sendTokenEmail(
     </div>
 
     <p style="font-size: 14px; color: #64748b;">
-      ${ctx.magicUrl ? `上方按钮 15 分钟内有效（一次性），过期后可在 <a href="${tokensPage}" style="color: #0ea5e9;">我的 Token</a> 页面输入邮箱重新获取管理链接。` : ""}
+      ${ctx.magicUrl ? `上方按钮 72 小时内有效，可重复打开；过期后可在 <a href="${tokensPage}" style="color: #0ea5e9;">我的 Token</a> 页面输入邮箱重新获取管理链接。` : ""}
       如果忘记 Token ID，可凭此邮箱在 <a href="${recoverUrl}" style="color: #0ea5e9;">找回 Token</a> 页面查询。
     </p>
   </div>
@@ -217,7 +217,7 @@ GameBoost Token 凭证
 Token ID：${ctx.tokenId}
 状态：${ctx.status === "paid" ? "待激活" : "已激活"}
 ${ctx.expiresAt ? `有效期至：${new Date(ctx.expiresAt).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" })}\n` : ""}
-管理入口（${ctx.magicUrl ? "一键免登录，15 分钟内有效" : "网页"}）：${tokenUrl}
+管理入口（${ctx.magicUrl ? "一键免登录，72 小时内有效" : "网页"}）：${tokenUrl}
 找回 Token：${recoverUrl}
 订阅链接（粘贴到 Clash${ctx.status === "paid" ? "，首次导入自动激活并开始计时" : ""}）：${subUrl}
 
