@@ -19,6 +19,10 @@ sudo ufw allow 22/tcp
 sudo ufw allow 80/tcp
 sudo ufw allow 443/tcp
 
+# 出站封 SMTP：防滥用者用节点发垃圾邮件把出口 IP 送进黑名单（代理落地不需要直连 SMTP）
+sudo ufw deny out 25/tcp
+sudo ufw deny out 465/tcp
+
 # 默认拒绝入站
 sudo ufw default deny incoming
 sudo ufw default allow outgoing

@@ -150,8 +150,10 @@ $SSH_WAFER "$SUDO bash /tmp/deploy-agent.sh $NODE_KEY >/dev/null && rm /tmp/depl
 echo "✓ agent 已部署"
 
 # ---------- 7. 防火墙 ----------
-step 7 "配置 ufw（22/80/443 + 8444 Reality + 8445 hy2）"
-$SSH_WAFER "$SUDO bash -c 'ufw allow 22/tcp && ufw allow 80/tcp && ufw allow 443/tcp && ufw allow 8444/tcp && ufw allow 8445/udp && ufw default deny incoming && ufw default allow outgoing && yes | ufw enable' >/dev/null 2>&1"
+# 出站封 25/465（SMTP）：防滥用者用节点发垃圾邮件把出口 IP 送进黑名单连累真实用户；
+# 代理落地不需要直连 SMTP，正常用户无感知
+step 7 "配置 ufw（22/80/443 + 8444 Reality + 8445 hy2，出站封 25/465 SMTP）"
+$SSH_WAFER "$SUDO bash -c 'ufw allow 22/tcp && ufw allow 80/tcp && ufw allow 443/tcp && ufw allow 8444/tcp && ufw allow 8445/udp && ufw deny out 25/tcp && ufw deny out 465/tcp && ufw default deny incoming && ufw default allow outgoing && yes | ufw enable' >/dev/null 2>&1"
 echo "✓ ufw 已启用"
 
 # ---------- 8. 验证 ----------

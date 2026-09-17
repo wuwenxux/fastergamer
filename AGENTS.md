@@ -109,6 +109,7 @@ bash scripts/deploy-cf.sh --build   # 前端有改动，先构建 pages/dist
 ## 安全注意事项
 
 - 防白嫖：试用/下单拒绝一次性临时邮箱（`lib/disposable-email.ts` 域名黑名单）；试用叠加每 IP 每天限领一次（`trialip:{ip}` TTL 24h）；`notify-scan` 顺带清理超 3 天未激活的体验 token。
+- 机房 IP 滥用识别与限速（`lib/abuse.ts`，仅体验 token `plan_3days`，付费 token 误伤成本高不参与）：结算后按 `presence.traffic_by_ip` 判定——机房/代理 IP 估算流量 >0.5GB 且占接入总流量 >50%（ip-api.com 批量分类 + `HOSTING_RE` 关键词兜底，与 `scripts/user-audit.mjs` 同口径；分类缓存 `ipinfo:{ip}` TTL 30 天，只对新 IP 查询）。处置是**限速不撤销**：打 `abuse_machine` 标记 + 邮件通知站长一次（幂等键 `notify_log.abuse_machine`），被标记 token 每日定额 500MB（`ABUSE_DAILY_BYTES`，24h 滚动窗口复用 rate_window 模式），窗口内超限写 `abuse_suspended_until` 暂停到窗口终点并推送授权刷新（`getAuthSnapshot` 生成侧排除暂停中的 uuid，快照 TTL 内自然恢复，反复暂停只记日志不发邮件）。IP 分类查询失败 fail-open：本次跳过判定，绝不因分类失败误标；误伤解除=管理端清除 token 的 `abuse_machine` 字段。节点侧配套 ufw 出站封 25/465（SMTP），防垃圾邮件滥用把出口 IP 送进黑名单。
 - `.dev.vars`、SSH 私钥等绝不提交、不读取外传；`.gitignore` 已覆盖。
 - CORS 只允许同源与 fastergamer.cn；localhost 仅 `ENVIRONMENT=dev` 放行——改 CORS 逻辑时必须保持这条不变（有 `cors.test.ts` 回归测试）。
 - token 校验在节点 Xray 层完成（uuid 不在 clients 列表直接拒绝），Worker 侧不接触用户流量。

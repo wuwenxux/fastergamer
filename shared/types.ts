@@ -103,6 +103,14 @@ export interface Token {
   blocked_ips?: string[];
   /** 已发送过的风险提醒（类型 → 发送时间戳），防止重复打扰 */
   notify_log?: Record<string, number>;
+  /** 机房滥用标记：体验 token 被判定为机器（机房/代理 IP 流量为主）后置 true，转每日定额限速，不撤销 */
+  abuse_machine?: boolean;
+  /** 机器限速的 24h 滚动窗口起点（unix 毫秒） */
+  abuse_window_start?: number;
+  /** 当前限速窗口内已用流量（bytes），超 ABUSE_DAILY_BYTES 即暂停到窗口终点 */
+  abuse_window_bytes?: number;
+  /** 暂停截止时间（unix 毫秒，= 窗口起点 + 24h）；0/缺省表示未暂停。授权快照生成时排除暂停未到期的 token */
+  abuse_suspended_until?: number;
   /** 流量速率窗口起点（unix 毫秒），用于暴增检测 */
   rate_window_start?: number;
   /** 当前速率窗口内新增流量（bytes） */
@@ -360,4 +368,5 @@ export const KV = {
   REFERRAL: "referral:", // referral:{被邀请人email} → { referrer_email, created_at }（存 TOKENS namespace）
   REG: "reg:", // reg:{账号email} → Registration JSON（防失联登记，存 TOKENS namespace）
   MAILTHROTTLE: "mailthrottle:", // mailthrottle:{sha1(email)} → 计数（收件人邮件节流，1h TTL，存 TOKENS namespace）
+  IPINFO: "ipinfo:", // ipinfo:{ip} → 机房/代理分类缓存（TTL 30 天，体验 token 滥用判定用，存 TOKENS namespace）
 } as const;

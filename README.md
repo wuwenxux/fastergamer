@@ -130,6 +130,7 @@ curl -s -X POST https://fastergamer.click/api/admin/seed \
 - 退款：管理员调 `/api/admin/orders/:id/refund`，默认折算（body.money 可人工覆盖金额，不超过实付，覆盖时不扣手续费）：月付按剩余天数退；季付/年付扣除当月、按剩余整月退，促销赠送月（plan.bonus_days）不参与折算，消耗进入赠送期则无可退余额；默认折算均扣 1% 退款手续费（客户承担，按订单实付总额计）；成功后撤销对应 token；依赖商户后台开启「订单退款API接口开关」
 - 风险提醒：流量耗尽、同一 token 多设备在线时自动邮件提醒客户（每类幂等只发一次）；试用 token 耗尽时改发转化邮件；其余预警/催续费类邮件（traffic_80、到期提醒等）已全部下线
 - 流量暴增告警：单 token 1 小时内新增 >10GB 时邮件告警客户与管理员（24h 幂等），止血用 rotate-uuid 或撤销；给客户续命用 reset-penalty（管理端售后与用户自助同一逻辑：用量清零恢复满额，有效期 -30 天，offset 记账不受 Xray 累计值影响）
+- 机房滥用识别与限速：体验 token 的接入流量若主要来自机房/代理 IP（>0.5GB 且占比 >50%，与 scripts/user-audit.mjs 同口径）即判定为机器——不撤销，打 abuse_machine 标记并邮件通知站长一次（幂等键 abuse_machine），转每日 500MB 定额（24h 滚动窗口），超限暂停到窗口重置后自动恢复（授权快照生成侧摘除/放回）；IP 分类查询失败 fail-open 不误标，误伤由管理端清除 abuse_machine 解除；付费 token 不参与
 - 节点月配额：节点可配 `monthly_budget_gb`（PUT /api/admin/nodes/:id），按自然月记账；80% 告警，100% 自动从订阅与同步摘除，跨月自动恢复
 - 节点失联告警：`scripts/probe-nodes.sh`（cron 每 5 分钟）从国内探测各节点 /ping，连续 2 次失败邮件告警，恢复后自动通知
 - 数据生命周期：expired/revoked 满 90 天的 token 由 notify-scan 自动清除（含 id 索引与全部设备索引，试用 token 同样适用）；closed 满 90 天的工单同样清理（已沉淀 FAQ 的保留）；付费 token 过期后不可重新激活，需购买新套餐；试用 token 可失效被清理，但试用标记 trial:{email} 永存——邮箱永是续用凭证，首次付费仍享转正赠送（见上条）

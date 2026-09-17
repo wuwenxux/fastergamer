@@ -10,6 +10,7 @@ import {
   type TokenSettlementPatch,
 } from "../lib/kv";
 import { checkNodeBudget, checkTokenRisks, updateSpikeWindow, sendSpikeAlert, notifyIpChange, resolveIpLocationChange } from "../lib/risk-notify";
+import { checkTrialAbuse, applyAbuseWindow } from "../lib/abuse";
 import { getAuthSnapshot, TRAFFIC_GRACE_MS } from "../lib/authsnapshot";
 import { pushAuthRefresh } from "../lib/authpush";
 import type { Env } from "../types";
@@ -160,6 +161,10 @@ async function applyTrafficDelta(
   // 流量暴增检测的窗口记账（纯计算）：1h 窗口内新增超阈值时，写库后告警客户与管理员
   const spike = updateSpikeWindow(token, delta, now);
 
+  // 机器标记 token 的每日定额记账（纯计算）：窗口内超 500MB 暂停到 24h 窗口终点，
+  // 写库后推送授权刷新把 uuid 从节点摘除；窗口过期后快照生成侧自然恢复
+  const abuseSuspended = applyAbuseWindow(token, delta, now);
+
   // 接入 IP 统计：把本次增量按连接数比例分摊到各来源 IP（估算，写 presence）
   // 活跃 IP 与上次不一致 = 接入地址变更，写库后提醒本人自查（本人换网络属正常）
   attributeIpTraffic(presence, conns, delta, now);
@@ -233,6 +238,9 @@ async function applyTrafficDelta(
     months_borrowed: token.months_borrowed,
     rate_window_start: token.rate_window_start,
     rate_window_bytes: token.rate_window_bytes,
+    abuse_window_start: token.abuse_window_start,
+    abuse_window_bytes: token.abuse_window_bytes,
+    abuse_suspended_until: token.abuse_suspended_until,
     notify_log: token.notify_log,
   };
   if (device) {
@@ -262,6 +270,12 @@ async function applyTrafficDelta(
   if (JSON.stringify(token.notify_log ?? {}) !== notifyBase) {
     await mergeTokenSettlement(env, token.uuid, { notify_log: token.notify_log });
   }
+  // 机房 IP 滥用检查（仅体验 token，内部先过 plan/status/幂等/总量阈值等廉价闸口再查 IP 分类）：
+  // 放在结算与通知写库之后（含 ip-api/邮件 await，标记走独立重读-合并写，不与结算合并写打架）；
+  // 命中只打 abuse_machine 限速标记（不改变授权状态），无需推送节点刷新
+  await checkTrialAbuse(env, token, presence);
+  // 机器限速窗口本次新超限：推送全节点刷新，快照生成侧会把暂停中的 uuid 摘掉
+  if (abuseSuspended) authChanged = true;
   return authChanged;
 }
 

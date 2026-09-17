@@ -70,6 +70,8 @@ export async function computeAuthSnapshot(env: Env) {
     for (const ip of token.blocked_ips ?? []) blockedIps.add(ip);
     if (
       token.status === "active" &&
+      // 机器标记 token 每日定额超限：暂停期内从授权名单摘除，窗口过期后自然恢复
+      (token.abuse_suspended_until ?? 0) <= now &&
       (token.expires_at ?? 0) > now &&
       withinTrafficAllowance(token, now)
     ) {
