@@ -110,7 +110,7 @@ export default function Home() {
   );
 }
 
-/** 免费体验领取卡片：输入邮箱领 3 天 20GB，凭证发到邮箱，每邮箱限一次 */
+/** 免费体验领取卡片：输入邮箱领 7 天 8GB，凭证发到邮箱，每邮箱限一次 */
 function TrialCard() {
   const [email, setEmail] = useState("");
   const [state, setState] = useState<"idle" | "sending" | "done">("idle");
@@ -138,7 +138,7 @@ function TrialCard() {
       <section className="max-w-xl mx-auto rounded-2xl border border-emerald-500/50 bg-emerald-500/10 p-6 text-center space-y-2">
         <h2 className="text-lg font-semibold text-emerald-300">体验凭证已发送 ✅</h2>
         <p className="text-sm text-slate-300">
-          3 天 · 20GB 体验 token 已发到你的邮箱，按邮件里的指引导入 Clash 即可使用；
+          7 天 · 8GB 体验 token 已发到你的邮箱，按邮件里的指引导入 Clash / sing-box 即可使用；
           也可在
           <Link to="/tokens" className="text-sky-400 hover:underline"> 我的 Token </Link>
           输入邮箱一键登录查看。
@@ -150,8 +150,8 @@ function TrialCard() {
   return (
     <section className="max-w-xl mx-auto rounded-2xl border border-sky-500/40 bg-sky-500/5 p-6 space-y-4">
       <div className="text-center space-y-1">
-        <h2 className="text-lg font-semibold">新用户免费体验 3 天</h2>
-        <p className="text-sm text-slate-400">20GB 流量，输入邮箱立即领取，每个邮箱限领一次</p>
+        <h2 className="text-lg font-semibold">新用户免费体验 7 天</h2>
+        <p className="text-sm text-slate-400">8GB 流量，输入邮箱立即领取，每个邮箱限领一次</p>
       </div>
       <Turnstile ref={tsRef} onStateChange={setTs} />
       <div className="flex gap-2">

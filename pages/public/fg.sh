@@ -35,7 +35,7 @@ case "$OS" in
 esac
 
 bold "== FasterGamer 命令行助手 =="
-say "官网：$SITE （没买套餐？先到官网领 30 天免费体验）"
+say "官网：$SITE （没买套餐？先到官网领 7 天 8GB 免费体验）"
 hr
 say "检测到你的系统：$OS / $ARCH"
 

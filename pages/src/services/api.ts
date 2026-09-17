@@ -231,7 +231,7 @@ export const api = {
       body: JSON.stringify(input),
     }),
 
-  /** 领取免费体验（每邮箱一次，3 天 20GB，凭证发到邮箱）；ref 为推广码 */
+  /** 领取免费体验（每邮箱一次，7 天 8GB，凭证发到邮箱）；ref 为推广码 */
   claimTrial: (email: string, ref?: string, turnstileToken?: string) =>
     request<{ token_id: string }>("/api/tokens/trial", {
       method: "POST",

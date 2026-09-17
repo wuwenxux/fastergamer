@@ -13,7 +13,7 @@ $SITE = "https://fastergamer.click"
 function Hr { Write-Host "────────────────────────────────────────" }
 
 Write-Host "== FasterGamer 命令行助手（Windows）==" -ForegroundColor Cyan
-Write-Host "官网：$SITE （没买套餐？先到官网领 30 天免费体验）"
+Write-Host "官网：$SITE （没买套餐？先到官网领 7 天 8GB 免费体验）"
 Hr
 
 # ---------- 1. 架构 ----------

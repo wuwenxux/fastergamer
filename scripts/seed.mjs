@@ -6,8 +6,8 @@
  *   node scripts/seed.mjs [API_BASE] [ADMIN_KEY]
  * 默认 API_BASE=http://localhost:8787，ADMIN_KEY=change-me-in-production
  *
- * 注意：此文件与线上 PLANS KV 保持一致（2026-09-06 同步）。
- * 个人付费最低档为 ¥120 年付（月付/季付已下线）；免费体验 1 台设备；
+ * 注意：此文件与线上 PLANS KV 保持一致（2026-09-13 同步）。
+ * 个人付费最低档为 ¥12 月付（月付/季付已于 2026-09-13 重新上线）；免费体验 1 台设备；
  * 企业套餐单独档位（20 台共享池 ¥998/年起，30 台独享 VPS 大带宽 ¥1988/年）。
  */
 const [base = "http://localhost:8787", adminKey = "change-me-in-production"] =
@@ -16,26 +16,59 @@ const [base = "http://localhost:8787", adminKey = "change-me-in-production"] =
 const plans = [
   {
     "id": "plan_3days",
-    "name": "3 天免费体验",
-    "duration_days": 3,
+    "name": "7 天免费体验",
+    "duration_days": 7,
     "price_cny": 0,
-    "traffic_limit_gb": 20,
+    "traffic_limit_gb": 8,
     "max_devices": 1,
     "tag": "新用户体验",
-    "description": "3 天免费体验，20 GB 总流量，1 台设备（首页免费领取，不出售）",
+    "description": "7 天免费体验，8 GB 总流量，1 台设备（首页免费领取，不出售）",
     "features": [
-      "20 GB 流量",
+      "8 GB 流量",
       "1 台设备",
       "全部节点可用"
     ],
     "pitch": "先试用，好用再买"
   },
   {
+    "id": "plan_monthly",
+    "name": "月付套餐",
+    "duration_days": 30,
+    "price_cny": 12,
+    "traffic_limit_gb": 20,
+    "max_devices": 3,
+    "tag": "个人轻量",
+    "description": "30 天有效，20 GB 总流量，3 台设备",
+    "features": [
+      "20 GB / 30 天",
+      "3 台设备",
+      "多地域自动切换"
+    ],
+    "pitch": "一个人的日常加速"
+  },
+  {
+    "id": "plan_quarterly",
+    "name": "季付套餐",
+    "duration_days": 90,
+    "price_cny": 30,
+    "traffic_limit_gb": 60,
+    "max_devices": 3,
+    "monthly_quota_gb": 20,
+    "tag": "个人常用",
+    "description": "90 天有效，每月 20GB（用超预支下月，有效期提前），3 台设备",
+    "features": [
+      "每月 20 GB",
+      "3 台设备",
+      "多地域自动切换"
+    ],
+    "pitch": "手机电脑同时在线"
+  },
+  {
     "id": "plan_yearly",
-    "name": "年付套餐",
+    "name": "连续包年",
     "duration_days": 395,
     "bonus_days": 30,
-    "price_cny": 120,
+    "price_cny": 110,
     "traffic_limit_gb": 260,
     "max_devices": 3,
     "monthly_quota_gb": 20,
@@ -46,7 +79,25 @@ const plans = [
       "3 台设备",
       "多地域自动切换"
     ],
-    "pitch": "买 12 个月送 1 个月，最划算"
+    "pitch": "买 12 个月送 1 个月"
+  },
+  {
+    "id": "plan_2years",
+    "name": "两年付套餐",
+    "duration_days": 850,
+    "bonus_days": 120,
+    "price_cny": 220,
+    "traffic_limit_gb": 560,
+    "max_devices": 3,
+    "monthly_quota_gb": 20,
+    "tag": "长期超值",
+    "description": "28 个月有效（买两年送 4 个月），每月 20GB（用超预支下月，有效期提前），3 台设备",
+    "features": [
+      "每月 20 GB",
+      "3 台设备",
+      "多地域自动切换"
+    ],
+    "pitch": "买 24 个月送 4 个月，最划算"
   },
   {
     "id": "plan_yearly_plus",
