@@ -1,8 +1,12 @@
 #!/usr/bin/env python3
 # 客户端安装包自动更新：跟进 GitHub 官方最新 release，同步到 R2 桶 fg-clients。
+# 另每日同步 sing-box CN 分流规则集（geosite-cn / geosite-gfw / geoip-cn 的 .srs，
+# 官方挂在 rule-set 分支而非 release）到 rules/ 前缀，供 sing-box 订阅引用。
 #
-# 协议约束（重要）：只从 clash-verge-rev 与 ClashMetaForAndroid 两个仓库取包——
-# 两者均为 mihomo / Clash Meta 内核，原生支持本站节点的 VLESS + WebSocket 协议。
+# 协议约束（重要）：只从 clash-verge-rev、ClashMetaForAndroid 与 SagerNet/sing-box
+# 三个官方仓库取包——前两者为 mihomo / Clash Meta 内核，原生支持本站节点的
+# VLESS + WebSocket 协议；sing-box 官方 Android 客户端 SFA 免费且支持
+# VLESS + WS / Reality / Hysteria2，供 Android 用户直装。
 # 不引入其他客户端；若某次 release 缺了预期资产（可能是上游改名/删包），
 # 该仓库本次直接跳过并保留旧版，绝不把不完整的版本推给用户。
 #
@@ -53,8 +57,7 @@ assert ENV.get("CLOUDFLARE_API_TOKEN"), "缺少 CLOUDFLARE_API_TOKEN（放 worke
 WRANGLER_CWD = os.path.join(ROOT, "workers", "api")
 
 # (仓库, state 键, [(资产匹配谓词, R2 固定对象名)])
-REPOS = [
-    (
+REPOS = [    (
         "clash-verge-rev/clash-verge-rev",
         "clash_verge",
         [
@@ -72,6 +75,35 @@ REPOS = [
         [
             (lambda n: "meta-arm64-v8a" in n and n.endswith(".apk"), "cmfa-android-arm64-v8a.apk"),
         ],
+    ),
+    (
+        "SagerNet/sing-box",
+        "sfa",
+        [
+            # universal 包全架构；注意排除 legacy-android-5 变体
+            (
+                lambda n: n.startswith("SFA-") and n.endswith("-universal.apk") and "legacy" not in n,
+                "sfa-android-universal.apk",
+            ),
+        ],
+    ),
+]
+
+# sing-box CN 分流规则集：官方编译产物挂在 rule-set 分支（release 里只有旧版 .db）。
+# 每天全量拉一次传 R2（文件总量 ~2MB），订阅里引用 dl.fastergamer.click 固定地址。
+# 注意 geosite-geolocation-!cn.srs 文件名带 "!"，R2 对象改用 geosite-gfw.srs 规避 URL 转义问题。
+RULE_SETS = [
+    (
+        "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-cn.srs",
+        "rules/geosite-cn.srs",
+    ),
+    (
+        "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-geolocation-%21cn.srs",
+        "rules/geosite-gfw.srs",
+    ),
+    (
+        "https://raw.githubusercontent.com/SagerNet/sing-geoip/rule-set/geoip-cn.srs",
+        "rules/geoip-cn.srs",
     ),
 ]
 
@@ -94,10 +126,24 @@ def run(cmd, **kw):
 
 
 def r2_put(obj, path, content_type=None):
-    cmd = ["npx", "wrangler", "r2", "object", "put", f"{BUCKET}/{obj}", "--file", path, "--remote"]
-    if content_type:
-        cmd += ["--content-type", content_type]
-    run(cmd, cwd=WRANGLER_CWD, env=ENV, capture_output=True, text=True)
+    # 本机到 CF API 链路不稳（部署同样因此走 hk02），上传经 hk02 执行 wrangler；
+    # 文件先 scp 上去，用完即删
+    remote_tmp = f"/tmp/fg-r2put-{os.path.basename(path)}"
+    run(["scp", "-i", os.path.expanduser("~/.ssh/id_ed25519_cloudvpn"), "-o", "BatchMode=yes",
+         "-q", path, f"{HK02}:{remote_tmp}"])
+    try:
+        cmd = [
+            "cd ~/cloudflare/workers/api &&",
+            "CLOUDFLARE_ACCOUNT_ID=53c1260d62876909566dc69e758d5c36",
+            f"CLOUDFLARE_API_TOKEN='{ENV['CLOUDFLARE_API_TOKEN']}'",
+            "~/cloudflare/node_modules/.bin/wrangler r2 object put",
+            f"'{BUCKET}/{obj}' --file '{remote_tmp}' --remote",
+        ]
+        if content_type:
+            cmd += ["--content-type", content_type]
+        run(SSH + [HK02, " ".join(cmd)], capture_output=True, text=True)
+    finally:
+        subprocess.run(SSH + [HK02, f"rm -f {remote_tmp}"])
 
 
 def update_repo(repo, key, matchers, state, versions):
@@ -141,6 +187,27 @@ def update_repo(repo, key, matchers, state, versions):
         subprocess.run(SSH + [HK02, f"rm -rf {REMOTE_DIR}"])
 
 
+def sync_rule_sets():
+    """规则集每日全量同步：raw.githubusercontent 国内不可达，经 hk02 中转下载后传 R2"""
+    tmp = tempfile.mkdtemp(prefix="fg-rules-")
+    try:
+        run(SSH + [HK02, f"rm -rf {REMOTE_DIR} && mkdir -p {REMOTE_DIR}"])
+        for url, obj in RULE_SETS:
+            name = obj.split("/")[-1]
+            log(f"rules: hk02 下载 {name}")
+            run(SSH + [HK02, f"curl -fSL --retry 3 -o {REMOTE_DIR}/{name} '{url}'"], timeout=600)
+        run(["rsync", "-az", "-e", " ".join(SSH), f"{HK02}:{REMOTE_DIR}/", tmp + "/"], timeout=600)
+        for _, obj in RULE_SETS:
+            path = os.path.join(tmp, obj.split("/")[-1])
+            if os.path.getsize(path) < 10_000:  # .srs 至少几百 KB，过小视为拉取异常
+                raise RuntimeError(f"{obj} 只有 {os.path.getsize(path)} B，疑似损坏，中止上传")
+            log(f"rules: 上传 R2 {obj}（{os.path.getsize(path)} B）")
+            r2_put(obj, path)
+    finally:
+        subprocess.run(["rm", "-rf", tmp])
+        subprocess.run(SSH + [HK02, f"rm -rf {REMOTE_DIR}"])
+
+
 def main():
     state = {}
     if os.path.exists(STATE_FILE):
@@ -152,6 +219,11 @@ def main():
             update_repo(repo, key, matchers, state, versions)
         except Exception as e:
             log(f"{key}: 失败（{e}），保留下次重试")
+
+    try:
+        sync_rule_sets()
+    except Exception as e:
+        log(f"rules: 失败（{e}），保留旧版规则集，下次重试")
 
     if versions:
         # 与已有 version.json 合并，避免只更新一个仓库时丢掉另一个的版本号
