@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 /**
  * 阿里云 DNS（alidns）记录管理，复用 workers/api/.dev.vars 里的 RAM 密钥。
+ * 注意：节点域名（*.fastergamer.click）管理已迁移到 cf-dns.mjs（Cloudflare），
+ * 本脚本现仅用于 fastergamer.cn 的阿里云 DNS 记录管理。
  * 用法：
  *   node scripts/alidns.mjs list [rr关键字]           # 列出 A 记录
  *   node scripts/alidns.mjs add <RR> <IP> [备注]      # 新增 A 记录，如 add nx6 1.2.3.4 新加坡

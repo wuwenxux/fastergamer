@@ -10,11 +10,14 @@
  *   node scripts/fg rotate <关键词>                重置订阅链接（换 uuid，保留额度/设备）
  *   node scripts/fg reset <关键词> [惩罚天数=30]   流量耗尽售后：用量清零恢复，有效期 -N 天
  *   node scripts/fg rm <关键词> --yes              删除 token（不可恢复）
+ *   node scripts/fg purge <邮箱> --yes             抹掉该邮箱全部数据（token + KV 残留，不可恢复）
  *   node scripts/fg nodes                          节点列表：名称/域名/地区/在线
  *   node scripts/fg ssh <节点名|域名|IP|id>        SSH 到节点（wafer 用户 + 运维密钥）
  *   node scripts/fg stats [天数=14]                用户增长与流量分析（转发 user-stats.mjs）
+ *   node scripts/fg audit [天数=30|--all]          接入审计：逐用户 IP/接入点/流量画像 + 异常标记（转发 user-audit.mjs）
  *   node scripts/fg push-scores [--dry-run] [文件]  最新拨测结果回写注册表，订阅按延迟排序
  *   node scripts/fg probe <参数...>                阿里云全国拨测（转发 ali-node-eval.mjs）
+ *   node scripts/fg city-probe [--city 成都] [--isp 移动] [--proto tcp,udp,http]   指定城市×运营商拨测（转发 ali-city-probe.mjs）
  *   node scripts/fg onboard <IP> <密码|-> <地区> <节点名>   新节点接入（自动带 NODE_SUDO_PASS）
  *   node scripts/fg deploy [--build]               部署到 CF（--build 含前端构建）
  *
@@ -150,6 +153,24 @@ switch (cmd) {
     console.log(`已删除 token ${t.id}（${t.contact ?? "-"}）`);
     break;
   }
+  case "purge": {
+    const email = (args[0] ?? "").trim().toLowerCase();
+    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email) || args[1] !== "--yes") {
+      console.error("用法: fg purge <邮箱> --yes （抹掉该邮箱的全部数据：token/订单/会话/推广/试用标记，不可恢复）");
+      process.exit(1);
+    }
+    // 1) 名下所有 token（含设备索引、节点授权撤销）走管理 API
+    const tokens = await api("GET", "/tokens");
+    const mine = tokens.filter((t) => (t.contact ?? "").trim().toLowerCase() === email);
+    for (const t of mine) {
+      await api("DELETE", `/tokens/${t.id}`);
+      console.log(`已删除 token ${t.id}（${t.plan_id}）`);
+    }
+    if (!mine.length) console.log("（无 token 记录）");
+    // 2) KV 残留（试用标记/会话/推广/订单/工单/节流计数）经 hk02 跳板清理
+    run("bash", [path.join(ROOT, "scripts/purge-email-kv.sh"), email]);
+    break;
+  }
   case "nodes": {
     const nodes = await api("GET", "/nodes");
     for (const n of nodes) {
@@ -188,12 +209,18 @@ switch (cmd) {
   case "stats":
     run("node", [path.join(ROOT, "scripts/user-stats.mjs"), ...args]);
     break;
+  case "audit":
+    run("node", [path.join(ROOT, "scripts/user-audit.mjs"), ...args]);
+    break;
   case "push-scores":
     run("node", [path.join(ROOT, "scripts/push-node-scores.mjs"), ...args]);
     break;
   case "probe":
     if (!args.length) { console.error('用法: fg probe [--points N] [--isp 移动|电信|联通] "名称=IP[:端口[:TCP|UDP]]" ...'); process.exit(1); }
     run("node", [path.join(ROOT, "scripts/ali-node-eval.mjs"), ...args]);
+    break;
+  case "city-probe":
+    run("node", [path.join(ROOT, "scripts/ali-city-probe.mjs"), ...args]);
     break;
   case "onboard":
     if (args.length < 4) { console.error('用法: fg onboard <IP> <ROOT密码|-> <地区代码> <节点名>'); process.exit(1); }

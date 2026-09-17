@@ -49,7 +49,9 @@ rsync -az -e "ssh -i $SSH_KEY" "$ROOT/shared/" "$JUMP_HOST:$REMOTE_DIR/shared/"
 rsync -az --delete -e "ssh -i $SSH_KEY" "$ROOT/pages/dist/" "$JUMP_HOST:$REMOTE_DIR/pages/dist/"
 
 echo "== 跳板机安装依赖并部署 =="
-$SSH "cd $REMOTE_DIR/workers/api \
+# hk01 等节点机没装系统级 Node，优先用 wafer 家目录下的便携版（~/node）；
+# hk02 上该目录不存在，export 一个无效路径无害
+$SSH "export PATH=\"\$HOME/node/bin:\$PATH\"; cd $REMOTE_DIR/workers/api \
   && npm install --legacy-peer-deps --silent \
   && CLOUDFLARE_ACCOUNT_ID=$ACCOUNT_ID CLOUDFLARE_API_TOKEN='$TOKEN' \
      npx wrangler deploy --config wrangler.cf.toml"

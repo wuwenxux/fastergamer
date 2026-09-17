@@ -73,6 +73,7 @@ bash scripts/test-node.sh [过滤词]                      # 运维视角（本�
 
 # 日常运维统一入口（查用户/延期/改设备/节点列表/SSH/拨测/onboard/部署，密钥自动读 .dev.vars）
 node scripts/fg                                         # 无参数打印全部子命令用法；详见 .kimi-code/skills/fg-ops
+node scripts/fg city-probe [--city 深圳 --isp 移动]      # 指定城市×运营商节点拨测（转发 ali-city-probe.mjs）
 
 # 部署（推荐一键脚本，经 hk02 跳板避开本机到 CF 的不稳定链路）
 bash scripts/deploy-cf.sh           # 仅 API/配置改动
@@ -85,7 +86,7 @@ bash scripts/deploy-cf.sh --build   # 前端有改动，先构建 pages/dist
 - 部署链路：本机在大陆，到 CF 上传不稳定，故 `deploy-cf.sh` rsync 代码到香港跳板机 hk02 再 `wrangler deploy`；脚本保持仓库相对结构（worker 引用 `../../shared`、资产引用 `../../pages/dist`），token 自动从 `.dev.vars` 读取。
 - `*.workers.dev` 在大陆被封，用户入口是自定义域名；CF 管理 API 大陆可直连。
 - 落地节点接入：`bash infra/xray/onboard-node.sh <IP> <ROOT密码> <地区代码> <节点名>` 一键完成（DNS → Xray → Caddy TLS → 注册 → agent → ufw）；详见 `infra/xray/README.md`。
-- 中心侧定时任务（本机 cron）：`probe-nodes.sh`（每 5 分钟探测节点）、`notify-scan-cf.sh`（每 15 分钟触发到期提醒/数据清理）。
+- 中心侧定时任务（本机 cron）：`probe-nodes.sh`（每 5 分钟探测节点）、`notify-scan-cf.sh`（每 15 分钟触发到期提醒/数据清理）、`update-clients.py`（每天跟进 GitHub release 刷新客户端镜像站 `dl.fastergamer.click`（R2 桶 fg-clients）：Clash Verge / CMFA / sing-box SFA，前端下载链接固定对象名、版本号写 version.json；另每日同步 sing-box CN 分流规则集 geosite-cn / geosite-gfw / geoip-cn 的 .srs 到 `rules/` 前缀——sing-box 订阅的 CN 分流引用这些固定地址，与 clash 同口径）、`ali-province-quality.mjs`（每晚 21:14 晚高峰阿里云 NAM 省份×运营商拨测，仅 HK/JP 节点：PING×3 轮测 RTT/P95/jitter/丢包 + TCP:443 建连；日常只跑移动（`--isp 移动`，约 ¥1.5/晚）并排除已知差的节点（`--exclude 日本06`），电信/联通复用最近一次全量数据，全量校准时去掉这两个参数跑（约 ¥5.3/次）；明细存 `scripts/.probe/province-quality-*.json`，点级趋势存 `province-quality-history.csv`；隧道内下载测速用 `node-quality.mjs` 手动跑）。
 
 ## 测试策略
 
