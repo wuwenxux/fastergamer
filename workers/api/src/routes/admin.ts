@@ -7,6 +7,7 @@ import { notifyAdmin } from "../lib/risk-notify";
 import { getNodes } from "../lib/nodes";
 import { sendMail, shouldSendEmail } from "../lib/email-aliyun";
 import { getEpayConfig, refundEpayOrder } from "../lib/epay";
+import { fulfillOrder } from "../lib/issue-token";
 import { computeRefundQuote } from "../lib/refund";
 import { resetPenalty, sendPenaltyNoticeEmail } from "../lib/reset-penalty";
 import { restoreCredit } from "../lib/referral";
@@ -554,6 +555,35 @@ adminRoutes.get("/customers", async (c) => {
 adminRoutes.get("/orders", async (c) => {
   const orders = await listOrders(c.env);
   return c.json({ ok: true, data: orders });
+});
+
+/**
+ * POST /api/admin/orders/:id/paid —— 人工确认收款（收款码过渡方案）
+ * 站长核对收款码到账后调用，复用 fulfillOrder 完整发货
+ * （幂等、发货锁、对账、推广结算、升级订单均由其内部处理，这里不重复做）。
+ * 已 paid / 已取消的订单拒绝（409），不重复发货；发货锁冲突（busy）也回 409 让稍后重试。
+ */
+adminRoutes.post("/orders/:id/paid", async (c) => {
+  const order = await getOrder(c.env, c.req.param("id"));
+  if (!order) return c.json({ ok: false, error: "order not found" }, 404);
+  if (order.status === "paid") {
+    return c.json({ ok: false, error: "订单已确认收款并发货" }, 409);
+  }
+  if (order.status !== "pending") {
+    return c.json({ ok: false, error: "订单已取消，无法确认收款" }, 409);
+  }
+
+  try {
+    const result = await fulfillOrder(c.env, c.executionCtx, order);
+    if (result.busy) {
+      return c.json({ ok: false, error: "另一路发货正在进行，请稍后重试" }, 409);
+    }
+    return c.json({ ok: true, data: { token_id: result.token?.id ?? order.token_id } });
+  } catch (e) {
+    // 对外固定文案，内部错误详情只记日志（避免泄露内部实现/字段信息）
+    console.error(`[admin] fulfill failed for order ${order.id}: ${(e as Error).message}`);
+    return c.json({ ok: false, error: "internal error" }, 500);
+  }
 });
 
 /** POST /api/admin/orders/:id/cancel —— 取消未支付的订单（无效/刷单订单清理），已用的推广额度归还 */

@@ -1,8 +1,11 @@
+import type { RefObject } from "react";
 import type { Plan } from "../../../shared/types";
+import Turnstile, { type TurnstileHandle, type TurnstileState } from "./Turnstile";
 
 /**
- * 下单弹窗：填写联系方式后创建待支付订单。
- * 支付走易支付动态扫码（下单接口返回二维码内容，由订单确认页渲染）。
+ * 下单弹窗：填写联系方式后创建订单。
+ * 过渡期人工收款：下单落 pending 订单并展示收款码，用户转账备注订单号后点「我已支付」，
+ * 由客服确认收款后置 paid 开通；在线支付通道接入后恢复收银台。
  */
 export default function PaymentModal({
   plan,
@@ -11,6 +14,9 @@ export default function PaymentModal({
   onConfirm,
   onClose,
   processing,
+  turnstileRef,
+  turnstileState,
+  onTurnstileState,
 }: {
   plan: Plan;
   contact: string;
@@ -18,6 +24,10 @@ export default function PaymentModal({
   onConfirm: () => void;
   onClose: () => void;
   processing: boolean;
+  /** 人机验证：状态与 ref 由父组件持有（提交时要取 token、失败要 reset） */
+  turnstileRef: RefObject<TurnstileHandle>;
+  turnstileState: TurnstileState;
+  onTurnstileState: (state: TurnstileState) => void;
 }) {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
@@ -57,16 +67,22 @@ export default function PaymentModal({
           </p>
         </div>
 
+        <Turnstile ref={turnstileRef} onStateChange={onTurnstileState} />
+
         <button
           onClick={onConfirm}
-          disabled={processing || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(contact.trim())}
+          disabled={
+            processing ||
+            !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(contact.trim()) ||
+            (turnstileState.enabled && !turnstileState.token)
+          }
           className="w-full rounded-lg bg-sky-500 py-3 font-medium hover:bg-sky-400 transition-colors disabled:opacity-60"
         >
           {processing ? "处理中…" : "提交订单"}
         </button>
 
         <p className="text-xs text-slate-500 text-center">
-          提交订单后按页面提示完成支付；到账后 token 自动发送到你的邮箱
+          提交订单后扫码付款，付款后点「我已支付」，客服确认收款后自动开通，token 自动发送到你的邮箱
         </p>
       </div>
     </div>

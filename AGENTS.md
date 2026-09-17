@@ -45,7 +45,7 @@ Token 制 VPN 服务（对外品牌 GameBoost / FasterGamer）：用户无需注
 - KV 命名空间共 5 个绑定：`TOKENS / PLANS / ORDERS / NODES / TICKETS`。
 - 密钥（`ADMIN_KEY`、`ALIYUN_*`、`ADMIN_NOTIFY_EMAIL`、`CLOUDFLARE_API_TOKEN`、`TURNSTILE_SECRET_KEY` 等）放 `workers/api/.dev.vars`（本地，git 已忽略）或用 `wrangler secret put --config wrangler.cf.toml`（生产），**绝不入库**。模板见 `.dev.vars.example`。
 - 人机验证用 Cloudflare Turnstile：匿名表单接口（试用/下单/notify-paid/反馈/登录链接）在 rateLimit 后挂 `middleware/turnstile.ts`（token 走 `x-turnstile-token` 头，只校验 POST，GET 轮询不受影响）；前端 sitekey 经 `GET /api/config` 下发，组件在 `pages/src/components/Turnstile.tsx`。**未配置 `TURNSTILE_SECRET_KEY` 时全链路自动放行**（本地开发/灰度期），sitekey 配在 wrangler.cf.toml 的 vars（`TURNSTILE_SITE_KEY`），secret 用 secret put。
-- 支付通道（易支付 pay.neil.asia）**已彻底断开**（疑似诈骗）：下单与回调代码已删除，交易状态机保留——`POST /api/orders` 与升级补差价照常落 pending 订单（无支付凭证，暂无法付款，待新通道接入），状态查询/管理端取消可用。`lib/epay.ts` 仅保留退款代码（`refundEpayOrder`，SHA256WithRSA 签名，RSA 工具函数在 `lib/rsa-sign.ts`），但 `EPAY_*` 密钥已从生产删除，退款接口当前不可用，确需退款时重新 `secret put` 三项配置即可恢复。
+- 支付通道（易支付 pay.neil.asia）**已彻底断开**（疑似诈骗）：下单与回调代码已删除，交易状态机保留。当前过渡方案为**人工收款码**：`POST /api/orders` 与升级补差价落 pending 订单，支付页展示站长收款码（`pages/public/pay/` 静态图），用户点「我已支付」（`POST /api/orders/:id/notify-paid`，6h 幂等节流 + IP 限流）邮件通知站长，站长确认收款（`POST /api/admin/orders/:id/paid` → `fulfillOrder`）自动发货发邮件。`lib/epay.ts` 仅保留退款代码（`refundEpayOrder`，SHA256WithRSA 签名，RSA 工具函数在 `lib/rsa-sign.ts`），但 `EPAY_*` 密钥已从生产删除，退款接口当前不可用，确需退款时重新 `secret put` 三项配置即可恢复。
 - 邮件走阿里云 DirectMail（`lib/email-aliyun.ts`）。
 
 ## 常用命令

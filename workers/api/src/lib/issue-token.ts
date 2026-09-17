@@ -1,6 +1,8 @@
 /**
- * 确认收款后发放 token（易支付回调自动触发，或推广全额抵扣的
- * 0 元订单下单即触发；两者共用 fulfillOrder）
+ * 确认收款后发放 token。触发路径：0 元订单/免费升级在下单瞬间直接 fulfillOrder；
+ * 人工收款码过渡方案下，站长经 POST /api/admin/orders/:id/paid 确认收款也会走到这里。
+ * 发货锁（isOrderLocked）与对账（reconcileFulfillment/deleteTokenCascade）
+ * 机制为并发触发（人工重复确认、将来新支付通道的回调重推）兜底。
  */
 import { KV, type Order, type Plan, type Token } from "../../../../shared/types";
 import { isEmail, sendMail, sendTokenEmail, shouldSendEmail } from "./email-aliyun";
@@ -149,18 +151,23 @@ export interface FulfillResult {
   token: Token | null;
   /** true = 订单此前已发过货（幂等重放或竞态 loser），本次未产生新的有效 token */
   already: boolean;
-  /** true = 另一路发货正在进行（发货锁未过期），调用方应稍后重试（确认接口回 409，支付宝回调回 failure） */
+  /**
+   * true = 另一路发货正在进行（发货锁未过期），调用方应稍后重试。
+   * 当前读取方：POST /api/admin/orders/:id/paid（人工确认收款，busy 回 409 让站长稍后重试）；
+   * 将来新支付通道接入后的并发回调同样应回 failure 让平台重推。
+   */
   busy?: boolean;
 }
 
 /**
  * 订单发货：确认收款后置 paid 并发放 token（幂等——已 paid 直接返回已有 token）。
- * 管理后台手动确认与支付宝回调共用此入口；plan 缺失时抛错，由调用方兜底。
+ * 支付回调与人工确认入口已随支付通道断开删除，当前仅 0 元订单/免费升级在下单时调用；
+ * plan 缺失时抛错，由调用方兜底。
  *
  * 免费层 best-effort 幂等说明：
  * CF KV 跨 PoP 有最长约 60s 读延迟，「读 order.status === "paid"」只是快照判断，
- * 挡不住支付宝回调与管理员确认并发/接连触发造成的重复发货。这里用两道防线：
- * 1) 入口写 orderlock:{orderId} 锁，拦截最常见的秒级并发（双击确认、支付宝快速重推）；
+ * 挡不住将来支付回调与其他发货入口并发/接连触发造成的重复发货。这里用两道防线：
+ * 1) 入口写 orderlock:{orderId} 锁，拦截最常见的秒级并发（回调快速重推、重复触发）；
  *    KV 无 CAS，锁本身不保证原子，只缩小窗口。
  * 2) 发货后 cacheTtl:0 绕过缓存重读订单对账，发现并发胜者的 token 时清理本次发的
  *    游离 token，保证同订单最终只有一个有效 token。

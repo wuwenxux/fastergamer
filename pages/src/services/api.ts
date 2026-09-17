@@ -66,7 +66,7 @@ export const api = {
   /** 公开运行时配置；turnstile_site_key 为 null 表示未启用人机验证 */
   config: () => request<{ turnstile_site_key: string | null }>("/api/config"),
 
-  /** 创建订单（返回 pending 订单；支付通道已摘除，暂无支付二维码；带登录会话时自动使用推广余额抵扣；ref 为推广码） */
+  /** 创建订单（返回 pending 订单；过渡期走人工收款码，下单页展示微信/支付宝收款码；带登录会话时自动使用推广余额抵扣；ref 为推广码） */
   createOrder: (plan_id: string, contact?: string, ref?: string, turnstileToken?: string) =>
     request<CreateOrderResponse>("/api/orders", {
       method: "POST",
@@ -85,9 +85,21 @@ export const api = {
       discount_per_credit: number;
     }>("/api/referral/me", { headers: sessionHeaders() }),
 
-  /** 查询订单支付状态（扫码页轮询用，只返回状态与 token 短 ID） */
+  /** 查询订单支付状态（轮询用：状态 + token 短 ID + 实付金额/套餐 ID） */
   orderStatus: (id: string) =>
-    request<{ status: Order["status"]; token_id?: string }>(`/api/orders/${id}`),
+    request<{ status: Order["status"]; token_id?: string; payable_cny?: number; plan_id?: string }>(
+      `/api/orders/${id}`
+    ),
+
+  /**
+   * 人工收款码过渡支付：用户转账后点「我已支付」通知客服确认收款。
+   * 幂等——6 小时内重复点击返回 notified=false，不重复通知
+   */
+  notifyPaid: (orderId: string, turnstileToken?: string) =>
+    request<{ notified: boolean }>(`/api/orders/${orderId}/notify-paid`, {
+      method: "POST",
+      headers: turnstileHeaders(turnstileToken),
+    }),
 
   /** 查询 token 详情（带会话时本人返回完整数据，否则只返回概要并带 restricted 标记） */
   getToken: (id: string) => request<TokenView>(`/api/tokens/${id}`, { headers: sessionHeaders() }),

@@ -168,6 +168,11 @@ export interface Order {
   payable_cny?: number;
   /** 升级订单：支付成功后升级该既有 token（保留 uuid/设备），而非新发货 */
   upgrade_token_id?: string;
+  /**
+   * 用户上次点「我已支付」的时间（unix 毫秒）。
+   * 人工收款码过渡方案的幂等节流字段：6 小时内重复点击不再给站长发通知邮件。
+   */
+  paid_notify_at?: number;
   /** 退款时间（unix 毫秒）；退款后对应 token 被撤销 */
   refunded_at?: number;
   /** 易支付退款单号 */

@@ -5,6 +5,7 @@ import type { Order, Plan, Token } from "../../../shared/types";
 import { api } from "../services/api";
 import { copyText } from "../utils/clipboard";
 import DeviceManager from "./DeviceManager";
+import ManualPay from "./ManualPay";
 
 type VerifyResult =
   | { valid: true; nodeCount: number }
@@ -552,22 +553,16 @@ export default function TokenStatus({ token }: { token: Token }) {
       <DeviceManager token={current} onChange={setCurrent} />
 
       {upgradeOrder && (
-        <div className="rounded-xl border border-sky-500/50 bg-sky-500/10 p-4 space-y-3 text-center">
-          <p className="text-sm font-medium text-sky-300">
-            升级订单已创建，差价 ¥{upgradeOrder.payable_cny}
+        <div className="rounded-xl border border-sky-500/50 bg-sky-500/10 p-4 space-y-3">
+          <p className="text-sm font-medium text-sky-300 text-center">
+            升级订单已创建，扫码补差价后点「我已支付」
           </p>
-          {upgradeOrder.epay_qr_code ? (
-            <div className="max-w-[240px] mx-auto rounded-lg bg-white p-3">
-              <QRCodeCanvas value={upgradeOrder.epay_qr_code} size={224} className="w-full h-auto" />
-            </div>
-          ) : (
-            <p className="text-xs text-slate-400">支付通道维护中，订单已保留，请稍后重试</p>
-          )}
+          <ManualPay orderId={upgradeOrder.id} payableCny={upgradeOrder.payable_cny ?? 0} />
           <button
             onClick={() => setUpgradeOrder(null)}
-            className="text-xs text-slate-500 hover:text-slate-300"
+            className="block mx-auto text-xs text-slate-500 hover:text-slate-300"
           >
-            取消
+            收起
           </button>
         </div>
       )}
