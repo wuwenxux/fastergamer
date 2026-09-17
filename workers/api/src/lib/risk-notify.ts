@@ -293,9 +293,9 @@ export async function notifyAdmin(
   if (!res.ok) console.error(`[admin-alert] mail failed: ${title}: ${res.error}`);
 }
 
-/** 流量暴增告警阈值：单 token 1 小时内新增 10 GB */
+/** 流量暴增告警阈值：单 token 1 小时内新增 3 GB */
 export const SPIKE_WINDOW_MS = 3_600_000;
-export const SPIKE_THRESHOLD_BYTES = 10 * 1024 ** 3;
+export const SPIKE_THRESHOLD_BYTES = 3 * 1024 ** 3;
 
 /**
  * 流量暴增检测的纯记账部分（无 await，在 token 写库前调用）：
@@ -319,24 +319,14 @@ export function updateSpikeWindow(token: Token, deltaBytes: number, now = Date.n
 }
 
 /**
- * 流量暴增告警（发邮件，含 await）：必须在 token 结算字段写库之后调用，
+ * 流量暴增告警（只发站长，含 await）：必须在 token 结算字段写库之后调用，
  * 避免读-改-写之间穿插邮件 await 导致并发覆盖。
+ * 不通知客户：暴增多是滥用/泄露，惊动对方只会换号重来；站长掌握信息后台处置即可。
  */
 export async function sendSpikeAlert(env: Env, token: Token): Promise<void> {
   const gb = ((token.rate_window_bytes ?? 0) / 1024 ** 3).toFixed(1);
   console.log(`[risk] traffic spike ${token.id}: ${gb} GB in 1h`);
 
-  if (shouldSendEmail(token.contact)) {
-    const { subject, html, text } = shell(
-      env,
-      "流量异常提醒",
-      `<p>你好，你的 Token（<strong>${token.id}</strong>）在过去 1 小时内消耗了 <strong>${gb} GB</strong> 流量，远超正常游戏用量。</p>
-       <p>如果不是你本人大量使用（如下载、看高清视频），说明订阅链接可能已泄露被他人盗用，建议立即登录管理页解绑可疑设备，或联系售后重置凭证。</p>`,
-      `你的 Token（${token.id}）过去 1 小时消耗 ${gb} GB，远超正常游戏用量。\n如非本人使用，请登录管理页解绑可疑设备或联系售后重置凭证。`
-    );
-    const res = await sendMail(env, token.contact, subject, html, text);
-    if (!res.ok) console.error(`[risk] spike mail failed ${token.id}: ${res.error}`);
-  }
   await notifyAdmin(
     env,
     `流量暴增：${token.id} 1 小时 ${gb} GB`,
