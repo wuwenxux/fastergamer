@@ -139,6 +139,30 @@ export const currentMonthKey = (now = new Date()): string =>
   `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, "0")}`;
 
 /**
+ * 月度配额记账（纯函数）：返回记账后的账期字段与累计预支月数。
+ * floor 结果用 max(0,…) 钳制：防御负的 month_used_bytes（脏数据/历史遗留）产生
+ * 负预支而意外延长有效期；正常业务路径不会产生负值。
+ */
+export const monthAccounting = (
+  state: { months_borrowed?: number; month_used_bytes?: number; month_key?: string },
+  delta: number,
+  quotaGb: number,
+  now = new Date()
+): { months_borrowed: number; month_used_bytes: number; month_key: string; borrowed: number } => {
+  const quotaBytes = quotaGb * 1024 ** 3;
+  const mk = currentMonthKey(now);
+  let monthsBorrowed = state.months_borrowed ?? 0;
+  let monthUsed = state.month_used_bytes ?? 0;
+  if (state.month_key !== mk) {
+    monthsBorrowed += Math.max(0, Math.floor(monthUsed / quotaBytes));
+    monthUsed = 0;
+  }
+  monthUsed += delta;
+  const borrowed = monthsBorrowed + Math.max(0, Math.floor(monthUsed / quotaBytes));
+  return { months_borrowed: monthsBorrowed, month_used_bytes: monthUsed, month_key: mk, borrowed };
+};
+
+/**
  * 节点在线判定。优先用中心主动探测结果（probe-nodes.sh 从国内 ping 节点，
  * 只在状态翻转时写 KV）；没有探测数据时回退到 agent 上报的 last_seen_at。
  * agent 已是纯事件驱动（断联/超量才上报），last_seen 粒度很粗，仅作兜底。

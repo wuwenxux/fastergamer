@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import { KV, type Device, type Node, type Plan, type Presence, type Token } from "../../../../shared/types";
-import { getNodeByKey, saveNodeStat, currentMonthKey, isBudgetExhausted } from "../lib/nodes";
+import { getNodeByKey, saveNodeStat, currentMonthKey, isBudgetExhausted, monthAccounting } from "../lib/nodes";
 import {
   getTokenByAnyUuid,
   getPlans,
@@ -186,17 +186,11 @@ async function applyTrafficDelta(
   const quotaGb = plansById.get(token.plan_id)?.monthly_quota_gb;
   let borrowed = 0;
   if (quotaGb && quotaGb > 0) {
-    const quotaBytes = quotaGb * 1024 ** 3;
-    const mk = currentMonthKey();
-    if (token.month_key !== mk) {
-      // 跨月：锁定当月已预支月数，月度计数归零
-      token.months_borrowed =
-        (token.months_borrowed ?? 0) + Math.floor((token.month_used_bytes ?? 0) / quotaBytes);
-      token.month_used_bytes = 0;
-      token.month_key = mk;
-    }
-    token.month_used_bytes = (token.month_used_bytes ?? 0) + delta;
-    borrowed = (token.months_borrowed ?? 0) + Math.floor(token.month_used_bytes / quotaBytes);
+    const acc = monthAccounting(token, delta, quotaGb);
+    token.months_borrowed = acc.months_borrowed;
+    token.month_used_bytes = acc.month_used_bytes;
+    token.month_key = acc.month_key;
+    borrowed = acc.borrowed;
     const base = token.base_expires_at ?? token.expires_at;
     if (base) {
       token.base_expires_at = base;
