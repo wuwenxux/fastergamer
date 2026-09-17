@@ -1,4 +1,5 @@
 import { Link, Route, Routes } from "react-router-dom";
+import Admin from "./pages/Admin";
 import AuthMagic from "./pages/AuthMagic";
 import Home from "./pages/Home";
 import Guide from "./pages/Guide";
@@ -40,6 +41,8 @@ export default function App() {
           <Route path="/register" element={<Register />} />
           <Route path="/guide" element={<Guide />} />
           <Route path="/support" element={<Support />} />
+          {/* 站长数据看板：无任何站内链接，只有知道 URL 的人能到登录页（接口仍需 x-admin-key + IP 白名单） */}
+          <Route path="/admin" element={<Admin />} />
         </Routes>
       </main>
 

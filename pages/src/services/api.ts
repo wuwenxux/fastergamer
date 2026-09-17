@@ -1,7 +1,7 @@
-import type { CreateOrderResponse, Device, FaqItem, Order, Plan, Presence, Registration, Token } from "../../../shared/types";
+import type { CreateOrderResponse, Device, FaqItem, Node, Order, Plan, Presence, Registration, Token } from "../../../shared/types";
 
-// 生产环境通过 VITE_API_BASE 指定 API Worker 域名，如 https://api.example.com
-// 开发环境留空，由 Vite 代理到本地 wrangler dev
+// 生产前后端同源（Worker 托管静态资产），VITE_API_BASE 留空即可，仅在需要指向其他 API 域名时设置
+// 本地开发留空，由 Vite 代理到 localhost:8787 的 wrangler dev
 const BASE: string = (import.meta.env.VITE_API_BASE as string | undefined) ?? "";
 
 /** 返回可用于复制/外部引用的绝对 URL 前缀 */
@@ -47,6 +47,18 @@ function turnstileHeaders(token?: string): Record<string, string> {
   return token ? { "x-turnstile-token": token } : {};
 }
 
+/**
+ * 带 HTTP 状态码的 API 错误：管理页需要根据 status === 401 识别密钥错误，
+ * 其余调用方仍可按普通 Error 处理（message 语义不变）
+ */
+export class ApiError extends Error {
+  status: number;
+  constructor(message: string, status: number) {
+    super(message);
+    this.status = status;
+  }
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${BASE}${path}`, {
     cache: "no-store", // API 数据一律不缓存，避免拿到过期响应
@@ -58,10 +70,16 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   });
   const body = (await res.json().catch(() => null)) as Envelope<T> | null;
   if (!res.ok || !body?.ok) {
-    throw new Error(body?.error ?? `请求失败 (${res.status})`);
+    throw new ApiError(body?.error ?? `请求失败 (${res.status})`, res.status);
   }
   return body.data as T;
 }
+
+/** 管理接口返回的 token：?presence=1 时后端把 presence（在线/接入 IP 统计）合并到 presence 字段 */
+export type AdminToken = Token & { presence?: Presence };
+
+/** 管理接口返回的节点：默认隐藏 key，额外带实时 online 判定 */
+export type AdminNode = Omit<Node, "key"> & { online?: boolean };
 
 export const api = {
   /** 套餐列表 */
@@ -166,6 +184,18 @@ export const api = {
       method: "POST",
       headers: sessionHeaders(),
       body: JSON.stringify({ target_plan_id }),
+    }),
+
+  /** 管理接口：全部 token（presence=1 合并在线/接入 IP 统计）；需 x-admin-key，401 时抛 ApiError(status=401) */
+  adminTokens: (key: string) =>
+    request<AdminToken[]>("/api/admin/tokens?presence=1", {
+      headers: { "x-admin-key": key },
+    }),
+
+  /** 管理接口：节点列表（不含 key，带实时 online 判定）；需 x-admin-key */
+  adminNodes: (key: string) =>
+    request<AdminNode[]>("/api/admin/nodes", {
+      headers: { "x-admin-key": key },
     }),
 
   /**
