@@ -299,8 +299,9 @@ export const SPIKE_THRESHOLD_BYTES = 3 * 1024 ** 3;
 
 /**
  * 流量暴增检测的纯记账部分（无 await，在 token 写库前调用）：
- * 更新速率窗口；越过阈值且 24h 内未告警过时记录 notify_log.traffic_spike 并返回 true，
- * 调用方随后在写库之后调用 sendSpikeAlert 发告警。
+ * 更新速率窗口；越过阈值且 24h 内未处置过时记录 notify_log.traffic_spike 并返回 true，
+ * 调用方随后在写库段按分级处置并入结算 patch（体验：status="revoked"；付费：abuse_machine 标记），
+ * 写库之后调用 sendSpikeAlert 通知站长。
  */
 export function updateSpikeWindow(token: Token, deltaBytes: number, now = Date.now()): boolean {
   if (deltaBytes <= 0) return false;
@@ -319,20 +320,33 @@ export function updateSpikeWindow(token: Token, deltaBytes: number, now = Date.n
 }
 
 /**
- * 流量暴增告警（只发站长，含 await）：必须在 token 结算字段写库之后调用，
+ * 流量暴增处置通知（只发站长，含 await）：必须在 token 结算字段写库之后调用，
  * 避免读-改-写之间穿插邮件 await 导致并发覆盖。
- * 不通知客户：暴增多是滥用/泄露，惊动对方只会换号重来；站长掌握信息后台处置即可。
+ * 处置动作本身由调用方在结算写库段完成（体验：status="revoked"；付费：abuse_machine 标记），
+ * 本函数只负责按分级发通知。不通知客户：暴增多是滥用/泄露，惊动对方只会换号重来。
  */
 export async function sendSpikeAlert(env: Env, token: Token): Promise<void> {
   const gb = ((token.rate_window_bytes ?? 0) / 1024 ** 3).toFixed(1);
-  console.log(`[risk] traffic spike ${token.id}: ${gb} GB in 1h`);
+  const trial = token.plan_id === "plan_3days";
+  console.log(`[risk] traffic spike ${trial ? "revoked" : "rate-limited"} ${token.id}: ${gb} GB in 1h`);
 
+  const base = `Token <strong>${token.id}</strong>（${token.contact ?? "无联系方式"}）过去 1 小时新增流量 <strong>${gb} GB</strong>（阈值 3GB）`;
+  const usage = `已用 ${token.traffic_used_gb.toFixed(2)} / ${token.traffic_limit_gb} GB。`;
   await notifyAdmin(
     env,
-    `流量暴增：${token.id} 1 小时 ${gb} GB`,
-    `<p>Token <strong>${token.id}</strong>（${token.contact ?? "无联系方式"}）过去 1 小时新增流量 <strong>${gb} GB</strong>。</p>
-     <p>已用 ${token.traffic_used_gb.toFixed(2)} / ${token.traffic_limit_gb} GB。如需止血：rotate-uuid 或撤销 token。</p>`,
-    `Token ${token.id}（${token.contact ?? "-"}）1 小时新增 ${gb} GB，已用 ${token.traffic_used_gb.toFixed(2)}/${token.traffic_limit_gb} GB。止血手段：rotate-uuid 或撤销。`
+    trial
+      ? `流量暴增已自动吊销：${token.id} 1 小时 ${gb} GB`
+      : `流量暴增已限速：${token.id} 1 小时 ${gb} GB`,
+    trial
+      ? `<p>${base}，已自动吊销并全节点踢除。</p>
+         <p>${usage}</p>
+         <p>误杀恢复：管理端把 token 状态改回 active（24h 幂等窗口内再次暴增不会重复处置，必要时一并清除 notify_log.traffic_spike）。</p>`
+      : `<p>${base}，已转<strong>每日 500MB 限速</strong>（abuse_machine 标记），超限暂停到 24h 窗口重置，不吊销不断线。</p>
+         <p>${usage}</p>
+         <p>误伤解除：管理端清除 token 的 abuse_machine 字段。</p>`,
+    trial
+      ? `Token ${token.id}（${token.contact ?? "-"}）1 小时新增 ${gb} GB（阈值 3GB），已自动吊销并全节点踢除。${usage}误杀恢复：管理端把状态改回 active。`
+      : `Token ${token.id}（${token.contact ?? "-"}）1 小时新增 ${gb} GB（阈值 3GB），已转每日 500MB 限速（abuse_machine 标记），超限暂停到 24h 窗口重置。${usage}误伤解除：管理端清除 abuse_machine 字段。`
   );
 }
 

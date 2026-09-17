@@ -158,7 +158,8 @@ async function applyTrafficDelta(
   token.traffic_total_by_node[nodeKey] =
     (token.traffic_total_by_node[nodeKey] ?? token.traffic_by_node[nodeKey] ?? 0) + delta;
 
-  // 流量暴增检测的窗口记账（纯计算）：1h 窗口内新增超阈值时，写库后告警客户与管理员
+  // 流量暴增检测的窗口记账（纯计算）：1h 窗口内新增超阈值（3GB）时返回 true，
+  // 触发即吊销（下方写库段并入同一 patch），写库后由 sendSpikeAlert 通知站长
   const spike = updateSpikeWindow(token, delta, now);
 
   // 机器标记 token 的每日定额记账（纯计算）：窗口内超 500MB 暂停到 24h 窗口终点，
@@ -221,6 +222,23 @@ async function applyTrafficDelta(
     }
   }
 
+  // 流量暴增分级处置（24h 幂等键 traffic_spike 两种处置共用，用户已拍板分级）：
+  // - 体验 token：触发即吊销。status 在纯计算段改好，随下方结算 patch 同一次重读-合并写库；
+  //   放在耗尽/过期置位之后，让 revoked 覆盖它们——暴增吊销的语义强于普通过期；
+  // - 付费 token：误伤成本高，不吊销，改打 abuse_machine 标记进入每日 500MB 限速。
+  //   纯打标不改变授权状态，无需推送（与 checkTrialAbuse 的标记路径一致）；
+  //   超限暂停时由 applyAbuseWindow 路径推送。本次暴增的 delta 不进限速窗口
+  //   （applyAbuseWindow 在上方已跑过，当时还未打标），从下一次结算起计。
+  // 结算路径只处理 active token，重复吊销不会发生。
+  if (spike) {
+    if (token.plan_id === "plan_3days") {
+      token.status = "revoked";
+      authChanged = true; // 写库后推送全节点刷新，立即踢掉该 uuid
+    } else {
+      token.abuse_machine = true;
+    }
+  }
+
   // ---------- 写库段 ----------
   // 重读-合并：只把结算字段覆盖到最新副本上，并发用户操作（加设备/封 IP 等）不丢。
   // notify_log 键级合并（含 updateSpikeWindow 的 traffic_spike 记账）。
@@ -241,6 +259,7 @@ async function applyTrafficDelta(
     abuse_window_start: token.abuse_window_start,
     abuse_window_bytes: token.abuse_window_bytes,
     abuse_suspended_until: token.abuse_suspended_until,
+    abuse_machine: token.abuse_machine, // 暴增打标（付费）随结算同一次写库；undefined 被 merge 忽略
     notify_log: token.notify_log,
   };
   if (device) {
