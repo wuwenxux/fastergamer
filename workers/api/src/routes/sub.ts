@@ -1,7 +1,9 @@
 import { Hono } from "hono";
-import { getTokenByAnyUuid } from "../lib/kv";
+import { getTokenByAnyUuid, recordSubFetch } from "../lib/kv";
 import { activatePaidToken } from "../lib/activate";
 import { buildClashConfig, parseRegions } from "../lib/clash";
+import { buildVlessSubscription } from "../lib/sub-links";
+import { buildSingboxConfig } from "../lib/singbox";
 import { getNodes, isBudgetExhausted } from "../lib/nodes";
 import { ispFromAsn, orderNodesForIsp } from "../lib/isp";
 import { pushAuthRefresh } from "../lib/authpush";
@@ -10,6 +12,27 @@ import type { Env } from "../types";
 export const subRoutes = new Hono<{ Bindings: Env }>();
 
 const IPV4_RE = /^\d{1,3}(\.\d{1,3}){3}$/;
+
+/** 订阅输出格式：clash（默认）/ vless 链接 / sing-box JSON */
+type SubFormat = "clash" | "vless" | "singbox";
+
+/**
+ * 格式判定：?format= 显式指定优先（非法值回退 clash）；未指定时按 UA 识别。
+ * UA 表：v2rayNG/NekoBox → vless 链接；sing-box/SFA/SFI → singbox；
+ * 其余（Clash 系、Shadowrocket 与未知客户端）→ clash。SFA/SFI 大写精确匹配，
+ * 避免误伤 UA 里含 "sfa"/"sfi" 子串的其他客户端。
+ * Shadowrocket 走 clash：它官方兼容 Clash YAML 配置导入，YAML 里的规则/分组/
+ * url-test 测速地址随之生效——vless 链接列表什么都带不了（clash.ts 里对
+ * Shadowrocket 只放开 Reality/Hy2 协议条目，GEOSITE 规则仍按老内核口径省略）。
+ */
+const detectSubFormat = (format: string | undefined, ua: string): SubFormat => {
+  if (format !== undefined) {
+    return format === "vless" || format === "singbox" ? format : "clash";
+  }
+  if (/v2rayNG|NekoBox/i.test(ua)) return "vless";
+  if (/sing-box|SFA|SFI/.test(ua)) return "singbox";
+  return "clash";
+};
 
 /**
  * 订阅下发前把节点域名解析成 IP（DoH 查询，3s 超时，失败静默回退域名）。
@@ -60,9 +83,11 @@ const resolveNodeIps = async (hosts: string[]): Promise<Record<string, string>> 
 };
 
 /**
- * GET /api/sub?uuid={uuid} —— 生成 Clash 订阅配置
+ * GET /api/sub?uuid={uuid}[&format=clash|vless|singbox] —— 订阅下发
  * uuid 可以是 token 主 uuid 或某个设备槽位的 uuid（每台设备独立订阅）
- * 待激活（paid）的 token 首次拉取时自动激活并开始计时；过期/撤销返回 403
+ * 待激活（paid）的 token 首次拉取时自动激活并开始计时；过期/撤销返回 403。
+ * 三种格式共用同一份节点过滤（超配额摘除）/ ISP 排序 / DoH 解析结果，
+ * 激活/过期/撤销语义与格式无关。
  */
 subRoutes.get("/", async (c) => {
   const uuid = c.req.query("uuid");
@@ -93,17 +118,36 @@ subRoutes.get("/", async (c) => {
   const isp = ispFromAsn((c.req.raw.cf as { asn?: number } | undefined)?.asn);
   const orderedNodes = orderNodesForIsp(nodes, isp);
   const nodeIps = await resolveNodeIps(orderedNodes.filter((n) => n.active).map((n) => n.host));
-  const yaml = buildClashConfig({
-    uuid,
-    nodes: orderedNodes,
-    regions: parseRegions(c.env.CLASH_REGIONS),
-    userAgent: c.req.header("user-agent"),
-    nodeIps,
-    isp,
-  });
+  const ua = c.req.header("user-agent") ?? "";
+  const regions = parseRegions(c.env.CLASH_REGIONS);
+  const format = detectSubFormat(c.req.query("format"), ua);
+
+  // 记录订阅拉取的客户端 UA / 来源 IP（客户端类型识别，管理页「订阅客户端」展示）；
+  // 低频路径，waitUntil 不阻塞下发
+  c.executionCtx.waitUntil(
+    recordSubFetch(c.env, token.uuid, uuid, ua, c.req.header("cf-connecting-ip"))
+  );
+
+  let body: string;
+  let contentType: string;
+  let filename: string;
+  if (format === "vless") {
+    body = buildVlessSubscription({ uuid, nodes: orderedNodes, regions, nodeIps });
+    contentType = "text/plain; charset=utf-8";
+    filename = "fastergamer.txt";
+  } else if (format === "singbox") {
+    body = buildSingboxConfig({ uuid, nodes: orderedNodes, regions, nodeIps });
+    contentType = "application/json; charset=utf-8";
+    filename = "fastergamer.json";
+  } else {
+    body = buildClashConfig({ uuid, nodes: orderedNodes, regions, userAgent: ua, nodeIps, isp });
+    contentType = "text/yaml; charset=utf-8";
+    filename = "fastergamer.yaml";
+  }
 
   // subscription-userinfo：Clash/Stash 客户端可直接显示已用流量与到期时间
-  // （不区分上下行，已用量统一计入 download）
+  // （不区分上下行，已用量统一计入 download）；三种格式都发——Shadowrocket 等
+  // 非 Clash 客户端同样读这个头展示流量
   const usedBytes = Math.round(token.traffic_used_gb * 1024 ** 3);
   const totalBytes = Math.round(token.traffic_limit_gb * 1024 ** 3);
   const expireSec = token.expires_at ? Math.floor(token.expires_at / 1000) : 0;
@@ -114,7 +158,10 @@ subRoutes.get("/", async (c) => {
   // 客户端启动时会检查距上次更新是否超过该间隔（小时），超过才拉取；
   // 设 24 = 实际效果是每次打开客户端时更新一次，不频繁刷
   c.header("profile-update-interval", "24");
-  c.header("content-type", "text/yaml; charset=utf-8");
-  c.header("content-disposition", "attachment; filename=fastergamer.yaml");
-  return c.body(yaml);
+  // Clash/Stash 系客户端扫码或添加订阅时用此头做配置文件名，
+  // 与 deep link 的 name=fastergamer 保持同名（纯 ASCII 避免 base64 变体兼容问题）
+  c.header("profile-title", "fastergamer");
+  c.header("content-type", contentType);
+  c.header("content-disposition", `attachment; filename=${filename}`);
+  return c.body(body);
 });

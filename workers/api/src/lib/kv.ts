@@ -93,6 +93,26 @@ export const getPresence = async (env: Env, uuid: string): Promise<Presence | nu
   return raw ? (JSON.parse(raw) as Presence) : null;
 };
 
+/**
+ * 记录一次订阅拉取（客户端类型识别）：presence:{token主uuid} 的 sub_fetches 按订阅 uuid
+ * 键级合并（先读最新副本再定点改键，降低与结算路径并发写的覆盖风险）。
+ * 低频路径（客户端启动/到期更新才拉取，profile-update-interval=24h），UA 截断防 KV 膨胀。
+ */
+export const recordSubFetch = async (
+  env: Env,
+  tokenUuid: string,
+  subUuid: string,
+  ua: string,
+  ip?: string
+): Promise<void> => {
+  const presence = (await getPresence(env, tokenUuid)) ?? {};
+  presence.sub_fetches = {
+    ...(presence.sub_fetches ?? {}),
+    [subUuid]: { ua: ua.slice(0, 120), ip, at: Date.now() },
+  };
+  await env.TOKENS.put(KV.PRESENCE + tokenUuid, JSON.stringify(presence));
+};
+
 /** 从 token JSON 旧字段构造 Presence（存量数据兼容回退用） */
 const presenceFromToken = (token: Token): Presence => ({
   online: token.online,

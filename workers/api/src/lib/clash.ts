@@ -63,11 +63,91 @@ export interface BuildConfigInput {
 export const supportsGeosite = (ua: string | undefined): boolean =>
   /mihomo|verge|meta|stash|flclash/i.test(ua ?? "");
 
+/**
+ * 支持 Reality / Hysteria2 条目的客户端：mihomo 系之外加 Shadowrocket——
+ * 它官方兼容 Clash YAML 配置导入（含 reality-opts / hysteria2 代理类型），
+ * 但不认 GEOSITE 规则语法（其规则类型只有 GEOIP），故规则仍按老内核口径下发，
+ * 仅协议条目放开。老 Premium 内核（CFW/ClashX）两者都不支持，不在此列。
+ */
+export const supportsModernProtocols = (ua: string | undefined): boolean =>
+  supportsGeosite(ua) || /shadowrocket/i.test(ua ?? "");
+
 const AUTO_GROUP = "♻️ 自动选择";
 const MAIN_GROUP = "🚀 节点选择";
 // url-test 测速目标：共享域名,所有节点 /etc/hosts 指回 127.0.0.1 本地 Caddy 响应 204,
 // 任意节点测速都是本地终结(HTTP 免证书),显示值 = 客户端→节点纯接入延迟
-const SPEED_TEST_URL = "http://ping.fastergamer.click/generate_204";
+// （导出：sing-box 订阅的 urltest outbound 用同一口径）
+export const SPEED_TEST_URL = "http://ping.fastergamer.click/generate_204";
+
+/**
+ * 共享节点条目：WS 兜底条目与 ⚡Reality / 🚀Hysteria2 变体的共同基座。
+ * vless 链接订阅（sub-links.ts）与 sing-box 订阅（singbox.ts）复用同一套
+ * 命名（「区域代码 基名 全局序号」）与选路（nodeIps 命中写 IP，否则域名）逻辑。
+ */
+export interface ProxyEntry {
+  name: string;
+  /** 节点基名（注册名去掉尾部序号），⚡/🚀 条目命名复用 */
+  base: string;
+  region: string;
+  /** 客户端实际连接的地址：nodeIps 命中时是 IP，否则是域名 */
+  server: string;
+  /** 节点域名：TLS servername 与 WS Host 始终用它，不受 server 是否为 IP 影响 */
+  host: string;
+  port: number;
+  tls: boolean;
+  wsPath: string;
+  /** 节点开了 Reality 直连时携带 */
+  reality?: NodeReality;
+  /** 节点开了 Hysteria2 UDP 入站时携带 */
+  hy2?: Node["hy2"];
+}
+
+/**
+ * WS 兜底条目列表（仅 active 节点）。显示名统一为「区域代码 节点基名 全局序号」，
+ * 如 "MY 马来西亚 01"、"HK 香港-移动 07"。基名取节点注册名（去掉注册时写入的尾部序号），
+ * 显示序号按节点列表顺序全局递增重排。
+ */
+export const buildProxyEntries = (
+  nodes: Node[] | undefined,
+  regionMeta: ClashRegion[],
+  nodeIps?: Record<string, string>
+): ProxyEntry[] => {
+  const entries: ProxyEntry[] = [];
+  for (const node of nodes ?? []) {
+    if (!node.active) continue;
+    const meta = regionMeta.find((r) => r.code === node.region);
+    const seq = String(entries.length + 1).padStart(2, "0");
+    const base = (node.name || meta?.name || node.region).trim().replace(/\s+\d+$/, "");
+    entries.push({
+      name: `${node.region} ${base} ${seq}`,
+      base,
+      region: node.region,
+      server: nodeIps?.[node.host] ?? node.host,
+      host: node.host,
+      port: node.port,
+      tls: node.tls,
+      wsPath: node.ws_path,
+      reality: node.reality,
+      hy2: node.hy2,
+    });
+  }
+  return entries;
+};
+
+/** ⚡ Reality 条目：命名在 WS 序号基础上递增，避免与 WS 条目重号 */
+export const buildRealityEntries = (entries: ProxyEntry[]): ProxyEntry[] =>
+  entries
+    .filter((p) => p.reality)
+    .map((p, i) => ({ ...p, name: `${p.region} ${p.base} ⚡${String(entries.length + i + 1).padStart(2, "0")}` }));
+
+/** 🚀 Hysteria2 条目：序号接在 ⚡ 条目之后 */
+export const buildHy2Entries = (entries: ProxyEntry[], realityEntries: ProxyEntry[]): ProxyEntry[] =>
+  entries
+    .filter((p) => p.hy2)
+    .map((p, i) => ({
+      ...p,
+      name: `${p.region} ${p.base} 🚀${String(entries.length + realityEntries.length + i + 1).padStart(2, "0")}`,
+    }));
 
 export const buildClashConfig = ({ uuid, nodes, regions, userAgent, nodeIps, isp }: BuildConfigInput): string => {
   const lines: string[] = [];
@@ -197,44 +277,7 @@ export const buildClashConfig = ({ uuid, nodes, regions, userAgent, nodeIps, isp
   // 区域元数据提前解析：节点显示名要用它拼中文地区名
   const regionMeta = regions ?? parseRegions(undefined);
 
-  const proxies: {
-    name: string;
-    /** 节点基名（注册名去掉尾部序号），⚡/🚀 条目命名复用 */
-    base: string;
-    region: string;
-    /** 客户端实际连接的地址：nodeIps 命中时是 IP，否则是域名 */
-    server: string;
-    /** 节点域名：TLS servername 与 WS Host 始终用它，不受 server 是否为 IP 影响 */
-    host: string;
-    port: number;
-    tls: boolean;
-    wsPath: string;
-    /** 节点开了 Reality 直连时携带；仅对 mihomo 系内核下发 ⚡ 条目 */
-    reality?: NodeReality;
-    /** 节点开了 Hysteria2 UDP 入站时携带；仅对 mihomo 系内核下发 🚀 条目 */
-    hy2?: Node["hy2"];
-  }[] = [];
-
-  // 显示名统一为「区域代码 节点基名 全局序号」，如 "MY 马来西亚 01"、"HK 香港-移动 07"。
-  // 基名取节点注册名（去掉注册时写入的尾部序号），显示序号按节点列表顺序全局递增重排
-  for (const node of nodes ?? []) {
-    if (!node.active) continue;
-    const meta = regionMeta.find((r) => r.code === node.region);
-    const seq = String(proxies.length + 1).padStart(2, "0");
-    const base = (node.name || meta?.name || node.region).trim().replace(/\s+\d+$/, "");
-    proxies.push({
-      name: `${node.region} ${base} ${seq}`,
-      base,
-      region: node.region,
-      server: nodeIps?.[node.host] ?? node.host,
-      host: node.host,
-      port: node.port,
-      tls: node.tls,
-      wsPath: node.ws_path,
-      reality: node.reality,
-      hy2: node.hy2,
-    });
-  }
+  const proxies = buildProxyEntries(nodes, regionMeta, nodeIps);
 
   lines.push("proxies:");
   for (const p of proxies) {
@@ -261,15 +304,11 @@ export const buildClashConfig = ({ uuid, nodes, regions, userAgent, nodeIps, isp
     );
   }
 
-  // Reality 直连条目（⚡ 后缀）：仅对 mihomo 系内核下发（Premium 不支持 reality-opts）。
-  // 与 WS 条目并存进同样的分组：Reality 少 WS Upgrade 一层握手、无域名/解析依赖，
-  // url-test 实测更快会自动选中；Reality 端口异常时自动落回 WS 兜底。
-  // 命名在 WS 序号基础上递增，避免与 WS 条目重号
-  const realityProxies = geosite
-    ? proxies
-        .filter((p) => p.reality)
-        .map((p, i) => ({ ...p, name: `${p.region} ${p.base} ⚡${String(proxies.length + i + 1).padStart(2, "0")}` }))
-    : [];
+  // Reality 直连条目（⚡ 后缀）：仅对支持新协议的客户端下发（mihomo 系 + Shadowrocket；
+  // Premium 不支持 reality-opts）。与 WS 条目并存进同样的分组：Reality 少 WS Upgrade
+  // 一层握手、无域名/解析依赖，url-test 实测更快会自动选中；异常时自动落回 WS 兜底。
+  const modern = supportsModernProtocols(userAgent);
+  const realityProxies = modern ? buildRealityEntries(proxies) : [];
   for (const p of realityProxies) {
     const r = p.reality!;
     lines.push(
@@ -291,17 +330,10 @@ export const buildClashConfig = ({ uuid, nodes, regions, userAgent, nodeIps, isp
     );
   }
 
-  // Hysteria2 条目（🚀 后缀）：仅对 mihomo 系内核下发，序号接在 ⚡ 条目之后。
+  // Hysteria2 条目（🚀 后缀）：同 Reality 的新协议门控，序号接在 ⚡ 条目之后。
   // 节点跑 hysteria2 服务端（UDP，TLS 用节点域名的真实证书），auth userpass 为
   // {uuid: "x"}，客户端 password 固定 "<uuid>:x"，sni 必须是节点域名
-  const hy2Proxies = geosite
-    ? proxies
-        .filter((p) => p.hy2)
-        .map((p, i) => ({
-          ...p,
-          name: `${p.region} ${p.base} 🚀${String(proxies.length + realityProxies.length + i + 1).padStart(2, "0")}`,
-        }))
-    : [];
+  const hy2Proxies = modern ? buildHy2Entries(proxies, realityProxies) : [];
   for (const p of hy2Proxies) {
     lines.push(
       `  - name: "${p.name}"`,
@@ -391,6 +423,13 @@ export const buildClashConfig = ({ uuid, nodes, regions, userAgent, nodeIps, isp
       `  - DOMAIN-SUFFIX,anthropic.com,${jp}`
     );
   }
+  // 小红书强制直连：其 CDN 存在境外边缘 IP，GEOIP 兜底可能漏判进代理；
+  // 域名后缀规则排在 GEOSITE/GEOIP 之前，不看解析结果，新老内核通吃
+  lines.push(
+    "  - DOMAIN-SUFFIX,xiaohongshu.com,DIRECT",
+    "  - DOMAIN-SUFFIX,xhscdn.com,DIRECT",
+    "  - DOMAIN-SUFFIX,xhslink.com,DIRECT"
+  );
   // 国内站点直连：
   // 1) GEOSITE,CN 按域名匹配（cn 域名列表），fake-ip / 域名先行场景也能命中——
   //    仅 mihomo/Stash 等新内核支持，老内核（Premium）下发会整个配置加载失败，按 UA 降级

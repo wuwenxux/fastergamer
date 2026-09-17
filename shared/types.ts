@@ -123,9 +123,19 @@ export interface Token {
   rotated_at?: number;
 }
 
+/** 一次订阅拉取记录（客户端类型识别用） */
+export interface SubFetch {
+  /** 客户端 User-Agent 原文（截断存储，展示时解析成客户端名） */
+  ua: string;
+  /** 拉取来源 IP */
+  ip?: string;
+  /** 拉取时间（unix 毫秒） */
+  at: number;
+}
+
 /**
  * Presence —— token 的高频动态状态，独立存 presence:{uuid}（TOKENS namespace）。
- * 只有结算路径（/api/agent/traffic）与 notify-scan 的在线清扫写它；
+ * 写它的是结算路径（/api/agent/traffic）、notify-scan 的在线清扫与 sub 路由的订阅拉取记录；
  * 与 token:{uuid} 主键解耦，避免结算与用户操作（加设备/封 IP/rotate）对同一 JSON 的
  * read-modify-write 互相覆盖丢更新。
  * 读规则：presence 键存在则以它为准；不存在时回退 token JSON 里的旧字段（存量兼容）。
@@ -145,6 +155,8 @@ export interface Presence {
   active_ips?: Record<string, string[]>;
   /** 各 key 最近一次确认的接入地理位置键（country / region / city 拼接，不含运营商），与 active_ips 同步更新；同城换 IP 只更新基线不提醒 */
   active_geo?: Record<string, string>;
+  /** 各订阅 uuid（主 uuid 或设备槽位 uuid）最近一次拉取订阅的客户端 UA / 来源 IP / 时间 */
+  sub_fetches?: Record<string, SubFetch>;
 }
 
 /** 订单 —— 一次购买行为 */

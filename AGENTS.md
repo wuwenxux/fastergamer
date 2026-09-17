@@ -31,7 +31,7 @@ Token 制 VPN 服务（对外品牌 GameBoost / FasterGamer）：用户无需注
 
 - `index.ts`：Hono 入口。CORS 中间件、敏感接口限流、路由挂载；`fetch` 导出里检测 `env.ASSETS` 绑定，非 `/api` 请求转给 Static Assets（404 回退 `index.html` 实现 SPA）。
 - `routes/`：按资源分文件（`plans / orders / tokens / sub / register / referral / tickets / admin / nodes / agent`）。
-- `lib/`：业务逻辑库（激活、签发、订阅生成 `clash.ts`、授权快照/推送、邮件 `email-aliyun.ts`、风控通知、推荐返利等）。
+- `lib/`：业务逻辑库（激活、签发、订阅生成——`clash.ts` Clash YAML / `sub-links.ts` vless 链接 / `singbox.ts` sing-box JSON 三格式，`sub.ts` 按 `?format=` 或 UA 路由；授权快照/推送、邮件 `email-aliyun.ts`、风控通知、推荐返利等）。
 - `middleware/`：`admin.ts`（x-admin-key 鉴权）、`rateLimit.ts`、`turnstile.ts`（人机验证）。
 - `__tests__/`：vitest 测试，与被测模块的 lib 一一对应。
 

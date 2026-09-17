@@ -1,4 +1,4 @@
-import type { CreateOrderResponse, Device, FaqItem, Order, Plan, Registration, Token } from "../../../shared/types";
+import type { CreateOrderResponse, Device, FaqItem, Order, Plan, Presence, Registration, Token } from "../../../shared/types";
 
 // 生产环境通过 VITE_API_BASE 指定 API Worker 域名，如 https://api.example.com
 // 开发环境留空，由 Vite 代理到本地 wrangler dev
@@ -30,7 +30,7 @@ export interface MagicSession {
  * 非本人（未登录或账号邮箱 ≠ 购买邮箱）查询 token 时，后端只返回概要并带 restricted 标记，
  * 不含 uuid / devices 等敏感字段
  */
-export type TokenView = Token & { restricted?: true };
+export type TokenView = Token & Partial<Presence> & { restricted?: true };
 
 /** 读取本地登录会话；有 fg_session 时返回 Authorization 头，否则空对象（不影响未登录场景） */
 function sessionHeaders(): Record<string, string> {

@@ -104,7 +104,7 @@ curl -s -X POST https://fastergamer.click/api/admin/seed \
 | POST | `/api/tokens/:id/reset-penalty` | 用户自助重置流量：用量清零恢复满额，有效期 -30 天（需本人登录） |
 | POST | `/api/tokens/:id/upgrade` | 升级套餐补差价：按剩余天数折算差价；差价 >0 落 pending 订单走人工收款码确认，差价 ≤0 免费升级（uuid/设备不变，需本人登录） |
 | POST/DELETE | `/api/tokens/:id/devices(/:deviceId)` | 设备槽位管理：每台设备独立 uuid 与订阅链接，流量按设备审计 |
-| GET | `/api/sub?uuid=` | Clash 订阅 yaml |
+| GET | `/api/sub?uuid=` | 订阅下发：默认 Clash YAML；`?format=vless`（base64 链接列表）/ `?format=singbox`（JSON），未指定时按 UA 自动识别（v2rayNG/Shadowrocket→vless，sing-box/SFA/SFI→singbox） |
 | POST | `/api/admin/seed` | 初始化套餐（需 x-admin-key） |
 | GET/POST/PUT/DELETE | `/api/admin/nodes` | 节点注册表管理（需 x-admin-key） |
 | GET | `/api/agent/config` | 节点 Agent 拉取配置（需 x-node-key） |

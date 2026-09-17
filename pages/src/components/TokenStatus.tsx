@@ -1,9 +1,10 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { QRCodeCanvas } from "qrcode.react";
+import { QRCodeSVG } from "qrcode.react";
 import type { Order, Plan, Token } from "../../../shared/types";
-import { api } from "../services/api";
+import { api, type TokenView } from "../services/api";
 import { copyText } from "../utils/clipboard";
+import { usePlatform } from "./ClashGuide";
 import DeviceManager from "./DeviceManager";
 import ManualPay from "./ManualPay";
 
@@ -25,8 +26,8 @@ const STATUS_COLOR: Record<Token["status"], string> = {
   revoked: "bg-slate-600/30 text-slate-400 border-slate-500/40",
 };
 
-export default function TokenStatus({ token }: { token: Token }) {
-  const [current, setCurrent] = useState<Token>(token);
+export default function TokenStatus({ token }: { token: TokenView }) {
+  const [current, setCurrent] = useState<TokenView>(token);
   const [copied, setCopied] = useState(false);
   const [now, setNow] = useState(Date.now());
   const [remainingMs, setRemainingMs] = useState<number>(() =>
@@ -101,6 +102,27 @@ export default function TokenStatus({ token }: { token: Token }) {
   const remainingHours = Math.max(0, Math.floor((remainingMs % 86_400_000) / 3_600_000));
   const active = current.status === "active" && remainingMs > 0;
 
+  // 一键导入：按平台给出对应客户端的 deep link。订阅链接本身带 UA 自适应
+  // （Clash UA 出 YAML、sing-box UA 出 JSON），deep link 直接传同一 URL 即可
+  const platform = usePlatform();
+  const platformOs = platform.split("-")[0];
+  const subUrl = api.subUrl(current.uuid);
+  const encSubUrl = encodeURIComponent(subUrl);
+  const importLinks: { label: string; href: string }[] =
+    platformOs === "iOS"
+      ? [
+          { label: "导入到 Stash", href: `stash://install-config?url=${encSubUrl}` },
+          { label: "导入到 sing-box", href: `sing-box://import-remote-profile?url=${encSubUrl}#fastergamer` },
+        ]
+      : platformOs === "Android"
+      ? [
+          { label: "导入到 Clash", href: `clash://install-config?url=${encSubUrl}&name=fastergamer` },
+          { label: "导入到 sing-box", href: `sing-box://import-remote-profile?url=${encSubUrl}#fastergamer` },
+        ]
+      : platformOs
+      ? [{ label: "一键导入到 Clash", href: `clash://install-config?url=${encSubUrl}&name=fastergamer` }]
+      : [];
+
   const limitGb = current.traffic_limit_gb ?? 0;
   const usedGb = current.traffic_used_gb ?? 0;
   const remainingGb = Math.max(0, limitGb - usedGb);
@@ -123,6 +145,32 @@ export default function TokenStatus({ token }: { token: Token }) {
 
   const blockedIpSet = new Set(current.blocked_ips ?? []);
   const [ipActionLoading, setIpActionLoading] = useState<string | null>(null);
+
+  // 订阅客户端识别：UA 原文解析成熟客户端名（只覆盖我们客户端教程推荐的常见款）
+  const clientLabel = (ua: string): string => {
+    if (/Shadowrocket/i.test(ua)) return "Shadowrocket · iOS";
+    if (/Stash/i.test(ua)) return "Stash · iOS";
+    if (/SFA|SFI|sing-box/.test(ua)) return "sing-box";
+    if (/v2rayNG/i.test(ua)) return "v2rayNG · Android";
+    if (/NekoBox/i.test(ua)) return "NekoBox · Android";
+    if (/Clash/i.test(ua)) return "Clash 系";
+    return ua.slice(0, 32) || "未知客户端";
+  };
+
+  // 各订阅（主设备 + 设备槽位）最近一次拉取记录，按时间倒序
+  const deviceNameByUuid = new Map<string, string>([
+    [current.uuid, "主设备"],
+    ...(current.devices ?? []).map((d) => [d.uuid, d.name] as [string, string]),
+  ]);
+  const subFetchRows = Object.entries(current.sub_fetches ?? {})
+    .map(([subUuid, f]) => ({
+      subUuid,
+      deviceName: deviceNameByUuid.get(subUuid) ?? "旧凭证/未知设备",
+      client: clientLabel(f.ua),
+      ip: f.ip,
+      at: f.at,
+    }))
+    .sort((a, b) => b.at - a.at);
 
   const toggleBlockIp = async (ip: string, blocked: boolean) => {
     if (!blocked && !window.confirm(`确认封禁 ${ip}？\n该 IP 将在 30 秒内被所有节点拒绝连接（若它是多人共享的出口网络，同网络的其他设备也会无法使用）。`)) {
@@ -162,7 +210,8 @@ export default function TokenStatus({ token }: { token: Token }) {
   };
 
   const copySub = async () => {
-    const url = api.subUrl(current.uuid);
+    // 带 #fastergamer 名称片段：粘贴导入时配置名与扫码/一键导入一致（片段不进请求）
+    const url = `${api.subUrl(current.uuid)}#fastergamer`;
     if (await copyText(url)) {
       setCopied(true);
       setTimeout(() => setCopied(false), 1500);
@@ -407,8 +456,8 @@ export default function TokenStatus({ token }: { token: Token }) {
       {active && (
         <div className="flex flex-col gap-3 rounded-xl border border-slate-700 bg-slate-950 p-4">
           <div>
-            <div className="text-sky-300 text-xs mb-1 font-medium">Clash 订阅链接（复制后粘贴到 Clash/Stash）</div>
-            <div className="font-mono text-sm break-all text-sky-200 rounded-lg border border-sky-500/50 bg-sky-500/15 p-2.5 select-all">{api.subUrl(current.uuid)}</div>
+            <div className="text-sky-300 text-xs mb-1 font-medium">订阅链接（一键导入见下方按钮，或复制后粘贴到 Clash / sing-box / Stash）</div>
+            <div className="font-mono text-sm break-all text-sky-200 rounded-lg border border-sky-500/50 bg-sky-500/15 p-2.5 select-all">{subUrl}#fastergamer</div>
           </div>
 
           <p className="text-xs text-slate-300">
@@ -447,6 +496,71 @@ export default function TokenStatus({ token }: { token: Token }) {
               {previewLoading ? "加载中…" : showPreview ? "隐藏配置内容" : "查看配置内容"}
             </button>
           </div>
+
+          {/* 一键导入：deep link 必须放在 onClick（用户手势）里跳转，否则浏览器会拦截自定义协议 */}
+          {importLinks.length > 0 && (
+            <div className="space-y-2">
+              <p className="text-xs text-slate-400">
+                手机点一下直接唤起客户端完成导入，不用复制粘贴：
+              </p>
+              <div className={`grid gap-3 ${importLinks.length > 1 ? "grid-cols-2" : "grid-cols-1"}`}>
+                {importLinks.map((l) => (
+                  <button
+                    key={l.label}
+                    onClick={() => {
+                      window.location.href = l.href;
+                    }}
+                    className="rounded-lg border border-sky-500/50 bg-sky-500/10 py-2.5 font-medium text-sky-300 hover:bg-sky-500/20 transition-colors"
+                  >
+                    {l.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* 下载配置文件：sub 接口已带 content-disposition，直接下载 .yaml/.json，
+              客户端里选「导入本地文件」即可——适合 deep link 被拦截或想手动管理的场景 */}
+          <div className="space-y-2">
+            <p className="text-xs text-slate-400">
+              也可以下载配置文件，在客户端里选「导入 / Import → 本地文件」：
+            </p>
+            <div className="grid grid-cols-2 gap-3">
+              <a
+                href={`${subUrl}&format=clash`}
+                download
+                className="text-center rounded-lg border border-slate-600 py-2.5 text-sm font-medium text-slate-300 hover:border-sky-500 hover:text-sky-300 transition-colors"
+              >
+                下载 Clash 配置 (.yaml)
+              </a>
+              <a
+                href={`${subUrl}&format=singbox`}
+                download
+                className="text-center rounded-lg border border-slate-600 py-2.5 text-sm font-medium text-slate-300 hover:border-sky-500 hover:text-sky-300 transition-colors"
+              >
+                下载 sing-box 配置 (.json)
+              </a>
+            </div>
+          </div>
+
+          {/* 跨设备导入：二维码内容是订阅链接 + #fastergamer 名称片段（扫码导入后
+              配置文件名与一键导入/deep link 一致；片段不进请求，不识别则忽略）。
+              深色主题下二维码必须垫白底，否则扫码对比度不够 */}
+          <details className="rounded-lg border border-slate-700 bg-slate-900 p-3">
+            <summary className="cursor-pointer text-sm text-slate-300 select-none">
+              在其他设备上导入 ▸
+            </summary>
+            <div className="mt-3 space-y-2">
+              <p className="text-xs text-slate-400">
+                电脑上买的套餐，用手机客户端扫这个码直接导入。
+              </p>
+              <div className="flex justify-center">
+                <div className="rounded-lg bg-white p-3">
+                  <QRCodeSVG value={`${subUrl}#fastergamer`} size={168} />
+                </div>
+              </div>
+            </div>
+          </details>
 
           <button
             onClick={onVerify}
@@ -551,6 +665,38 @@ export default function TokenStatus({ token }: { token: Token }) {
       )}
 
       <DeviceManager token={current} onChange={setCurrent} />
+
+      {subFetchRows.length > 0 && (
+        <div className="rounded-lg bg-slate-800/60 p-3 space-y-2">
+          <div className="flex justify-between text-xs">
+            <span className="text-slate-400">订阅客户端</span>
+            <span className="text-slate-500">各设备最近一次更新订阅</span>
+          </div>
+          <div className="space-y-1 text-xs">
+            {subFetchRows.map((row) => (
+              <div key={row.subUuid} className="flex items-center justify-between gap-2">
+                <span className="text-slate-300">
+                  {row.deviceName}
+                  <span className="text-sky-300/90 ml-2">{row.client}</span>
+                </span>
+                <span className="text-slate-500 shrink-0">
+                  {row.ip ? `${row.ip} · ` : ""}
+                  {new Date(row.at).toLocaleString("zh-CN", {
+                    month: "numeric",
+                    day: "numeric",
+                    hour: "2-digit",
+                    minute: "2-digit",
+                  })}
+                </span>
+              </div>
+            ))}
+          </div>
+          <p className="text-[11px] text-slate-500">
+            客户端类型变了（比如从 Clash 变成 Shadowrocket）通常说明在新设备上导入了订阅；
+            建议给每台设备绑定独立槽位，用量与在线状态才能分开审计。
+          </p>
+        </div>
+      )}
 
       {upgradeOrder && (
         <div className="rounded-xl border border-sky-500/50 bg-sky-500/10 p-4 space-y-3">

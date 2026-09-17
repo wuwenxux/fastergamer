@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Node } from "../../../../shared/types";
-import { buildClashConfig, supportsGeosite } from "../lib/clash";
+import { buildClashConfig, supportsGeosite, supportsModernProtocols } from "../lib/clash";
 
 const NODES: Node[] = [
   { id: "n1", key: "k", name: "香港 CN2", region: "HK", host: "hk1.example.com", port: 443, tls: true, ws_path: "/ws", active: true },
@@ -79,6 +79,31 @@ describe("supportsGeosite UA 判断", () => {
   });
 });
 
+describe("supportsModernProtocols（Reality/Hy2 条目门控）", () => {
+  const MODERN_NODE: Node = {
+    ...NODES[0],
+    reality: { port: 8444, password: "PUBKEY", short_id: "abcd1234", server_name: "gateway.icloud.com" },
+    hy2: { port: 8445 },
+  };
+
+  it("Shadowrocket：放开 ⚡/🚀 协议条目，但 GEOSITE 规则仍按老内核口径省略", () => {
+    expect(supportsModernProtocols("Shadowrocket/2.2.50")).toBe(true);
+    expect(supportsGeosite("Shadowrocket/2.2.50")).toBe(false);
+    const config = buildClashConfig({ uuid: UUID, nodes: [MODERN_NODE], userAgent: "Shadowrocket/2.2.50" });
+    expect(config).toContain("reality-opts:");
+    expect(config).toContain("type: hysteria2");
+    expect(config).not.toContain("GEOSITE");
+  });
+
+  it("老 Premium 内核：⚡/🚀 条目与 GEOSITE 规则都不下发", () => {
+    expect(supportsModernProtocols(OLD_UA)).toBe(false);
+    const config = buildClashConfig({ uuid: UUID, nodes: [MODERN_NODE], userAgent: OLD_UA });
+    expect(config).not.toContain("reality-opts");
+    expect(config).not.toContain("hysteria2");
+    expect(config).not.toContain("GEOSITE");
+  });
+});
+
 describe("GEOSITE 规则按 UA 降级", () => {
   it("老 UA：无 GEOSITE,CN 规则，dns 用 +.cn policy", () => {
     const config = buildClashConfig({ uuid: UUID, nodes: NODES, userAgent: OLD_UA });
@@ -121,6 +146,18 @@ describe("直连规则", () => {
       const config = buildClashConfig({ uuid: UUID, nodes: NODES, userAgent: ua });
       expect(config).toContain("DOMAIN-SUFFIX,fastergamer.cn,DIRECT");
       expect(config).toContain("DOMAIN-SUFFIX,fastergamer.click,DIRECT");
+    }
+  });
+
+  it("小红书域名强制直连，且规则排在 GEOSITE/GEOIP 之前（不依赖解析结果）", () => {
+    for (const ua of [NEW_UA, OLD_UA]) {
+      const config = buildClashConfig({ uuid: UUID, nodes: NODES, userAgent: ua });
+      for (const d of ["xiaohongshu.com", "xhscdn.com", "xhslink.com"]) {
+        const rule = config.indexOf(`DOMAIN-SUFFIX,${d},DIRECT`);
+        expect(rule).toBeGreaterThan(-1);
+        // 其 CDN 有境外边缘 IP，必须抢在 GEOSITE/GEOIP 判定之前
+        expect(rule).toBeLessThan(config.indexOf("GEOIP,CN,DIRECT"));
+      }
     }
   });
 });

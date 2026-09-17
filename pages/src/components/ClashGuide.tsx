@@ -52,10 +52,18 @@ export const CLASH_DOWNLOADS = [
     note: "支持 VLESS + WS",
   },
   {
+    // 后缀 singbox 只用于区分同 OS 的第二个客户端，platformMatches 按 OS 段匹配
+    platform: "Android-singbox",
+    name: "sing-box (SFA)",
+    versionKey: "sfa",
+    url: "https://dl.fastergamer.click/sfa-android-universal.apk",
+    note: "官方免费客户端，支持一键导入",
+  },
+  {
     platform: "iOS",
-    name: "Stash / Shadowrocket",
-    url: "https://apps.apple.com/us/app/stash-rule-based-proxy/id1596063349",
-    note: "Stash 支持 Clash 订阅；Shadowrocket 需手动或转换",
+    name: "sing-box / Stash / Shadowrocket",
+    url: "https://apps.apple.com/us/app/sing-box/id6451272673",
+    note: "需外区 Apple ID；sing-box 免费，详见下方 iOS 说明",
   },
 ];
 
@@ -107,7 +115,7 @@ function detectOS(): string {
 }
 
 /** 同步首判：OS + WebGL 架构（能立刻给出大概率的推荐） */
-export function detectPlatform(): string {
+function detectPlatform(): string {
   const os = detectOS();
   if (os !== "macOS" && os !== "Windows" && os !== "Linux") return os;
   const arch = archFromWebGL();
@@ -148,12 +156,15 @@ export function usePlatform(): string {
 }
 
 /** 下载项与检测结果的匹配：精确匹配优先；无架构后缀的下载项（Windows/Linux/Android
- *  只有单构建）匹配该 OS 的任意架构；macOS 分构建，未识别出架构时不推荐 */
+ *  只有单构建）匹配该 OS 的任意架构；macOS 分构建，未识别出架构时不推荐。
+ *  Android 同 OS 可有多个客户端（Android-singbox），后缀仅区分客户端，按 OS 段匹配 */
 export function platformMatches(downloadPlatform: string, detected: string): boolean {
   if (!detected) return false;
   if (downloadPlatform === detected) return true;
-  if (downloadPlatform.includes("-")) return false;
+  const [dlOs] = downloadPlatform.split("-");
   const [os] = detected.split("-");
+  if (dlOs.toLowerCase() === "android") return os.toLowerCase() === "android";
+  if (downloadPlatform.includes("-")) return false;
   return downloadPlatform.toLowerCase() === os.toLowerCase();
 }
 
@@ -164,7 +175,7 @@ interface Step {
   verify: string;
 }
 
-type AppKey = "clash_verge" | "cmfa" | "ios";
+type AppKey = "clash_verge" | "cmfa" | "singbox" | "ios";
 
 interface AppGuide {
   name: string;
@@ -199,15 +210,27 @@ const APP_GUIDES: Record<AppKey, AppGuide> = {
       "状态栏出现钥匙 / VPN 图标即表示已开启",
     ],
   },
-  ios: {
-    name: "Stash",
+  singbox: {
+    name: "sing-box (SFA)",
     importSteps: [
-      "打开 Stash，点底部「配置」→ 右上角「+」→「订阅」",
-      "粘贴本站 Clash 订阅链接，保存并等待下载完成",
-      "Shadowrocket 用户见页面底部「iPhone / iPad 使用说明」方案 B",
+      "打开 sing-box，点底部「Profiles」→ 右下角「+」（New Profile）",
+      "Type 选择「Remote」，在 URL 栏粘贴订阅链接",
+      "点「Create」保存，回到 Profiles 列表选中该配置启用",
     ],
     enableSteps: [
-      "回到 Stash 首页，打开「启动」开关",
+      "回到首页，打开顶部的启用开关",
+      "首次启动会弹出「VPN 连接请求」系统对话框，必须点「允许」",
+    ],
+  },
+  ios: {
+    name: "sing-box / Stash",
+    importSteps: [
+      "优先用一键导入：在本站「我的 Token」页点「导入到 sing-box / Stash」按钮即可",
+      "手动导入 sing-box：Profiles → + → New Profile → Type 选 Remote → 粘贴订阅链接 → Create",
+      "手动导入 Stash：配置 → 右上角 + → 订阅，粘贴本站 Clash 订阅链接",
+    ],
+    enableSteps: [
+      "回到 App 首页，打开启动开关",
       "首次启动会弹出「添加 VPN 配置」系统授权，点「允许」",
     ],
   },
@@ -215,17 +238,24 @@ const APP_GUIDES: Record<AppKey, AppGuide> = {
 
 export default function ClashGuide() {
   const currentPlatform = usePlatform();
-  const recommended = CLASH_DOWNLOADS.find((d) => platformMatches(d.platform, currentPlatform));
+  // 当前设备适配的全部下载项（Android 会同时命中 CMFA 与 sing-box，并列推荐）
+  const recommendedList = CLASH_DOWNLOADS.filter(
+    (d) => d.platform !== "iOS" && platformMatches(d.platform, currentPlatform)
+  );
   const [versions, setVersions] = useState<Record<string, string>>({});
 
-  // 识别当前设备适配的客户端：iOS 固定走 Stash 指引，其余按推荐下载项的 versionKey
-  const appKey: AppKey | "" =
-    detectOS() === "iOS"
-      ? "ios"
-      : recommended && "versionKey" in recommended
-      ? (recommended.versionKey as AppKey)
-      : "";
-  const appGuide = appKey ? APP_GUIDES[appKey] : null;
+  // 识别当前设备适配的客户端：iOS 固定走 iOS 指引；Android 并列 CMFA 与 sing-box；
+  // 桌面端按推荐下载项的 versionKey
+  const os = detectOS();
+  const appKeys: AppKey[] =
+    os === "iOS"
+      ? ["ios"]
+      : os === "Android"
+      ? ["cmfa", "singbox"]
+      : recommendedList[0] && "versionKey" in recommendedList[0]
+      ? [recommendedList[0].versionKey as AppKey]
+      : [];
+  const appGuides = appKeys.map((k) => APP_GUIDES[k]);
 
   // 下载站（R2）上的 version.json 由 scripts/update-clients.py 每天自动刷新
   useEffect(() => {
@@ -238,14 +268,14 @@ export default function ClashGuide() {
   const steps: Step[] = [
     {
       id: "client",
-      title: "下载并安装 Clash 客户端",
+      title: "下载并安装客户端",
       detail: (
         <>
           <p className="mb-2">
             必须选择支持 <strong>VLESS + WebSocket</strong> 的客户端（iOS 见下方专属说明）：
           </p>
           <p className="mb-2 rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-3 text-xs text-emerald-300">
-            ⚡ 下列客户端均为新内核（mihomo 系），导入订阅后会自动获得带 <strong>⚡</strong> 后缀的直连节点：
+            ⚡ 下列客户端均为新内核（mihomo / sing-box 系），导入订阅后会自动获得带 <strong>⚡</strong> 后缀的直连节点：
             少一层握手延迟更低、不依赖域名解析更稳定、抗封锁能力更强。仍在用 Clash for Windows /
             ClashX 等停更老客户端的用户，建议升级为 Clash Verge Rev 以获得 ⚡ 节点。
           </p>
@@ -269,15 +299,20 @@ export default function ClashGuide() {
               </li>
             ))}
           </ul>
-          {recommended && recommended.platform !== "iOS" && (
-            <a
-              href={recommended.url}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="inline-flex items-center mt-3 rounded-lg bg-sky-500 px-4 py-2 text-sm font-medium hover:bg-sky-400 transition-colors"
-            >
-              下载 {recommended.name}（检测到适配你的设备）
-            </a>
+          {recommendedList.length > 0 && (
+            <div className="flex flex-wrap gap-3 mt-3">
+              {recommendedList.map((d) => (
+                <a
+                  key={d.platform}
+                  href={d.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center rounded-lg bg-sky-500 px-4 py-2 text-sm font-medium hover:bg-sky-400 transition-colors"
+                >
+                  下载 {d.name}（检测到适配你的设备）
+                </a>
+              ))}
+            </div>
           )}
         </>
       ),
@@ -289,31 +324,48 @@ export default function ClashGuide() {
       detail: (
         <>
           <p className="mb-2">
-            在「我的 Token」页面复制订阅链接。<strong>订阅链接不是用浏览器打开的</strong>，
-            需要粘贴到 Clash / Stash 里导入。
+            在「我的 Token」页面<strong>点「一键导入」按钮直接唤起客户端完成导入</strong>，最省事。
+            也可以复制订阅链接手动导入——注意订阅链接<strong>不是用浏览器打开的</strong>，
+            要粘贴到客户端的订阅入口里。
           </p>
           <Link
             to="/tokens"
             className="inline-flex items-center rounded-lg border border-sky-500/50 bg-sky-500/10 px-4 py-2 text-sm font-medium text-sky-400 hover:bg-sky-500/20 transition-colors"
           >
-            前往我的 Token 获取链接 →
+            前往我的 Token 一键导入 →
           </Link>
         </>
       ),
-      verify: "链接已验证可用，并已成功复制到剪贴板。",
+      verify: "已通过一键导入唤起客户端，或链接已复制到剪贴板。",
     },
     {
       id: "import",
-      title: appGuide ? `导入订阅到 ${appGuide.name}` : "导入订阅到 Clash",
-      detail: appGuide ? (
-        <ol className="list-decimal list-inside space-y-1 text-slate-400">
-          {appGuide.importSteps.map((s) => (
-            <li key={s}>{s}</li>
+      title:
+        appGuides.length > 0
+          ? `导入订阅到 ${appGuides.map((g) => g.name).join(" / ")}`
+          : "导入订阅",
+      detail: appGuides.length > 0 ? (
+        <div className="space-y-3">
+          <p className="text-slate-400">
+            优先用「我的 Token」页的<strong className="text-sky-300">一键导入</strong>按钮；
+            一键导入不可用时，按下面的步骤手动粘贴订阅链接：
+          </p>
+          {appGuides.map((g) => (
+            <div key={g.name}>
+              {appGuides.length > 1 && (
+                <div className="font-medium text-sky-400 mb-1">{g.name}</div>
+              )}
+              <ol className="list-decimal list-inside space-y-1 text-slate-400">
+                {g.importSteps.map((s) => (
+                  <li key={s}>{s}</li>
+                ))}
+              </ol>
+            </div>
           ))}
-        </ol>
+        </div>
       ) : (
         <ol className="list-decimal list-inside space-y-1 text-slate-400">
-          <li>打开 Clash 客户端，进入「订阅 / Profiles」</li>
+          <li>打开客户端，进入「订阅 / Profiles」</li>
           <li>粘贴刚才复制的订阅链接</li>
           <li>点击「下载 / Download」</li>
           <li>等待右上角提示更新成功</li>
@@ -356,13 +408,25 @@ export default function ClashGuide() {
     },
     {
       id: "enable",
-      title: appGuide ? `在 ${appGuide.name} 中开启代理` : "开启系统代理",
-      detail: appGuide ? (
-        <ol className="list-decimal list-inside space-y-1 text-slate-400">
-          {appGuide.enableSteps.map((s) => (
-            <li key={s}>{s}</li>
+      title:
+        appGuides.length > 0
+          ? `在 ${appGuides.map((g) => g.name).join(" / ")} 中开启代理`
+          : "开启系统代理",
+      detail: appGuides.length > 0 ? (
+        <div className="space-y-3">
+          {appGuides.map((g) => (
+            <div key={g.name}>
+              {appGuides.length > 1 && (
+                <div className="font-medium text-sky-400 mb-1">{g.name}</div>
+              )}
+              <ol className="list-decimal list-inside space-y-1 text-slate-400">
+                {g.enableSteps.map((s) => (
+                  <li key={s}>{s}</li>
+                ))}
+              </ol>
+            </div>
           ))}
-        </ol>
+        </div>
       ) : (
         <p className="text-slate-400">
           返回主界面，打开「系统代理 / System Proxy」开关。如果长时间不稳定，可尝试开启 TUN 模式（需要管理员权限）。
@@ -415,7 +479,7 @@ export default function ClashGuide() {
       <div>
         <h3 className="font-semibold text-lg">🤝 新手教程：从安装到连通</h3>
         <p className="text-sm text-slate-400 mt-1">
-          本服务使用 VLESS + WebSocket 协议，请使用 Clash Verge / Clash Meta / mihomo 内核客户端。
+          本服务使用 VLESS + WebSocket 协议，请使用 Clash Verge / Clash Meta（mihomo 内核）或 sing-box 客户端。
         </p>
       </div>
 
@@ -429,10 +493,11 @@ export default function ClashGuide() {
         完成进度：{checked.size} / {steps.length} 步
       </p>
 
-      {appGuide && (
+      {appGuides.length > 0 && (
         <div className="rounded-xl border border-sky-500/40 bg-sky-500/10 p-3 text-sm text-sky-300">
-          已识别你的设备（{currentPlatform}），适配客户端为 <strong>{appGuide.name}</strong>
-          ，下面步骤 3 与步骤 5 已按它的实际界面给出具体操作。
+          已识别你的设备（{currentPlatform}），适配客户端为{" "}
+          <strong>{appGuides.map((g) => g.name).join(" / ")}</strong>
+          ，下面步骤 3 与步骤 6 已按它的实际界面给出具体操作。
         </div>
       )}
 
@@ -473,33 +538,72 @@ export default function ClashGuide() {
       <div className="rounded-xl border border-slate-700 bg-slate-950 p-4">
         <h4 className="font-medium text-slate-200 mb-2">📱 iPhone / iPad 使用说明</h4>
         <p className="text-sm text-slate-400 mb-3">
-          iOS 推荐用 <strong>Stash</strong>，可直接导入本站 Clash 订阅；Shadowrocket 需要手动配置或转换订阅。
+          前提：代理类 App 在国区 App Store 已全部下架，需要先准备一个
+          <strong className="text-slate-200">外区（如美区）Apple ID</strong>
+          ，在 App Store 登录后才能下载下面的客户端（获取方法见文末折叠块）。
         </p>
         <div className="space-y-3 text-sm">
           <div>
-            <div className="font-medium text-sky-400">方案 A：Stash（推荐，支持 Clash YAML）</div>
+            <div className="font-medium text-sky-400">方案 A：sing-box（免费，推荐）</div>
             <ol className="list-decimal list-inside mt-1 space-y-1 text-slate-400">
-              <li>美区 App Store 搜索并安装 <strong>Stash</strong></li>
-              <li>打开 Stash →「配置」→ 右上角 + →「订阅」</li>
-              <li>粘贴本站 Clash 订阅链接，保存并下载</li>
-              <li>返回首页，打开「启动」开关即可</li>
+              <li>
+                外区 App Store 免费下载{" "}
+                <a
+                  href="https://apps.apple.com/us/app/sing-box/id6451272673"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-sky-400 hover:underline"
+                >
+                  sing-box ↗
+                </a>
+              </li>
+              <li>在本站「我的 Token」页点「导入到 sing-box」一键导入；或用 sing-box 扫页面上的订阅二维码</li>
+              <li>手动方式：Profiles → + → New Profile → Type 选 Remote → 粘贴订阅链接 → Create</li>
+              <li>回到首页打开开关，允许系统 VPN 授权即可</li>
             </ol>
             <p className="text-xs text-slate-500 mt-1">
-              确认标志：配置里出现 VLESS 节点，且能正常访问外网。
+              确认标志：Profiles 里出现 fastergamer 配置，启动后能正常访问外网。
             </p>
           </div>
           <div>
-            <div className="font-medium text-sky-400">方案 B：Shadowrocket</div>
+            <div className="font-medium text-sky-400">方案 B：Stash（付费，体验好）</div>
             <ol className="list-decimal list-inside mt-1 space-y-1 text-slate-400">
-              <li>美区 App Store 购买并安装 <strong>Shadowrocket</strong></li>
-              <li>点击右上角 + → 类型选择 <strong>VLESS</strong></li>
-              <li>依次填写：地址（节点 host）、端口 443、UUID（你的 token）、传输方式 ws、路径 /vless-ws、TLS 开启</li>
-              <li>保存后连接</li>
+              <li>外区 App Store 购买并安装 <strong>Stash</strong></li>
+              <li>在本站「我的 Token」页点「导入到 Stash」一键导入</li>
+              <li>手动方式：「配置」→ 右上角 + →「订阅」，粘贴本站 Clash 订阅链接，保存并下载</li>
+              <li>返回首页，打开「启动」开关</li>
+            </ol>
+          </div>
+          <div>
+            <div className="font-medium text-sky-400">方案 C：Shadowrocket（付费 $2.99）</div>
+            <ol className="list-decimal list-inside mt-1 space-y-1 text-slate-400">
+              <li>外区 App Store 购买并安装 <strong>Shadowrocket</strong></li>
+              <li>
+                它原生支持 Clash 订阅：首页右上角 + → 类型选「Subscribe」，直接粘贴本站 Clash 订阅链接保存
+              </li>
+              <li>回到首页选择节点，打开连接开关</li>
             </ol>
             <p className="text-xs text-slate-500 mt-1">
-              或者使用在线订阅转换工具，把 Clash 链接转成 Shadowrocket 格式后导入。
+              无需再手动填写地址/端口/UUID 等字段，也无需第三方订阅转换。
             </p>
           </div>
+          <details className="rounded-lg border border-slate-700 bg-slate-900 p-3">
+            <summary className="cursor-pointer font-medium text-slate-300 select-none">
+              外区 Apple ID 获取指引 ▸
+            </summary>
+            <div className="mt-2 space-y-2 text-xs text-slate-400">
+              <p>自己注册一个（免费、最安全）：</p>
+              <ol className="list-decimal list-inside space-y-1">
+                <li>浏览器打开 appleid.apple.com，注册新账号，国家/地区选「美国」</li>
+                <li>付款方式选「None」（不填信用卡），账单地址填一个美国地址即可</li>
+                <li>注册完成后，在 iPhone 的 App Store 里退出国区号、登录新号，即可搜索下载</li>
+              </ol>
+              <p className="text-amber-400/90">
+                ⚠️ 安全提醒：外区账号只在 App Store 里登录，绝不要在「设置 → iCloud」登录他人账号
+                （可能被远程锁机）；不要购买来历不明的共享号。
+              </p>
+            </div>
+          </details>
         </div>
       </div>
 
