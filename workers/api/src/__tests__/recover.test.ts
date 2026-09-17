@@ -78,18 +78,18 @@ describe("POST /api/tokens/recover（不在响应泄露 token 数据）", () => 
     expect(JSON.stringify(body)).not.toContain("user@example.com");
   });
 
-  it("收件人节流：同一邮箱第 4 次起静默 ok，不再跑全量 list", async () => {
+  it("收件人节流：同一邮箱超小时后限静默 ok，不再跑全量 list", async () => {
     const { ns, store, list } = fakeNs();
     seedToken(store, "user@example.com", "tk_throttle_1");
     const env = makeEnv(ns);
-    for (let i = 0; i < 3; i++) {
+    for (let i = 0; i < MAIL_THROTTLE_LIMIT; i++) {
       await post(app, "/api/tokens/recover", "user@example.com", env);
     }
-    expect(list).toHaveBeenCalledTimes(3);
+    expect(list).toHaveBeenCalledTimes(MAIL_THROTTLE_LIMIT);
     const res = await post(app, "/api/tokens/recover", "user@example.com", env);
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ ok: true });
-    expect(list).toHaveBeenCalledTimes(3); // 被节流，未触发全量 KV list
+    expect(list).toHaveBeenCalledTimes(MAIL_THROTTLE_LIMIT); // 被节流，未触发全量 KV list
   });
 });
 

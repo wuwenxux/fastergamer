@@ -1,25 +1,12 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link, useLocation } from "react-router-dom";
-import type { TokenStatus as TokenStatusType } from "../../../shared/types";
 import TokenStatus from "../components/TokenStatus";
 import ReferralCard from "../components/ReferralCard";
+import Turnstile, { type TurnstileHandle, type TurnstileState } from "../components/Turnstile";
+import { STATUS_COLOR, STATUS_LABEL } from "../lib/status";
 import { api, type TokenView } from "../services/api";
 
 const STORAGE_KEY = "my_tokens";
-
-const STATUS_LABEL: Record<TokenStatusType, string> = {
-  paid: "待激活",
-  active: "使用中",
-  expired: "已过期",
-  revoked: "已撤销",
-};
-
-const STATUS_COLOR: Record<TokenStatusType, string> = {
-  paid: "bg-amber-500/20 text-amber-300 border-amber-500/40",
-  active: "bg-emerald-500/20 text-emerald-300 border-emerald-500/40",
-  expired: "bg-rose-500/20 text-rose-300 border-rose-500/40",
-  revoked: "bg-slate-600/30 text-slate-400 border-slate-500/40",
-};
 
 function readSavedIds(): string[] {
   try {
@@ -126,16 +113,23 @@ export default function Tokens() {
   };
 
   const [linkSent, setLinkSent] = useState(false);
+  const [linkThrottled, setLinkThrottled] = useState(false);
   const isEmailInput = input.includes("@");
+  // 人机验证：只对发登录链接（邮箱输入）生效，按 token ID 查询不拦截
+  const [ts, setTs] = useState<TurnstileState>({ enabled: false });
+  const tsRef = useRef<TurnstileHandle>(null);
 
   const sendLoginLink = async () => {
+    if (ts.enabled && !ts.token) return; // 已启用但验证未通过，按钮已禁用，这里兜底拦 Enter 提交
     setLoading(true);
     setError("");
     try {
-      await api.loginLink(input.trim());
+      const res = await api.loginLink(input.trim(), ts.token);
+      setLinkThrottled(res?.throttled === true);
       setLinkSent(true);
     } catch (e) {
       setError((e as Error).message);
+      tsRef.current?.reset(); // token 一次性且 300s 过期，失败后重置重新获取
     } finally {
       setLoading(false);
     }
@@ -143,6 +137,7 @@ export default function Tokens() {
 
   const query = () => {
     setLinkSent(false);
+    setLinkThrottled(false);
     if (isEmailInput) {
       void sendLoginLink();
     } else {
@@ -162,6 +157,8 @@ export default function Tokens() {
     <div className="max-w-2xl mx-auto space-y-6">
       <h2 className="text-2xl font-bold">我的 Token</h2>
 
+      <Turnstile ref={tsRef} onStateChange={setTs} />
+
       <div className="flex gap-3">
         <input
           value={input}
@@ -172,7 +169,7 @@ export default function Tokens() {
         />
         <button
           onClick={query}
-          disabled={loading}
+          disabled={loading || (isEmailInput && ts.enabled && !ts.token)}
           className="rounded-lg bg-sky-500 px-6 font-medium hover:bg-sky-400 transition-colors disabled:opacity-60"
         >
           {loading ? "处理中…" : isEmailInput ? "发送登录链接" : "查询"}
@@ -185,8 +182,10 @@ export default function Tokens() {
         </p>
       )}
       {linkSent && (
-        <p className="text-sm text-emerald-400">
-          ✅ 如果该邮箱购买过服务，登录链接已发送，请查收邮件（含垃圾邮件文件夹）并点击链接进入。
+        <p className={`text-sm ${linkThrottled ? "text-amber-400" : "text-emerald-400"}`}>
+          {linkThrottled
+            ? "⚠️ 该邮箱发送过于频繁，本次未重复发信。请查收之前收到的登录邮件（链接 72 小时内有效，含垃圾邮件文件夹），或一小时后再试。"
+            : "✅ 如果该邮箱购买过服务，登录链接已发送，请查收邮件（含垃圾邮件文件夹）并点击链接进入。"}
         </p>
       )}
 
@@ -195,18 +194,6 @@ export default function Tokens() {
       <p className="text-xs text-slate-500">
         忘记 Token ID？直接输入购买时留的邮箱，登录链接邮件里会列出名下所有 Token。
       </p>
-
-      {loggedIn && (
-        <div className="rounded-xl border border-slate-700 bg-slate-900 px-4 py-3 flex items-center justify-between">
-          <div className="text-sm">
-            <span className="text-slate-300">防失联登记</span>
-            <span className="text-xs text-slate-500 ml-2">入口有变动时通过备用邮箱/TG 通知你</span>
-          </div>
-          <Link to="/register" className="text-sm text-sky-400 hover:underline shrink-0">
-            去登记 →
-          </Link>
-        </div>
-      )}
 
       {token &&
         (token.restricted ? (
@@ -268,6 +255,18 @@ export default function Tokens() {
 
       {loadingSaved && savedTokens.length === 0 && (
         <p className="text-sm text-slate-500">正在加载历史 Token…</p>
+      )}
+
+      {loggedIn && (
+        <div className="rounded-xl border border-slate-800 px-4 py-3 flex items-center justify-between">
+          <div className="text-sm">
+            <span className="text-slate-400">备用联系方式（选填）</span>
+            <span className="text-xs text-slate-500 ml-2">网站换入口或邮箱收不到信时通知你</span>
+          </div>
+          <Link to="/register" className="text-sm text-slate-400 hover:text-sky-400 shrink-0">
+            登记 →
+          </Link>
+        </div>
       )}
     </div>
   );
@@ -344,10 +343,69 @@ function RestrictedTokenCard({ token }: { token: TokenView }) {
         <p className="text-sm text-amber-300">
           🔒 为保护账号安全，UUID / 订阅链接 / 设备管理需验证邮箱后查看
         </p>
-        <p className="text-xs text-amber-200/70">
-          在上方输入购买时填写的邮箱并点击「发送登录链接」，点邮件里的一次性链接即可直接登录查看完整信息。
-        </p>
+        <LoginLinkInline />
       </div>
+    </div>
+  );
+}
+
+/** 受限卡片内嵌的登录链接发送表单：就地输入邮箱发链接，不用回到页面顶部改输入框 */
+function LoginLinkInline() {
+  const [email, setEmail] = useState("");
+  const [state, setState] = useState<"idle" | "sending" | "sent" | "throttled">("idle");
+  const [err, setErr] = useState("");
+  // 人机验证：未启用时不拦截；启用后需先过验证拿到一次性 token
+  const [ts, setTs] = useState<TurnstileState>({ enabled: false });
+  const tsRef = useRef<TurnstileHandle>(null);
+
+  const send = async () => {
+    if (ts.enabled && !ts.token) return; // 已启用但验证未通过，按钮已禁用，这里兜底拦 Enter 提交
+    setErr("");
+    setState("sending");
+    try {
+      const res = await api.loginLink(email.trim(), ts.token);
+      setState(res?.throttled ? "throttled" : "sent");
+    } catch (e) {
+      setErr((e as Error).message);
+      setState("idle");
+      tsRef.current?.reset(); // token 一次性且 300s 过期，失败后重置重新获取
+    }
+  };
+
+  if (state === "sent" || state === "throttled") {
+    return (
+      <p className={`text-xs ${state === "throttled" ? "text-amber-200" : "text-emerald-300"}`}>
+        {state === "throttled"
+          ? "⚠️ 该邮箱发送过于频繁，本次未重复发信。请翻查之前收到的登录邮件（链接 72 小时内有效，含垃圾邮件文件夹），或一小时后再试。"
+          : "✅ 登录链接已发送（如果该邮箱购买过服务）。点击邮件里的链接后，会在打开的页面直接显示订阅链接与一键导入按钮，请在那个页面复制使用。"}
+      </p>
+    );
+  }
+
+  return (
+    <div className="space-y-2">
+      <p className="text-xs text-amber-200/70">
+        输入购买时填写的邮箱，把一键登录链接发到邮箱，点邮件里的链接即可查看完整信息（链接 72 小时内有效）。
+      </p>
+      <Turnstile ref={tsRef} onStateChange={setTs} />
+      <div className="flex gap-2">
+        <input
+          type="email"
+          value={email}
+          onChange={(e) => setEmail(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && send()}
+          placeholder="购买时填写的邮箱"
+          className="flex-1 rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm outline-none focus:border-sky-500"
+        />
+        <button
+          onClick={send}
+          disabled={state === "sending" || !email.includes("@") || (ts.enabled && !ts.token)}
+          className="rounded-lg bg-sky-500 px-4 text-sm font-medium hover:bg-sky-400 transition-colors disabled:opacity-60"
+        >
+          {state === "sending" ? "发送中…" : "发送登录链接"}
+        </button>
+      </div>
+      {err && <p className="text-xs text-rose-400">{err}</p>}
     </div>
   );
 }

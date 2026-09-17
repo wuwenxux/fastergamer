@@ -217,28 +217,6 @@ export const api = {
       headers: sessionHeaders(),
     }),
 
-  /** 凭联系方式找回 token（返回概要列表，不含 uuid） */
-  recoverTokens: (contact: string) =>
-    request<
-      Array<
-        Pick<
-          Token,
-          | "id"
-          | "status"
-          | "plan_id"
-          | "purchased_at"
-          | "activated_at"
-          | "expires_at"
-          | "traffic_limit_gb"
-          | "traffic_used_gb"
-          | "contact"
-        >
-      >
-    >("/api/tokens/recover", {
-      method: "POST",
-      body: JSON.stringify({ contact }),
-    }),
-
   /** 公开 FAQ 列表 */
   faq: () => request<FaqItem[]>("/api/faq"),
 
@@ -257,9 +235,9 @@ export const api = {
       body: JSON.stringify(input),
     }),
 
-  /** 发送免密登录链接到邮箱（链接带一次性 ticket，点开即登录进入管理页） */
+  /** 发送免密登录链接到邮箱（ticket 72 小时有效、期内可重复打开）；throttled=true 表示该邮箱小时级发送超限、未实际发信 */
   loginLink: (contact: string, turnstileToken?: string) =>
-    request<null>("/api/tokens/login-link", {
+    request<{ throttled?: boolean }>("/api/tokens/login-link", {
       method: "POST",
       headers: turnstileHeaders(turnstileToken),
       body: JSON.stringify({ contact }),

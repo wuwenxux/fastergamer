@@ -4,6 +4,7 @@ import AuthMagic from "./pages/AuthMagic";
 import Home from "./pages/Home";
 import Guide from "./pages/Guide";
 import Purchase from "./pages/Purchase";
+import Recover from "./pages/Recover";
 import Register from "./pages/Register";
 import Support from "./pages/Support";
 import Tokens from "./pages/Tokens";
@@ -36,6 +37,8 @@ export default function App() {
           <Route path="/" element={<Home />} />
           <Route path="/buy" element={<Purchase />} />
           <Route path="/tokens" element={<Tokens />} />
+          {/* 找回 Token：发货邮件里固定的找回入口（邮箱收一键登录链接） */}
+          <Route path="/recover" element={<Recover />} />
           <Route path="/auth/magic" element={<AuthMagic />} />
           {/* 防失联登记：隐藏路由，不进导航，仅登录用户从「我的 Token」页进入 */}
           <Route path="/register" element={<Register />} />
@@ -55,6 +58,9 @@ export default function App() {
         <a href="mailto:support@fastergamer.cn" className="text-sky-400 hover:underline mx-1">
           support@fastergamer.cn
         </a>
+        <Link to="/recover" className="text-sky-400 hover:underline mx-1">
+          找回 Token
+        </Link>
       </footer>
     </div>
   );

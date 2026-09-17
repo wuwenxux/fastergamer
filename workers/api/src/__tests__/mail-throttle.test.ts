@@ -17,7 +17,7 @@ const fakeNs = () => {
 const makeEnv = (ns: KVNamespace) => ({ TOKENS: ns }) as unknown as Env;
 
 describe("mailThrottleAllows（收件人邮件节流）", () => {
-  it("每邮箱每小时限 3 封，第 4 封起拒绝", async () => {
+  it("每邮箱每小时限 5 封，第 6 封起拒绝", async () => {
     const env = makeEnv(fakeNs());
     for (let i = 0; i < MAIL_THROTTLE_LIMIT; i++) {
       expect(await mailThrottleAllows(env, "a@b.com")).toBe(true);
