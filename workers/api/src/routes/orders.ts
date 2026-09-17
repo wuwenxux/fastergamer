@@ -45,6 +45,10 @@ ordersRoutes.post("/", async (c) => {
   if (plan.id === "plan_3days") {
     return c.json({ ok: false, error: "该套餐为免费体验，请在首页输入邮箱直接领取" }, 400);
   }
+  // 企业套餐已从 click 站下架，只在 fastergamer.cn 展示、邮件洽谈
+  if (plan.id.startsWith("plan_biz")) {
+    return c.json({ ok: false, error: "企业套餐请前往 fastergamer.cn 邮件洽谈" }, 400);
+  }
 
   const order: Order = {
     id: newOrderId(),

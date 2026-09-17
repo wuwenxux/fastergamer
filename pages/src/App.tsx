@@ -21,12 +21,6 @@ export default function App() {
           <Link to="/tokens" className="hover:text-sky-400 transition-colors">
             我的 Token
           </Link>
-          <a
-            href="https://fastergamer.cn"
-            className="hover:text-sky-400 transition-colors"
-          >
-            企业服务
-          </a>
           <Link to="/guide" className="hover:text-sky-400 transition-colors">
             使用教程
           </Link>

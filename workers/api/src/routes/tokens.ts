@@ -474,6 +474,10 @@ tokensRoutes.post("/:id/upgrade", async (c) => {
   if (!target || target.id === "plan_3days") {
     return c.json({ ok: false, error: "目标套餐不存在" }, 404);
   }
+  // 企业套餐已从 click 站下架，不作为升级目标
+  if (target.id.startsWith("plan_biz")) {
+    return c.json({ ok: false, error: "企业套餐请前往 fastergamer.cn 邮件洽谈" }, 400);
+  }
   if (target.id === token.plan_id) {
     return c.json({ ok: false, error: "已是该套餐，无需升级" }, 400);
   }
