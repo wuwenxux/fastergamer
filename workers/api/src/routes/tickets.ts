@@ -11,6 +11,7 @@ import { mailThrottleAllows } from "../lib/mail-throttle";
 import { maskEmail } from "../lib/mask-email";
 import { listTickets, saveTicket } from "../lib/kv";
 import { escapeHtml } from "../lib/escape-html";
+import { siteUrl } from "../lib/site-url";
 import type { Env } from "../types";
 
 export const ticketsRoutes = new Hono<{ Bindings: Env }>();
@@ -51,7 +52,7 @@ ticketsRoutes.post("/feedback", async (c) => {
   await saveTicket(c.env, ticket);
 
   // 回执邮件（尽力发送，失败不影响提交）；按收件人节流（防邮件炸弹），超限静默不发
-  const site = (c.env.SITE_URL ?? "https://fastergamer.cn").replace(/\/$/, "");
+  const site = siteUrl(c.env);
   (async () => {
     if (!(await mailThrottleAllows(c.env, contact))) return;
     await sendMail(

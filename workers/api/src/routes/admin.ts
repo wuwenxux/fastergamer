@@ -2,13 +2,13 @@ import { Hono } from "hono";
 import { KV } from "../../../../shared/types";
 import type { Plan, Presence, Registration, Token } from "../../../../shared/types";
 import { adminAuth } from "../middleware/admin";
-import { deleteDeviceIndex, deleteTokenByUuid, getOrder, getPlans, getTicket, getTokenById, getTokenPresence, listKeys, listOrders, listTickets, listTokensByContact, mergeTokenSettlement, rotateTokenUuid, saveOrder, savePlans, savePresenceIfChanged, saveTicket, saveToken } from "../lib/kv";
+import { deleteDeviceIndex, deleteTokenCascade, getOrder, getPlans, getTicket, getTokenById, getTokenPresence, listKeys, listOrders, listTickets, listTokensByContact, mergeTokenSettlement, rotateTokenUuid, saveOrder, savePlans, savePresenceIfChanged, saveTicket, saveToken } from "../lib/kv";
 import { notifyAdmin } from "../lib/risk-notify";
 import { getNodes } from "../lib/nodes";
-import { isEmail, sendMail, shouldSendEmail } from "../lib/email-aliyun";
+import { sendMail, shouldSendEmail } from "../lib/email-aliyun";
 import { getEpayConfig, refundEpayOrder } from "../lib/epay";
 import { computeRefundQuote } from "../lib/refund";
-import { resetPenalty } from "../lib/reset-penalty";
+import { resetPenalty, sendPenaltyNoticeEmail } from "../lib/reset-penalty";
 import { restoreCredit } from "../lib/referral";
 import { pushAuthRefresh } from "../lib/authpush";
 import { escapeHtml } from "../lib/escape-html";
@@ -180,18 +180,7 @@ adminRoutes.post("/tokens/:id/reset-penalty", async (c) => {
   c.executionCtx.waitUntil(pushAuthRefresh(c.env));
 
   // 通知客户重置结果
-  if (shouldSendEmail(token.contact)) {
-    const res = await sendMail(
-      c.env,
-      token.contact,
-      "【GameBoost】你的流量额度已重置",
-      `<p>你好，你的 Token（<strong>${token.id}</strong>）流量已重置为满额 <strong>${token.traffic_limit_gb} GB</strong>，服务已恢复。</p>
-       <p>本次重置后有效期至 <strong>${token.expires_at ? new Date(token.expires_at).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" }) : "未知"}</strong>（提前 ${daysPenalty} 天）。</p>
-       <p>如流量消耗异常，请登录管理页检查设备列表。</p>`,
-      `你的 Token（${token.id}）流量已重置为满额 ${token.traffic_limit_gb} GB，服务已恢复。\n有效期至 ${token.expires_at ? new Date(token.expires_at).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" }) : "未知"}（提前 ${daysPenalty} 天）。\n如流量消耗异常请检查设备列表。`
-    );
-    if (!res.ok) console.error(`[reset-penalty] mail failed ${token.id}: ${res.error}`);
-  }
+  await sendPenaltyNoticeEmail(c.env, token, daysPenalty);
 
   return c.json({ ok: true, data: token });
 });
@@ -297,14 +286,7 @@ adminRoutes.post("/orders/:id/refund", async (c) => {
 adminRoutes.delete("/tokens/:id", async (c) => {
   const token = await getTokenById(c.env, c.req.param("id"));
   if (!token) return c.json({ ok: false, error: "token not found" }, 404);
-  await c.env.TOKENS.delete(KV.TOKEN + token.uuid);
-  await c.env.TOKENS.delete(KV.TOKEN_BY_ID + token.id);
-  await c.env.TOKENS.delete(KV.PRESENCE + token.uuid);
-  // 清设备反查索引与试用领取标记，避免残留脏数据
-  for (const d of token.devices ?? []) await deleteDeviceIndex(c.env, d.uuid);
-  if (token.contact && isEmail(token.contact)) {
-    await c.env.TOKENS.delete(KV.TRIAL + token.contact.trim().toLowerCase());
-  }
+  await deleteTokenCascade(c.env, token, { devices: true, trialMarker: true });
   // 删除活跃 token 需立即从各节点白名单摘除
   c.executionCtx.waitUntil(pushAuthRefresh(c.env));
   return c.json({ ok: true });
@@ -417,9 +399,7 @@ adminRoutes.post("/notify-scan", async (c) => {
       (token.purchased_at ?? 0) > 0 &&
       (token.purchased_at ?? 0) < now - 3 * 86_400_000
     ) {
-      await c.env.TOKENS.delete(KV.TOKEN + token.uuid);
-      await c.env.TOKENS.delete(KV.TOKEN_BY_ID + token.id);
-      await c.env.TOKENS.delete(KV.PRESENCE + token.uuid);
+      await deleteTokenCascade(c.env, token);
       purgedTokens++;
       continue;
     }
@@ -431,10 +411,7 @@ adminRoutes.post("/notify-scan", async (c) => {
       endAt > 0 &&
       endAt < now - RETENTION_MS
     ) {
-      await c.env.TOKENS.delete(KV.TOKEN + token.uuid);
-      await c.env.TOKENS.delete(KV.TOKEN_BY_ID + token.id);
-      await c.env.TOKENS.delete(KV.PRESENCE + token.uuid);
-      for (const d of token.devices ?? []) await deleteDeviceIndex(c.env, d.uuid);
+      await deleteTokenCascade(c.env, token, { devices: true });
       purgedTokens++;
       continue;
     }

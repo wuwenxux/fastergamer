@@ -1,13 +1,10 @@
 import type { Env } from "../types";
+import { siteUrl } from "./site-url";
 
 const ALIYUN_DM_API = "https://dm.aliyuncs.com";
 
 export function isEmail(contact: string): boolean {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(contact.trim());
-}
-
-function siteUrl(env: Env): string {
-  return (env.SITE_URL ?? "https://fastergamer.cn").replace(/\/$/, "");
 }
 
 export function shouldSendEmail(contact?: string): contact is string {

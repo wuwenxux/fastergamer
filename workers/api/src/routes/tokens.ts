@@ -11,8 +11,9 @@ import { recordReferral } from "../lib/referral";
 import { newOrderId, newTokenId } from "../lib/ids";
 import { activatePaidToken } from "../lib/activate";
 import { fulfillOrder } from "../lib/issue-token";
-import { resetPenalty } from "../lib/reset-penalty";
+import { resetPenalty, sendPenaltyNoticeEmail } from "../lib/reset-penalty";
 import { pushAuthRefresh } from "../lib/authpush";
+import { siteUrl } from "../lib/site-url";
 import type { Env } from "../types";
 
 export const tokensRoutes = new Hono<{ Bindings: Env }>();
@@ -78,7 +79,7 @@ tokensRoutes.post("/trial", async (c) => {
     (async () => {
       // 每邮箱限领一次之外再叠加收件人邮件节流（防邮件炸弹），超限静默不发
       if (!(await mailThrottleAllows(c.env, email))) return;
-      const site = (c.env.SITE_URL ?? "https://fastergamer.cn").replace(/\/$/, "");
+      const site = siteUrl(c.env);
       const ticket = await createMagicTicket(c.env, email, token.id);
       await sendTokenEmail(c.env, {
         tokenId: token.id,
@@ -190,7 +191,7 @@ tokensRoutes.post("/login-link", async (c) => {
 
   const tokens = await listTokensByContact(c.env, contact);
   if (tokens.length > 0) {
-    const site = (c.env.SITE_URL ?? "https://fastergamer.cn").replace(/\/$/, "");
+    const site = siteUrl(c.env);
     const items = await Promise.all(
       tokens.map(async (t) => {
         const ticket = await createMagicTicket(c.env, contact, t.id);
@@ -441,18 +442,7 @@ tokensRoutes.post("/:id/reset-penalty", async (c) => {
   await resetPenalty(c.env, token, daysPenalty);
   c.executionCtx.waitUntil(pushAuthRefresh(c.env)); // 用量清零/状态恢复立即同步各节点
 
-  if (shouldSendEmail(token.contact)) {
-    const res = await sendMail(
-      c.env,
-      token.contact,
-      "【GameBoost】你的流量额度已重置",
-      `<p>你好，你的 Token（<strong>${token.id}</strong>）流量已重置为满额 <strong>${token.traffic_limit_gb} GB</strong>，服务已恢复。</p>
-       <p>本次重置后有效期至 <strong>${token.expires_at ? new Date(token.expires_at).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" }) : "未知"}</strong>（提前 ${daysPenalty} 天）。</p>
-       <p>如流量消耗异常，请登录管理页检查设备列表。</p>`,
-      `你的 Token（${token.id}）流量已重置为满额 ${token.traffic_limit_gb} GB，服务已恢复。\n有效期至 ${token.expires_at ? new Date(token.expires_at).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" }) : "未知"}（提前 ${daysPenalty} 天）。\n如流量消耗异常请检查设备列表。`
-    );
-    if (!res.ok) console.error(`[reset-penalty] mail failed ${token.id}: ${res.error}`);
-  }
+  await sendPenaltyNoticeEmail(c.env, token, daysPenalty);
 
   return c.json({ ok: true, data: token });
 });

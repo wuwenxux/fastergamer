@@ -3,6 +3,7 @@ import { KV } from "../../../../shared/types";
 import { getSessionAccount } from "../lib/accounts";
 import { listKeys } from "../lib/kv";
 import { getCredit, getOrCreateRefCode, DISCOUNT_PER_CREDIT } from "../lib/referral";
+import { siteUrl } from "../lib/site-url";
 import type { Env } from "../types";
 
 export const referralRoutes = new Hono<{ Bindings: Env }>();
@@ -33,7 +34,7 @@ referralRoutes.get("/me", async (c) => {
     }
   }
 
-  const site = (c.env.SITE_URL ?? "https://fastergamer.cn").replace(/\/$/, "");
+  const site = siteUrl(c.env);
   return c.json({
     ok: true,
     data: {

@@ -12,11 +12,8 @@
 import type { Node, Presence, Token } from "../../../../shared/types";
 import { sendMail, shouldSendEmail } from "./email-aliyun";
 import { currentMonthKey } from "./nodes";
+import { siteUrl } from "./site-url";
 import type { Env } from "../types";
-
-function siteUrl(env: Env): string {
-  return (env.SITE_URL ?? "https://fastergamer.cn").replace(/\/$/, "");
-}
 
 function shell(env: Env, title: string, bodyHtml: string, bodyText: string) {
   const tokenUrl = `${siteUrl(env)}/tokens`;

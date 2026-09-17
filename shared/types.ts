@@ -327,12 +327,10 @@ export const KV = {
   TOKEN: "token:", // token:{uuid} → Token JSON
   PRESENCE: "presence:", // presence:{uuid} → Presence JSON（高频动态状态，存 TOKENS namespace）
   TOKEN_BY_ID: "tokenid:", // tokenid:{id} → { uuid }
-  PLAN: "plan:", // plan:{id} → Plan JSON
   ORDER: "order:", // order:{id} → Order JSON
   ORDER_LOCK: "orderlock:", // orderlock:{orderId} → { at }（订单发货锁，免费层 best-effort 幂等，存 TOKENS namespace）
   TICKET: "ticket:", // ticket:{id} → Ticket JSON（存 TICKETS namespace）
   DEVICE: "device:", // device:{uuid} → { token_id }（设备 uuid 反查索引，存 TOKENS namespace）
-  ROUTING: "routing", // routing → 区域名列表 JSON
   NODES: "nodes", // nodes → Node[] JSON
   SESSION: "session:", // session:{token} → { email, created_at }（存 TOKENS namespace）
   MAGIC: "magic:", // magic:{ticket} → MagicTicket JSON（一次性，用后即焚，存 TOKENS namespace）
@@ -344,10 +342,3 @@ export const KV = {
   REG: "reg:", // reg:{账号email} → Registration JSON（防失联登记，存 TOKENS namespace）
   MAILTHROTTLE: "mailthrottle:", // mailthrottle:{sha1(email)} → 计数（收件人邮件节流，1h TTL，存 TOKENS namespace）
 } as const;
-
-/** API 统一响应格式 */
-export interface ApiResponse<T = unknown> {
-  ok: boolean;
-  data?: T;
-  error?: string;
-}

@@ -15,6 +15,7 @@ import { sendMail, sendTokenEmail } from "./email-aliyun";
 import { maskEmail } from "./mask-email";
 import { newTokenId } from "./ids";
 import { getPlans, listKeys, listTokensByContact, saveToken } from "./kv";
+import { siteUrl } from "./site-url";
 import type { Env } from "../types";
 
 /** 每邀请 1 人余额增加的金额（元） */
@@ -264,7 +265,7 @@ export const tryIssueRewardToken = async (env: Env, email: string): Promise<Rewa
   if (hasActivePaid || credit.earned - credit.used < need) return { issued: false };
 
   const result: RewardTokenResult = { issued: false };
-  const site = (env.SITE_URL ?? "https://fastergamer.cn").replace(/\/$/, "");
+  const site = siteUrl(env);
   while (credit.earned - credit.used >= need) {
     const token: Token = {
       id: newTokenId(),

@@ -3,6 +3,7 @@
  * 键规则见 shared/types.ts 的 KV 常量
  */
 import { KV, type Device, type Order, type Plan, type Presence, type Ticket, type Token } from "../../../../shared/types";
+import { isEmail } from "./email-aliyun";
 import type { Env } from "../types";
 
 /**
@@ -180,6 +181,29 @@ export const saveDeviceIndex = (env: Env, uuid: string, tokenId: string): Promis
 
 export const deleteDeviceIndex = (env: Env, uuid: string): Promise<void> =>
   env.TOKENS.delete(KV.DEVICE + uuid);
+
+/**
+ * token 级联删除：主键 + id 反查索引 + presence 固定清；设备索引与试用领取标记按需。
+ * - devices：token 可能有设备槽位的场景（管理端删除 / 90 天到期清理 / 发货竞态清理）传 true；
+ *   超 3 天未激活体验 token 的清理不传（体验套餐单设备，不可能有槽位）。
+ * - trialMarker：删 trial:{email} 领取标记。未激活体验 token 清理时必须保留
+ *   （该邮箱仍算已领过，防同址反复领取）；其余删除场景清掉，避免残留脏数据。
+ */
+export const deleteTokenCascade = async (
+  env: Env,
+  token: Token,
+  opts: { devices?: boolean; trialMarker?: boolean } = {}
+): Promise<void> => {
+  await env.TOKENS.delete(KV.TOKEN + token.uuid);
+  await env.TOKENS.delete(KV.TOKEN_BY_ID + token.id);
+  await env.TOKENS.delete(KV.PRESENCE + token.uuid);
+  if (opts.devices) {
+    for (const d of token.devices ?? []) await deleteDeviceIndex(env, d.uuid);
+  }
+  if (opts.trialMarker && token.contact && isEmail(token.contact)) {
+    await env.TOKENS.delete(KV.TRIAL + token.contact.trim().toLowerCase());
+  }
+};
 
 /**
  * 按任意 uuid（主 uuid 或设备 uuid）定位 token。

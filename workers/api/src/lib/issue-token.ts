@@ -5,11 +5,12 @@
 import { KV, type Order, type Plan, type Token } from "../../../../shared/types";
 import { isEmail, sendMail, sendTokenEmail, shouldSendEmail } from "./email-aliyun";
 import { createMagicTicket } from "./accounts";
-import { deleteDeviceIndex, getPlans, getTokenById, listTokensByContact, saveOrder, saveToken } from "./kv";
+import { deleteTokenCascade, getPlans, getTokenById, listTokensByContact, saveOrder, saveToken } from "./kv";
 import { newTokenId } from "./ids";
 import { currentMonthKey } from "./nodes";
 import { rewardReferrerOnPayment } from "./referral";
 import { pushAuthRefresh } from "./authpush";
+import { siteUrl } from "./site-url";
 import type { Env } from "../types";
 
 /** 只需要 waitUntil，用最小结构类型兼容 Hono 与 workers-types 的 ExecutionContext 差异 */
@@ -60,7 +61,7 @@ export const issueTokenForOrder = async (
   if (shouldSendEmail(order.contact)) {
     ctx.waitUntil(
       (async () => {
-        const site = (env.SITE_URL ?? "https://fastergamer.cn").replace(/\/$/, "");
+        const site = siteUrl(env);
         const ticket = await createMagicTicket(env, order.contact!, token.id);
         await sendTokenEmail(env, {
           tokenId: token.id,
@@ -211,7 +212,7 @@ export const fulfillOrder = async (
   // 这也是免费层 best-effort 的已知边界。
   const winner = await reconcileFulfillment(env, order.id, token);
   if (winner) {
-    await cleanupIssuedToken(env, token);
+    await deleteTokenCascade(env, token, { devices: true, trialMarker: true });
     // 游离 token 从未进入 active 状态，不在节点授权名单内，无需 pushAuthRefresh
     return { token: winner, already: true };
   }
@@ -267,18 +268,4 @@ const reconcileFulfillment = async (
   const fresh = JSON.parse(raw) as Order;
   if (!fresh.token_id || fresh.token_id === issued.id) return null;
   return getTokenById(env, fresh.token_id);
-};
-
-/**
- * 清理竞态 loser 刚发放的游离 token。
- * 清理范围对齐 admin.ts 删除 token 的逻辑：主键、id 反查、presence、设备索引、试用领取标记。
- */
-const cleanupIssuedToken = async (env: Env, token: Token): Promise<void> => {
-  await env.TOKENS.delete(KV.TOKEN + token.uuid);
-  await env.TOKENS.delete(KV.TOKEN_BY_ID + token.id);
-  await env.TOKENS.delete(KV.PRESENCE + token.uuid);
-  for (const d of token.devices ?? []) await deleteDeviceIndex(env, d.uuid);
-  if (token.contact && isEmail(token.contact)) {
-    await env.TOKENS.delete(KV.TRIAL + token.contact.trim().toLowerCase());
-  }
 };
