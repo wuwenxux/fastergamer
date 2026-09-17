@@ -11,6 +11,8 @@ export interface Env {
   TICKETS: KVNamespace;
   /** 管理接口密钥（x-admin-key header） */
   ADMIN_KEY: string;
+  /** 管理接口来源 IP 白名单（可选，逗号分隔，精确 IP 或 IPv4 CIDR；未配置不限制） */
+  ADMIN_IPS?: string;
   /** Clash 订阅展示的地区列表 JSON：[{code,flag,name}] */
   CLASH_REGIONS: string;
   /** 套餐兜底（未 seed 时生效），JSON 数组字符串 */
