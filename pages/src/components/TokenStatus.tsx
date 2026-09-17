@@ -44,7 +44,7 @@ export default function TokenStatus({ token }: { token: TokenView }) {
   const [activatedRestricted, setActivatedRestricted] = useState(false);
   const [rotating, setRotating] = useState(false);
   const [resetting, setResetting] = useState(false);
-  // 升级套餐：已下单待支付的升级订单（扫码轮询中）；showUpgrade 控制套餐列表展开
+  // 升级套餐：已下单待确认的升级订单（轮询订单状态中）；showUpgrade 控制套餐列表展开
   const [upgradeOrder, setUpgradeOrder] = useState<Order | null>(null);
   const [upgrading, setUpgrading] = useState<string | null>(null);
   const [showUpgrade, setShowUpgrade] = useState(false);
@@ -61,8 +61,8 @@ export default function TokenStatus({ token }: { token: TokenView }) {
       .catch(() => {});
   }, [current.plan_id]);
 
-  // 升级订单扫码后轮询支付状态，平台回调升级完成后刷新 token；
-  // 支付通道维护期订单不会变 paid，10 分钟后停止轮询并收起，避免无限空转
+  // 升级订单轮询支付状态，管理员确认（置 paid）升级完成后刷新 token；
+  // 10 分钟后停止轮询并收起，避免无限空转
   useEffect(() => {
     if (!upgradeOrder) return;
     const startedAt = Date.now();

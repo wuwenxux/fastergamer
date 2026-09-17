@@ -394,8 +394,8 @@ export const isValidIp = (ip: string): boolean => {
 /**
  * POST /api/tokens/:id/blocked-ips —— 封禁接入 IP（30 秒内全节点生效），仅本人可操作
  * body: { ip: "1.2.3.4" }
- * 语义：仅「该用户从该 IP 的接入」被拒（节点 xray 路由 per-(uuid, IP) 阻断），
- * 同 NAT/同宽带出口下的其他用户不受影响。旧版 agent 仍是整节点防火墙阻断，逐步淘汰。
+ * 语义：封禁列表写入 token.blocked_ips，快照经 blocked_ips 全局合集下发各节点
+ * （agent iptables 整节点阻断，同 NAT/同宽带出口下的其他用户会被一并误伤）。
  */
 tokensRoutes.post("/:id/blocked-ips", async (c) => {
   const token = await getTokenById(c.env, c.req.param("id"));
@@ -515,6 +515,8 @@ tokensRoutes.post("/:id/upgrade", async (c) => {
   // 差价 ≤ 0（旧套餐剩余价值已覆盖新套餐价）：免费升级，立即生效
   if (payable <= 0) {
     try {
+      // result.busy 当前不可达（升级瞬间 fulfill，无并发回调），只取 token；
+      // busy 分支为将来新支付通道的并发回调保留
       const result = await fulfillOrder(c.env, c.executionCtx, order);
       return c.json({ ok: true, data: { order, token: result.token ?? undefined, paid: true } }, 201);
     } catch (e) {

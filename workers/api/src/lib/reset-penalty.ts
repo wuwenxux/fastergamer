@@ -35,7 +35,7 @@ export const resetPenalty = async (
     token.status = (token.expires_at ?? Infinity) > now ? "active" : "expired";
     if (!token.activated_at) token.activated_at = now;
   }
-  // 流量类提醒重置后可重新触发
+  // 流量类提醒重置后可重新触发；traffic_80 提醒已下线，删键仅为清理存量旧数据
   if (token.notify_log) {
     delete token.notify_log.traffic_80;
     delete token.notify_log.exhausted;

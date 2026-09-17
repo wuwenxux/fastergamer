@@ -62,7 +62,7 @@ npm run dev:pages      # 前端，localhost:5173，/api 代理到 8787（vite.co
 node scripts/seed.mjs  # 默认打 http://localhost:8787
 
 # 测试
-cd workers/api && npm test                  # vitest run，15 个文件 109 例
+cd workers/api && npm test                  # vitest run，29 个文件 231 例
 cd infra/xray && python3 -m unittest test_agent   # agent 单元测试（标准库 unittest）
 cd pages && npm run typecheck               # 前端类型检查（tsc --noEmit）
 

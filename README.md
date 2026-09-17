@@ -76,7 +76,7 @@ cd workers/api && npx wrangler deploy --config wrangler.cf.toml
 npx wrangler secret put <KEY> --config wrangler.cf.toml
 ```
 
-注：`scripts/deploy-site-local.sh`（cn 静态门面部署）随整站 301 退役，仅留档。
+注：`scripts/deploy-site-local.sh` 是 fastergamer.cn 企业门面站的现行发布脚本，把 `site-cn/` 发布到本机 /var/www/fastergamer.cn（根 package.json 的 `deploy:site`）。
 
 ### 初始化套餐
 
