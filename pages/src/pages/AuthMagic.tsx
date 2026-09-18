@@ -99,8 +99,8 @@ export default function AuthMagic() {
 
   const copySub = async () => {
     try {
-      // 带 #fastergamer 名称片段：粘贴导入时配置名与扫码/一键导入一致（片段不进请求）
-      await navigator.clipboard.writeText(`${subUrl}#fastergamer`);
+      // 裸链接不带名称片段：配置名由订阅响应头 profile-title 下发
+      await navigator.clipboard.writeText(subUrl);
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     } catch {
@@ -133,7 +133,7 @@ export default function AuthMagic() {
 
           <div className="rounded-lg bg-slate-900/60 p-3 space-y-2">
             <p className="text-xs text-slate-400">或手动复制订阅链接，粘贴到客户端：</p>
-            <code className="block text-xs text-slate-300 break-all">{subUrl}#fastergamer</code>
+            <code className="block text-xs text-slate-300 break-all">{subUrl}</code>
             <button
               onClick={copySub}
               className="w-full rounded-lg border border-slate-600 px-4 py-2 text-sm hover:bg-slate-800 transition-colors"
@@ -164,9 +164,7 @@ export default function AuthMagic() {
 
           <div className="flex flex-col items-center gap-2 pt-2">
             <div className="bg-white p-3 rounded-xl">
-              {/* #fastergamer 片段给客户端做配置文件名（与 deep link 同口径），
-                  片段不进 HTTP 请求，不识别的客户端自动忽略 */}
-              <QRCodeSVG value={`${subUrl}#fastergamer`} size={140} />
+              <QRCodeSVG value={subUrl} size={140} />
             </div>
             <p className="text-xs text-slate-500">手机扫码导入</p>
           </div>

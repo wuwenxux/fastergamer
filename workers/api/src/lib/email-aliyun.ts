@@ -138,9 +138,9 @@ export async function sendTokenEmail(
   const tokenUrl = ctx.magicUrl ?? `${site}/tokens`;
   const tokensPage = `${site}/tokens`;
   const recoverUrl = `${site}/recover`;
-  // 末尾 #fastergamer 是配置名片段：客户端导入/粘贴时用它命名配置文件（与一键导入
-  // deep link 同名）；片段不进 HTTP 请求，不识别的客户端自动忽略
-  const subUrl = `${site}/api/sub?uuid=${encodeURIComponent(ctx.uuid)}#fastergamer`;
+  // 链接不带 #名称片段：配置名由响应头 profile-title / content-disposition 下发，
+  // 一键导入 deep link 自带 name 参数；裸链接保持干净，避免片段随复制/转发扩散
+  const subUrl = `${site}/api/sub?uuid=${encodeURIComponent(ctx.uuid)}`;
   const mainBtnLabel = ctx.magicUrl ? "一键进入管理页（免登录）" : "查看 Token 与订阅链接";
 
   const subject = "【GameBoost】你的加速 Token 已生成";

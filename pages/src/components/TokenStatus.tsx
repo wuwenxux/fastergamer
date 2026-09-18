@@ -210,8 +210,8 @@ export default function TokenStatus({ token }: { token: TokenView }) {
   };
 
   const copySub = async () => {
-    // 带 #fastergamer 名称片段：粘贴导入时配置名与扫码/一键导入一致（片段不进请求）
-    const url = `${api.subUrl(current.uuid)}#fastergamer`;
+    // 裸链接不带名称片段：配置名由订阅响应头 profile-title 下发
+    const url = api.subUrl(current.uuid);
     if (await copyText(url)) {
       setCopied(true);
       setTimeout(() => setCopied(false), 1500);
@@ -459,7 +459,7 @@ export default function TokenStatus({ token }: { token: TokenView }) {
         <div className="flex flex-col gap-3 rounded-xl border border-slate-700 bg-slate-950 p-4">
           <div>
             <div className="text-sky-300 text-xs mb-1 font-medium">订阅链接（一键导入见下方按钮，或复制后粘贴到 Clash / sing-box / Stash）</div>
-            <div className="font-mono text-sm break-all text-sky-200 rounded-lg border border-sky-500/50 bg-sky-500/15 p-2.5 select-all">{subUrl}#fastergamer</div>
+            <div className="font-mono text-sm break-all text-sky-200 rounded-lg border border-sky-500/50 bg-sky-500/15 p-2.5 select-all">{subUrl}</div>
           </div>
 
           <p className="text-xs text-slate-300">
@@ -545,8 +545,7 @@ export default function TokenStatus({ token }: { token: TokenView }) {
             </div>
           </div>
 
-          {/* 跨设备导入：二维码内容是订阅链接 + #fastergamer 名称片段（扫码导入后
-              配置文件名与一键导入/deep link 一致；片段不进请求，不识别则忽略）。
+          {/* 跨设备导入：二维码内容是裸订阅链接（配置名由响应头 profile-title 下发）。
               深色主题下二维码必须垫白底，否则扫码对比度不够 */}
           <details className="rounded-lg border border-slate-700 bg-slate-900 p-3">
             <summary className="cursor-pointer text-sm text-slate-300 select-none">
@@ -558,7 +557,7 @@ export default function TokenStatus({ token }: { token: TokenView }) {
               </p>
               <div className="flex justify-center">
                 <div className="rounded-lg bg-white p-3">
-                  <QRCodeSVG value={`${subUrl}#fastergamer`} size={168} />
+                  <QRCodeSVG value={subUrl} size={168} />
                 </div>
               </div>
             </div>
