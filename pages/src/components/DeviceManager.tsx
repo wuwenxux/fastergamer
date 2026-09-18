@@ -117,13 +117,13 @@ export default function DeviceManager({
   return (
     <div className="rounded-xl border border-slate-700 bg-slate-950 p-4 space-y-3">
       <div className="flex items-center justify-between">
-        <h4 className="font-medium text-sm">📱 接入设备管理</h4>
-        <span className="text-xs text-slate-500">
+        <h4 className="font-medium text-[15px] sm:text-sm">📱 接入设备管理</h4>
+        <span className="text-sm sm:text-xs text-slate-500">
           已绑定 {used} / {maxDevices} 台
         </span>
       </div>
 
-      <p className="text-xs text-slate-400">
+      <p className="text-sm leading-relaxed sm:text-xs text-slate-400">
         主设备使用上方的订阅链接。其他设备请在下方添加，每台设备有独立的订阅链接和流量统计，
         哪台设备用了多少流量一目了然。多台设备同时在线会在上方「接入 IP 统计」里体现，
         发现陌生 IP 可在上方封禁。
@@ -132,16 +132,16 @@ export default function DeviceManager({
       <div className="space-y-2">
         {/* 主设备行：流量未按主设备单独计量故不显示用量；订阅链接在上方 TokenStatus，不可解绑/改名 */}
         <div className="flex items-center justify-between rounded-lg border border-slate-700 bg-slate-900 px-3 py-2">
-          <div className="text-sm min-w-0">
+          <div className="text-[15px] sm:text-sm min-w-0">
             <div className="font-medium truncate flex items-center gap-2">
               主设备
               {mainOnline && (
-                <span className="rounded-full bg-emerald-500/20 border border-emerald-500/40 px-1.5 py-0.5 text-[10px] text-emerald-300">
+                <span className="rounded-full bg-emerald-500/20 border border-emerald-500/40 px-1.5 py-0.5 text-xs text-emerald-300">
                   在线中
                 </span>
               )}
             </div>
-            <div className="text-xs text-slate-500">
+            <div className="text-sm sm:text-xs text-slate-500">
               {token.last_active_at && !mainOnline
                 ? `最近活跃 ${new Date(token.last_active_at).toLocaleString()}`
                 : "使用上方订阅链接接入"}
@@ -157,7 +157,7 @@ export default function DeviceManager({
               key={d.id}
               className="flex items-center justify-between rounded-lg border border-slate-700 bg-slate-900 px-3 py-2"
             >
-              <div className="text-sm min-w-0 flex-1">
+              <div className="text-[15px] sm:text-sm min-w-0 flex-1">
                 {editing ? (
                   <input
                     value={editingName}
@@ -168,19 +168,19 @@ export default function DeviceManager({
                       if (e.key === "Enter") void saveRename(d);
                       if (e.key === "Escape") setEditingId("");
                     }}
-                    className="w-full rounded-lg border border-slate-700 bg-slate-950 px-2 py-1 text-sm focus:border-sky-500 focus:outline-none"
+                    className="w-full rounded-lg border border-slate-700 bg-slate-950 px-2 py-1 text-base sm:text-sm focus:border-sky-500 focus:outline-none"
                   />
                 ) : (
                   <div className="font-medium truncate flex items-center gap-2">
                     {d.name}
                     {online && (
-                      <span className="rounded-full bg-emerald-500/20 border border-emerald-500/40 px-1.5 py-0.5 text-[10px] text-emerald-300">
+                      <span className="rounded-full bg-emerald-500/20 border border-emerald-500/40 px-1.5 py-0.5 text-xs text-emerald-300">
                         在线中
                       </span>
                     )}
                   </div>
                 )}
-                <div className="text-xs text-slate-500">
+                <div className="text-sm sm:text-xs text-slate-500">
                   已用 {d.traffic_used_gb.toFixed(2)} GB
                   {d.last_active_at &&
                     !online &&
@@ -239,23 +239,23 @@ export default function DeviceManager({
             onChange={(e) => setName(e.target.value)}
             placeholder="设备名称，如：我的 iPhone"
             maxLength={30}
-            className="flex-1 rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm focus:border-sky-500 focus:outline-none"
+            className="flex-1 rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-base sm:text-sm focus:border-sky-500 focus:outline-none"
           />
           <button
             type="submit"
             disabled={busy || !name.trim()}
-            className="rounded-lg bg-sky-500 px-4 py-2 text-sm font-medium hover:bg-sky-400 transition-colors disabled:opacity-50"
+            className="rounded-lg bg-sky-500 px-4 py-3 sm:py-2 text-base sm:text-sm font-medium hover:bg-sky-400 transition-colors disabled:opacity-50"
           >
             {busy ? "添加中…" : "添加设备"}
           </button>
         </form>
       ) : (
-        <p className="text-xs text-amber-400">
+        <p className="text-sm sm:text-xs text-amber-400">
           已达设备上限，解绑不用的设备后才能添加新设备。
         </p>
       )}
 
-      {error && <p className="text-xs text-rose-400">{error}</p>}
+      {error && <p className="text-sm sm:text-xs text-rose-400">{error}</p>}
     </div>
   );
 }

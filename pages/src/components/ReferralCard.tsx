@@ -46,14 +46,14 @@ export default function ReferralCard() {
     <div className="overflow-hidden rounded-3xl border border-emerald-500/40">
       {/* 海报头：渐变底 + 大数字 */}
       <div className="bg-gradient-to-br from-emerald-500/25 via-slate-900 to-slate-950 px-6 pt-7 pb-6 text-center space-y-2">
-        <div className="text-sm font-medium text-emerald-300 tracking-widest">🎁 推广余额</div>
+        <div className="text-[15px] sm:text-sm font-medium text-emerald-300 tracking-widest">🎁 推广余额</div>
         <div className="text-6xl font-black text-emerald-300">¥{balance}</div>
-        <div className="text-sm text-slate-300">
+        <div className="text-[15px] sm:text-sm text-slate-300">
           每邀请 1 人付费 <span className="text-emerald-300 font-semibold">+¥{info.discount_per_credit}</span>
           ，邀请满 12 人付费 <span className="text-emerald-300 font-semibold">免费用一年</span>
         </div>
         {(info.invited_count > 0 || info.pending_count > 0) && (
-          <div className="text-xs text-slate-500">
+          <div className="text-sm sm:text-xs text-slate-500">
             已付费 {info.invited_count} 人{info.pending_count > 0 ? ` · ${info.pending_count} 人待付费` : ""}
           </div>
         )}
@@ -75,11 +75,11 @@ export default function ReferralCard() {
         {/* 复制链接：主行动按钮 */}
         <button
           onClick={copy}
-          className="w-full rounded-xl bg-emerald-500 py-3 text-lg font-bold text-slate-950 hover:bg-emerald-400 transition-colors"
+          className="w-full rounded-xl bg-emerald-500 py-3 text-xl sm:text-lg font-bold text-slate-950 hover:bg-emerald-400 transition-colors"
         >
           {copied ? "✓ 链接已复制，去发给朋友吧" : "📋 一键复制我的邀请链接"}
         </button>
-        <p className="text-center text-xs text-slate-500">
+        <p className="text-center text-sm sm:text-xs text-slate-500">
           朋友通过你的链接注册并付费即算邀请成功，不足 12 人时余额也能在下单时直接抵扣
         </p>
       </div>

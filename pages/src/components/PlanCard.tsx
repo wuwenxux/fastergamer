@@ -40,11 +40,11 @@ export default function PlanCard({ plan }: { plan: Plan }) {
           <span className={`text-5xl font-black ${isBiz ? "text-amber-300" : "text-sky-300"}`}>
             ¥{plan.price_cny}
           </span>
-          <span className="text-sm text-slate-500">/ {plan.duration_days} 天</span>
+          <span className="text-[15px] sm:text-sm text-slate-500">/ {plan.duration_days} 天</span>
         </div>
         <p className="mt-3 text-base text-slate-200 leading-relaxed">{pitch}</p>
         {plan.features && plan.features.length > 0 && (
-          <ul className="mt-4 space-y-1.5 text-sm text-slate-400">
+          <ul className="mt-4 space-y-1.5 text-[15px] sm:text-sm text-slate-400">
             {plan.features.map((f) => (
               <li key={f}>✓ {f}</li>
             ))}
@@ -55,7 +55,7 @@ export default function PlanCard({ plan }: { plan: Plan }) {
       <div className="bg-slate-950/60 px-6 pb-6">
         <Link
           to={`/buy?plan=${plan.id}`}
-          className={`block rounded-xl py-3 text-center text-lg font-bold transition-colors ${
+          className={`block rounded-xl py-3 text-center text-xl sm:text-lg font-bold transition-colors ${
             isBiz
               ? "bg-amber-500 text-slate-950 hover:bg-amber-400"
               : "bg-sky-500 text-slate-950 hover:bg-sky-400"

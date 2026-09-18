@@ -64,7 +64,7 @@ export default function Purchase() {
     <div className="max-w-xl mx-auto space-y-6">
       <h2 className="text-2xl font-bold">确认订单</h2>
 
-      {error && <p className="text-rose-400 text-sm">{error}</p>}
+      {error && <p className="text-rose-400 text-[15px] sm:text-sm">{error}</p>}
 
       {plan && (
         <>
@@ -153,8 +153,8 @@ function PaymentResult({ order, plan }: { order: Order; plan: Plan }) {
       <div className="max-w-xl mx-auto">
         <div className="rounded-2xl border border-emerald-500/50 bg-emerald-500/10 p-8 text-center space-y-3">
           <div className="text-4xl">✅</div>
-          <h2 className="text-xl font-semibold text-emerald-300">订单已确认开通</h2>
-          <p className="text-sm text-slate-300">
+          <h2 className="text-2xl sm:text-xl font-semibold text-emerald-300">订单已确认开通</h2>
+          <p className="text-[15px] leading-relaxed sm:text-sm text-slate-300">
             Token 已发放并发送到你的邮箱，也可在
             <Link to="/tokens" className="text-sky-400 hover:underline"> 我的 Token </Link>
             页输入邮箱一键登录查看。
@@ -167,7 +167,7 @@ function PaymentResult({ order, plan }: { order: Order; plan: Plan }) {
   return (
     <div className="max-w-xl mx-auto space-y-6">
       <div className="rounded-2xl border border-sky-500/50 bg-sky-500/10 p-6 text-center space-y-2">
-        <h2 className="text-xl font-semibold">订单已创建</h2>
+        <h2 className="text-2xl sm:text-xl font-semibold">订单已创建</h2>
       </div>
 
       <div className="rounded-2xl border border-slate-700 bg-slate-900 p-6 space-y-4">
@@ -179,19 +179,19 @@ function PaymentResult({ order, plan }: { order: Order; plan: Plan }) {
         <ManualPay orderId={order.id} payableCny={payable} plan={plan} />
 
         {discount > 0 && (
-          <p className="text-xs text-emerald-400 text-right">
+          <p className="text-sm sm:text-xs text-emerald-400 text-right">
             推广减免 -¥{discount}（原价 ¥{plan.price_cny}）
           </p>
         )}
 
         {pollStopped && (
-          <p className="text-center text-sm text-slate-400">
+          <p className="text-center text-[15px] sm:text-sm text-slate-400">
             订单已为你保留；客服确认收款后自动开通，也可到「我的 Token」页输入邮箱查看。
           </p>
         )}
       </div>
 
-      <p className="text-xs text-slate-500 text-center">
+      <p className="text-sm leading-relaxed sm:text-xs text-slate-500 text-center">
         确认收款后本页自动跳转，token 同时发送到你的邮箱；也可在
         <Link to="/tokens" className="text-sky-400 hover:underline"> 我的 Token </Link>
         页输入邮箱收取一键登录链接。

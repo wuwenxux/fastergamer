@@ -19,7 +19,7 @@ export default function Support() {
     <div className="max-w-3xl mx-auto space-y-8">
       <div>
         <h2 className="text-2xl font-bold">帮助与反馈</h2>
-        <p className="text-sm text-slate-400 mt-1">
+        <p className="text-[15px] leading-relaxed sm:text-sm text-slate-400 mt-1">
           先看看常见问题能否解决你的疑问；如果没有，提交反馈，客服会通过邮件回复你。
         </p>
       </div>
@@ -41,16 +41,16 @@ function FaqList() {
 
   return (
     <section className="space-y-3">
-      <h3 className="font-semibold text-lg">常见问题</h3>
+      <h3 className="font-semibold text-xl sm:text-lg">常见问题</h3>
       {faq.map((item, i) => (
         <div key={i} className="rounded-xl border border-slate-700 bg-slate-900">
           <button
             onClick={() => setOpen(open === i ? null : i)}
-            className="w-full flex items-center justify-between px-4 py-3 text-left text-sm font-medium hover:text-sky-400 transition-colors"
+            className="w-full flex items-center justify-between px-4 py-3 text-left text-[15px] sm:text-sm font-medium hover:text-sky-400 transition-colors"
           >
             <span>
               {item.category && (
-                <span className="mr-2 rounded bg-slate-800 px-1.5 py-0.5 text-[10px] text-slate-400">
+                <span className="mr-2 rounded bg-slate-800 px-1.5 py-0.5 text-xs text-slate-400">
                   {CATEGORY_LABELS[item.category] ?? item.category}
                 </span>
               )}
@@ -59,7 +59,7 @@ function FaqList() {
             <span className="text-slate-500 ml-2">{open === i ? "−" : "+"}</span>
           </button>
           {open === i && (
-            <div className="px-4 pb-4 text-sm text-slate-300 whitespace-pre-wrap border-t border-slate-800 pt-3">
+            <div className="px-4 pb-4 text-[15px] leading-relaxed sm:text-sm text-slate-300 whitespace-pre-wrap border-t border-slate-800 pt-3">
               {item.answer}
             </div>
           )}
@@ -106,8 +106,8 @@ function FeedbackForm() {
   if (state === "done") {
     return (
       <section className="rounded-2xl border border-emerald-500/40 bg-emerald-500/5 p-6 text-center space-y-2">
-        <p className="text-lg font-medium text-emerald-400">✅ 已收到你的反馈</p>
-        <p className="text-sm text-slate-400">
+        <p className="text-xl sm:text-lg font-medium text-emerald-400">✅ 已收到你的反馈</p>
+        <p className="text-[15px] leading-relaxed sm:text-sm text-slate-400">
           客服会尽快回复到 <strong className="text-slate-200">{contact}</strong>，请留意查收邮件（包括垃圾邮件文件夹）。
         </p>
       </section>
@@ -116,10 +116,10 @@ function FeedbackForm() {
 
   return (
     <section className="rounded-2xl border border-slate-700 bg-slate-900 p-6 space-y-4">
-      <h3 className="font-semibold text-lg">提交问题反馈</h3>
+      <h3 className="font-semibold text-xl sm:text-lg">提交问题反馈</h3>
       <form onSubmit={submit} className="space-y-4">
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-          <label className="block text-sm space-y-1.5">
+          <label className="block text-[15px] sm:text-sm space-y-1.5">
             <span className="text-slate-400">你的邮箱 <span className="text-rose-400">*</span></span>
             <input
               type="email"
@@ -127,15 +127,15 @@ function FeedbackForm() {
               value={contact}
               onChange={(e) => setContact(e.target.value)}
               placeholder="回复将发送到这个邮箱"
-              className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm focus:border-sky-500 focus:outline-none"
+              className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-base sm:text-sm focus:border-sky-500 focus:outline-none"
             />
           </label>
-          <label className="block text-sm space-y-1.5">
+          <label className="block text-[15px] sm:text-sm space-y-1.5">
             <span className="text-slate-400">问题类型</span>
             <select
               value={category}
               onChange={(e) => setCategory(e.target.value)}
-              className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm focus:border-sky-500 focus:outline-none"
+              className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-base sm:text-sm focus:border-sky-500 focus:outline-none"
             >
               {CATEGORIES.map((c) => (
                 <option key={c.value} value={c.value}>
@@ -145,7 +145,7 @@ function FeedbackForm() {
             </select>
           </label>
         </div>
-        <label className="block text-sm space-y-1.5">
+        <label className="block text-[15px] sm:text-sm space-y-1.5">
           <span className="text-slate-400">
             Token ID（选填，购买过的话填上便于排查）
           </span>
@@ -154,10 +154,10 @@ function FeedbackForm() {
             value={tokenId}
             onChange={(e) => setTokenId(e.target.value)}
             placeholder="tk_xxxxxxxx"
-            className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm font-mono focus:border-sky-500 focus:outline-none"
+            className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-base sm:text-sm font-mono focus:border-sky-500 focus:outline-none"
           />
         </label>
-        <label className="block text-sm space-y-1.5">
+        <label className="block text-[15px] sm:text-sm space-y-1.5">
           <span className="text-slate-400">问题描述 <span className="text-rose-400">*</span></span>
           <textarea
             required
@@ -167,15 +167,15 @@ function FeedbackForm() {
             value={message}
             onChange={(e) => setMessage(e.target.value)}
             placeholder="尽量描述：用的什么客户端、卡在哪一步、有没有报错提示……"
-            className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm focus:border-sky-500 focus:outline-none resize-y"
+            className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-base sm:text-sm focus:border-sky-500 focus:outline-none resize-y"
           />
         </label>
-        {error && <p className="text-sm text-rose-400">{error}</p>}
+        {error && <p className="text-[15px] sm:text-sm text-rose-400">{error}</p>}
         <Turnstile ref={tsRef} onStateChange={setTs} />
         <button
           type="submit"
           disabled={state === "sending" || (ts.enabled && !ts.token)}
-          className="rounded-lg bg-sky-500 px-6 py-2 text-sm font-medium hover:bg-sky-400 transition-colors disabled:opacity-50"
+          className="rounded-lg bg-sky-500 px-6 py-3 sm:py-2 text-base sm:text-sm font-medium hover:bg-sky-400 transition-colors disabled:opacity-50"
         >
           {state === "sending" ? "提交中…" : "提交反馈"}
         </button>

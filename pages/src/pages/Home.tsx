@@ -13,7 +13,7 @@ function YearlyPromoBanner() {
   return (
     <section className="max-w-3xl mx-auto rounded-2xl border border-amber-500/40 bg-gradient-to-r from-amber-500/10 to-slate-900 p-5 text-center space-y-1">
       <p className="font-semibold text-amber-300">🔥 年付 ¥120，买 12 个月送 1 个月</p>
-      <p className="text-sm text-slate-300">
+      <p className="text-[15px] leading-relaxed sm:text-sm text-slate-300">
         开通或续费年付套餐，有效期 <strong className="text-amber-300">13 个月</strong>（395 天）。
       </p>
     </section>
@@ -67,7 +67,7 @@ export default function Home() {
       <YearlyPromoBanner />
 
       <section>
-        <h2 className="text-xl font-semibold mb-5 text-center">选择套餐</h2>
+        <h2 className="text-2xl sm:text-xl font-semibold mb-5 text-center">选择套餐</h2>
         {error && <p className="text-center text-rose-400 mb-4">{error}</p>}
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-5 max-w-3xl mx-auto">
           {plans
@@ -79,7 +79,7 @@ export default function Home() {
       </section>
 
       <section className="text-center space-y-4">
-        <h2 className="text-xl font-semibold">客户端下载</h2>
+        <h2 className="text-2xl sm:text-xl font-semibold">客户端下载</h2>
         <div className="flex flex-wrap justify-center gap-3 max-w-2xl mx-auto">
           {CLASH_DOWNLOADS.map((d) => (
             <a
@@ -87,7 +87,7 @@ export default function Home() {
               href={d.url}
               target="_blank"
               rel="noopener noreferrer"
-              className={`rounded-lg border px-4 py-2 text-sm transition-colors ${
+              className={`rounded-lg border px-4 py-2 text-[15px] sm:text-sm transition-colors ${
                 platformMatches(d.platform, currentPlatform)
                   ? "border-sky-500 bg-sky-500/10 text-sky-300"
                   : "border-slate-700 bg-slate-900 text-slate-300 hover:border-sky-500/60"
@@ -97,7 +97,7 @@ export default function Home() {
             </a>
           ))}
         </div>
-        <p className="text-sm space-x-6">
+        <p className="text-[15px] sm:text-sm space-x-6">
           <Link to="/guide" className="text-sky-400 hover:underline">
             使用教程 →
           </Link>
@@ -136,8 +136,8 @@ function TrialCard() {
   if (state === "done") {
     return (
       <section className="max-w-xl mx-auto rounded-2xl border border-emerald-500/50 bg-emerald-500/10 p-6 text-center space-y-2">
-        <h2 className="text-lg font-semibold text-emerald-300">体验凭证已发送 ✅</h2>
-        <p className="text-sm text-slate-300">
+        <h2 className="text-xl sm:text-lg font-semibold text-emerald-300">体验凭证已发送 ✅</h2>
+        <p className="text-[15px] leading-relaxed sm:text-sm text-slate-300">
           7 天 · 8GB 体验 token 已发到你的邮箱，按邮件里的指引导入 Clash / sing-box 即可使用；
           也可在
           <Link to="/tokens" className="text-sky-400 hover:underline"> 我的 Token </Link>
@@ -150,8 +150,8 @@ function TrialCard() {
   return (
     <section className="max-w-xl mx-auto rounded-2xl border border-sky-500/40 bg-sky-500/5 p-6 space-y-4">
       <div className="text-center space-y-1">
-        <h2 className="text-lg font-semibold">新用户免费体验 7 天</h2>
-        <p className="text-sm text-slate-400">8GB 流量，输入邮箱立即领取，每个邮箱限领一次</p>
+        <h2 className="text-xl sm:text-lg font-semibold">新用户免费体验 7 天</h2>
+        <p className="text-[15px] sm:text-sm text-slate-400">8GB 流量，输入邮箱立即领取，每个邮箱限领一次</p>
       </div>
       <Turnstile ref={tsRef} onStateChange={setTs} />
       <div className="flex gap-2">
@@ -160,18 +160,18 @@ function TrialCard() {
           value={email}
           onChange={(e) => setEmail(e.target.value)}
           placeholder="your@email.com"
-          className="flex-1 rounded-lg border border-slate-700 bg-slate-900 px-4 py-2.5 text-sm outline-none focus:border-sky-500"
+          className="flex-1 rounded-lg border border-slate-700 bg-slate-900 px-4 py-2.5 text-base sm:text-sm outline-none focus:border-sky-500"
           onKeyDown={(e) => e.key === "Enter" && claim()}
         />
         <button
           onClick={claim}
           disabled={state === "sending" || (ts.enabled && !ts.token)}
-          className="rounded-lg bg-sky-500 px-5 py-2.5 text-sm font-medium hover:bg-sky-400 transition-colors disabled:opacity-50"
+          className="rounded-lg bg-sky-500 px-5 py-3 sm:py-2.5 text-base sm:text-sm font-medium hover:bg-sky-400 transition-colors disabled:opacity-50"
         >
           {state === "sending" ? "领取中…" : "免费领取"}
         </button>
       </div>
-      {error && <p className="text-rose-400 text-sm text-center">{error}</p>}
+      {error && <p className="text-rose-400 text-[15px] sm:text-sm text-center">{error}</p>}
     </section>
   );
 }

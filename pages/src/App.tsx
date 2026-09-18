@@ -13,10 +13,10 @@ export default function App() {
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100">
       <nav className="border-b border-slate-800 bg-slate-900/60 px-6 py-4 flex items-center justify-between">
-        <Link to="/" className="font-bold text-lg tracking-wide">
+        <Link to="/" className="font-bold text-xl sm:text-lg tracking-wide">
           🎮 GameBoost
         </Link>
-        <div className="space-x-5 text-sm">
+        <div className="space-x-4 sm:space-x-5 text-[15px] sm:text-sm">
           <Link to="/" className="hover:text-sky-400 transition-colors">
             套餐
           </Link>
@@ -49,7 +49,7 @@ export default function App() {
         </Routes>
       </main>
 
-      <footer className="border-t border-slate-800 px-6 py-6 text-center text-xs text-slate-500">
+      <footer className="border-t border-slate-800 px-6 py-6 text-center text-sm sm:text-xs text-slate-500">
         遇到问题？
         <Link to="/support" className="text-sky-400 hover:underline mx-1">
           提交反馈

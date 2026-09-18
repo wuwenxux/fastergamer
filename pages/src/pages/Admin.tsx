@@ -168,19 +168,19 @@ export default function Admin() {
       <div className="max-w-sm mx-auto space-y-4">
         <h2 className="text-2xl font-bold">管理看板</h2>
         <div className="rounded-2xl border border-slate-700 bg-slate-900 p-6 space-y-4">
-          <p className="text-sm text-slate-400">请输入管理密钥（仅本次会话有效）。</p>
+          <p className="text-[15px] sm:text-sm text-slate-400">请输入管理密钥（仅本次会话有效）。</p>
           <input
             type="password"
             value={keyInput}
             onChange={(e) => setKeyInput(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && submitKey()}
             placeholder="管理密钥"
-            className="w-full rounded-lg border border-slate-700 bg-slate-950 px-4 py-2.5 outline-none focus:border-sky-500"
+            className="w-full rounded-lg border border-slate-700 bg-slate-950 px-4 py-2.5 text-base sm:text-sm outline-none focus:border-sky-500"
           />
-          {keyError && <p className="text-rose-400 text-sm">{keyError}</p>}
+          {keyError && <p className="text-rose-400 text-[15px] sm:text-sm">{keyError}</p>}
           <button
             onClick={submitKey}
-            className="w-full rounded-lg bg-sky-500 py-2.5 font-medium hover:bg-sky-400 transition-colors"
+            className="w-full rounded-lg bg-sky-500 py-3 sm:py-2.5 font-medium hover:bg-sky-400 transition-colors"
           >
             进入看板
           </button>
@@ -193,7 +193,7 @@ export default function Admin() {
     <div className="space-y-8">
       <div className="flex items-center justify-between flex-wrap gap-3">
         <h2 className="text-2xl font-bold">管理看板</h2>
-        <div className="flex items-center gap-4 text-sm">
+        <div className="flex items-center gap-4 text-[15px] sm:text-sm">
           {nodes.length > 0 && (
             <span className="text-slate-400">
               节点在线 {nodes.filter((n) => n.online).length}/{nodes.length}
@@ -209,8 +209,8 @@ export default function Admin() {
         </div>
       </div>
 
-      {error && <p className="text-rose-400 text-sm">{error}</p>}
-      {loading && tokens.length === 0 && <p className="text-sm text-slate-500">正在加载数据…</p>}
+      {error && <p className="text-rose-400 text-[15px] sm:text-sm">{error}</p>}
+      {loading && tokens.length === 0 && <p className="text-[15px] sm:text-sm text-slate-500">正在加载数据…</p>}
 
       {tokens.length > 0 && (
         <>
@@ -244,9 +244,9 @@ export default function Admin() {
               </div>
             </div>
             <div className="overflow-x-auto rounded-xl border border-slate-700 bg-slate-900">
-              <table className="w-full text-sm">
+              <table className="w-full text-[15px] sm:text-sm">
                 <thead>
-                  <tr className="text-left text-xs text-slate-500 border-b border-slate-800">
+                  <tr className="text-left text-sm sm:text-xs text-slate-500 border-b border-slate-800">
                     <th className="px-4 py-2.5 font-medium">日期</th>
                     <th className="px-4 py-2.5 font-medium">新增</th>
                     <th className="px-4 py-2.5 font-medium w-2/5">分布</th>
@@ -256,13 +256,13 @@ export default function Admin() {
                 <tbody>
                   {[...dayRows].reverse().map((r) => (
                     <tr key={r.date} className="border-b border-slate-800/60 last:border-0">
-                      <td className="px-4 py-2.5 font-mono text-xs text-slate-300 whitespace-nowrap">
+                      <td className="px-4 py-2.5 font-mono text-sm sm:text-xs text-slate-300 whitespace-nowrap">
                         {new Date(`${r.date}T00:00:00`).toLocaleDateString()}
                       </td>
                       <td className="px-4 py-2.5 whitespace-nowrap">
                         <span className="font-medium">{r.added}</span>
                         {r.added > 0 && (
-                          <span className="ml-2 text-xs text-slate-500">
+                          <span className="ml-2 text-sm sm:text-xs text-slate-500">
                             {Object.entries(r.byPlan)
                               .map(([p, c]) => `${p}×${c}`)
                               .join(" ")}
@@ -289,9 +289,9 @@ export default function Admin() {
           <section className="space-y-3">
             <h3 className="font-semibold text-slate-300">用户使用（按用量降序）</h3>
             <div className="overflow-x-auto rounded-xl border border-slate-700 bg-slate-900">
-              <table className="w-full text-sm">
+              <table className="w-full text-[15px] sm:text-sm">
                 <thead>
-                  <tr className="text-left text-xs text-slate-500 border-b border-slate-800">
+                  <tr className="text-left text-sm sm:text-xs text-slate-500 border-b border-slate-800">
                     <th className="px-4 py-2.5 font-medium">Token ID</th>
                     <th className="px-4 py-2.5 font-medium">邮箱</th>
                     <th className="px-4 py-2.5 font-medium">套餐</th>
@@ -313,7 +313,7 @@ export default function Admin() {
                     const deviceCount = 1 + (t.devices?.length ?? 0); // 主设备 + 子设备槽位
                     return (
                       <tr key={t.id} className="border-b border-slate-800/60 last:border-0 align-middle">
-                        <td className="px-4 py-2.5 font-mono text-xs whitespace-nowrap">
+                        <td className="px-4 py-2.5 font-mono text-sm sm:text-xs whitespace-nowrap">
                           {t.id}
                           {ipCount >= 5 && (
                             <span className="ml-1.5" title="接入 IP 过多，疑似分享">
@@ -321,7 +321,7 @@ export default function Admin() {
                             </span>
                           )}
                         </td>
-                        <td className="px-4 py-2.5 text-xs text-slate-400 max-w-44 truncate">
+                        <td className="px-4 py-2.5 text-sm sm:text-xs text-slate-400 max-w-44 truncate">
                           {t.contact ?? "—"}
                         </td>
                         <td className="px-4 py-2.5 whitespace-nowrap">{planName(t.plan_id)}</td>
@@ -340,7 +340,7 @@ export default function Admin() {
                         <td className="px-4 py-2.5">
                           {limit > 0 ? (
                             <div className="space-y-1">
-                              <div className="text-xs whitespace-nowrap">
+                              <div className="text-sm sm:text-xs whitespace-nowrap">
                                 <span className={exhausted ? "text-rose-400 font-medium" : "text-slate-200"}>
                                   {fmtGb(used)}
                                 </span>
@@ -356,17 +356,17 @@ export default function Admin() {
                               </div>
                             </div>
                           ) : (
-                            <span className="text-xs text-slate-400">
+                            <span className="text-sm sm:text-xs text-slate-400">
                               {fmtGb(used)} GB <span className="text-slate-500">/ 不限</span>
                             </span>
                           )}
                         </td>
                         <td className="px-4 py-2.5">{deviceCount}</td>
                         <td className="px-4 py-2.5">{ipCount}</td>
-                        <td className="px-4 py-2.5 text-xs text-slate-400 whitespace-nowrap">
+                        <td className="px-4 py-2.5 text-sm sm:text-xs text-slate-400 whitespace-nowrap">
                           {fmtTime(t.presence?.last_active_at ?? t.last_active_at)}
                         </td>
-                        <td className="px-4 py-2.5 text-xs text-slate-400 whitespace-nowrap">
+                        <td className="px-4 py-2.5 text-sm sm:text-xs text-slate-400 whitespace-nowrap">
                           {fmtTime(t.expires_at)}
                         </td>
                       </tr>
@@ -386,8 +386,8 @@ export default function Admin() {
 function OverviewCard({ label, value, accent }: { label: string; value: string; accent?: string }) {
   return (
     <div className="rounded-xl border border-slate-700 bg-slate-900 px-4 py-3">
-      <div className="text-xs text-slate-500">{label}</div>
-      <div className={`mt-1 text-xl font-bold ${accent ?? "text-slate-100"}`}>{value}</div>
+      <div className="text-sm sm:text-xs text-slate-500">{label}</div>
+      <div className={`mt-1 text-2xl sm:text-xl font-bold ${accent ?? "text-slate-100"}`}>{value}</div>
     </div>
   );
 }

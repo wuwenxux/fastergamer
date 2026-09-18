@@ -274,7 +274,7 @@ export default function ClashGuide() {
           <p className="mb-2">
             必须选择支持 <strong>VLESS + WebSocket</strong> 的客户端（iOS 见下方专属说明）：
           </p>
-          <p className="mb-2 rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-3 text-xs text-emerald-300">
+          <p className="mb-2 rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-3 text-sm leading-relaxed sm:text-xs text-emerald-300">
             ⚡ 下列客户端均为新内核（mihomo / sing-box 系），导入订阅后会自动获得带 <strong>⚡</strong> 后缀的直连节点：
             少一层握手延迟更低、不依赖域名解析更稳定、抗封锁能力更强。仍在用 Clash for Windows /
             ClashX 等停更老客户端的用户，建议升级为 Clash Verge Rev 以获得 ⚡ 节点。
@@ -290,7 +290,7 @@ export default function ClashGuide() {
                 >
                   {d.platform}：{d.name} ↗
                 </a>
-                <span className="text-xs text-slate-500 ml-2">
+                <span className="text-sm sm:text-xs text-slate-500 ml-2">
                   {d.note}
                   {"versionKey" in d && versions[d.versionKey as string]
                     ? ` · 当前 v${versions[d.versionKey as string]}`
@@ -307,7 +307,7 @@ export default function ClashGuide() {
                   href={d.url}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="inline-flex items-center rounded-lg bg-sky-500 px-4 py-2 text-sm font-medium hover:bg-sky-400 transition-colors"
+                  className="inline-flex items-center rounded-lg bg-sky-500 px-4 py-3 sm:py-2 text-base sm:text-sm font-medium hover:bg-sky-400 transition-colors"
                 >
                   下载 {d.name}（检测到适配你的设备）
                 </a>
@@ -330,7 +330,7 @@ export default function ClashGuide() {
           </p>
           <Link
             to="/tokens"
-            className="inline-flex items-center rounded-lg border border-sky-500/50 bg-sky-500/10 px-4 py-2 text-sm font-medium text-sky-400 hover:bg-sky-500/20 transition-colors"
+            className="inline-flex items-center rounded-lg border border-sky-500/50 bg-sky-500/10 px-4 py-3 sm:py-2 text-base sm:text-sm font-medium text-sky-400 hover:bg-sky-500/20 transition-colors"
           >
             前往我的 Token 一键导入 →
           </Link>
@@ -395,10 +395,10 @@ export default function ClashGuide() {
             客户端默认用 Google 测延迟，显示值会包含「节点 → Google」的国际段，比真实接入延迟高很多。
             把测速地址改成我方共享测速端点，每个节点都在本地直接响应，显示的就是你到节点的真实延迟：
           </p>
-          <code className="block rounded-lg bg-slate-950 px-3 py-2 text-xs text-emerald-300 select-all">
+          <code className="block rounded-lg bg-slate-950 px-3 py-2 text-sm sm:text-xs text-emerald-300 select-all">
             http://ping.fastergamer.click/generate_204
           </code>
-          <p className="text-xs">
+          <p className="text-sm leading-relaxed sm:text-xs">
             Clash Verge Rev：设置 → 代理测速链接；FlClash：设置 → 通用 → 延迟测试链接；Stash：设置 → 延迟测试 URL。
             改完后所有地区节点显示的都是纯接入延迟（香港约 40-60ms、日本约 55-70ms）。
           </p>
@@ -477,8 +477,8 @@ export default function ClashGuide() {
   return (
     <div className="rounded-2xl border border-slate-700 bg-slate-900 p-6 space-y-5">
       <div>
-        <h3 className="font-semibold text-lg">🤝 新手教程：从安装到连通</h3>
-        <p className="text-sm text-slate-400 mt-1">
+        <h3 className="font-semibold text-xl sm:text-lg">🤝 新手教程：从安装到连通</h3>
+        <p className="text-[15px] sm:text-sm text-slate-400 mt-1">
           本服务使用 VLESS + WebSocket 协议，请使用 Clash Verge / Clash Meta（mihomo 内核）或 sing-box 客户端。
         </p>
       </div>
@@ -489,12 +489,12 @@ export default function ClashGuide() {
           style={{ width: `${progress}%` }}
         />
       </div>
-      <p className="text-xs text-slate-500">
+      <p className="text-sm sm:text-xs text-slate-500">
         完成进度：{checked.size} / {steps.length} 步
       </p>
 
       {appGuides.length > 0 && (
-        <div className="rounded-xl border border-sky-500/40 bg-sky-500/10 p-3 text-sm text-sky-300">
+        <div className="rounded-xl border border-sky-500/40 bg-sky-500/10 p-3 text-[15px] sm:text-sm text-sky-300">
           已识别你的设备（{currentPlatform}），适配客户端为{" "}
           <strong>{appGuides.map((g) => g.name).join(" / ")}</strong>
           ，下面步骤 3 与步骤 6 已按它的实际界面给出具体操作。
@@ -524,8 +524,8 @@ export default function ClashGuide() {
                   <div className="font-medium">
                     步骤 {idx + 1}：{step.title}
                   </div>
-                  <div className="text-sm mt-1.5">{step.detail}</div>
-                  <div className="text-xs text-emerald-400 mt-2">
+                  <div className="text-[15px] sm:text-sm mt-1.5">{step.detail}</div>
+                  <div className="text-sm sm:text-xs text-emerald-400 mt-2">
                     ✅ 确认标志：{step.verify}
                   </div>
                 </div>
@@ -537,12 +537,12 @@ export default function ClashGuide() {
 
       <div className="rounded-xl border border-slate-700 bg-slate-950 p-4">
         <h4 className="font-medium text-slate-200 mb-2">📱 iPhone / iPad 使用说明</h4>
-        <p className="text-sm text-slate-400 mb-3">
+        <p className="text-[15px] leading-relaxed sm:text-sm text-slate-400 mb-3">
           前提：代理类 App 在国区 App Store 已全部下架，需要先准备一个
           <strong className="text-slate-200">外区（如美区）Apple ID</strong>
           ，在 App Store 登录后才能下载下面的客户端（获取方法见文末折叠块）。
         </p>
-        <div className="space-y-3 text-sm">
+        <div className="space-y-3 text-[15px] sm:text-sm">
           <div>
             <div className="font-medium text-sky-400">方案 A：sing-box（免费，推荐）</div>
             <ol className="list-decimal list-inside mt-1 space-y-1 text-slate-400">
@@ -561,7 +561,7 @@ export default function ClashGuide() {
               <li>手动方式：Profiles → + → New Profile → Type 选 Remote → 粘贴订阅链接 → Create</li>
               <li>回到首页打开开关，允许系统 VPN 授权即可</li>
             </ol>
-            <p className="text-xs text-slate-500 mt-1">
+            <p className="text-sm sm:text-xs text-slate-500 mt-1">
               确认标志：Profiles 里出现 fastergamer 配置，启动后能正常访问外网。
             </p>
           </div>
@@ -583,7 +583,7 @@ export default function ClashGuide() {
               </li>
               <li>回到首页选择节点，打开连接开关</li>
             </ol>
-            <p className="text-xs text-slate-500 mt-1">
+            <p className="text-sm sm:text-xs text-slate-500 mt-1">
               无需再手动填写地址/端口/UUID 等字段，也无需第三方订阅转换。
             </p>
           </div>
@@ -591,7 +591,7 @@ export default function ClashGuide() {
             <summary className="cursor-pointer font-medium text-slate-300 select-none">
               外区 Apple ID 获取指引 ▸
             </summary>
-            <div className="mt-2 space-y-2 text-xs text-slate-400">
+            <div className="mt-2 space-y-2 text-sm leading-relaxed sm:text-xs text-slate-400">
               <p>自己注册一个（免费、最安全）：</p>
               <ol className="list-decimal list-inside space-y-1">
                 <li>浏览器打开 appleid.apple.com，注册新账号，国家/地区选「美国」</li>
@@ -607,7 +607,7 @@ export default function ClashGuide() {
         </div>
       </div>
 
-      <p className="text-xs text-slate-500">
+      <p className="text-sm sm:text-xs text-slate-500">
         订阅链接仅在 token 激活期间有效；到期后请购买并激活新 token。
       </p>
     </div>

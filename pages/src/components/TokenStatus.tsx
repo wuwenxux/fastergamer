@@ -340,7 +340,7 @@ export default function TokenStatus({ token }: { token: TokenView }) {
       <div className="flex items-center justify-between flex-wrap gap-2">
         <div>
           <div className="text-sm text-slate-400">Token</div>
-          <div className="font-mono text-sm">{current.id}</div>
+          <div className="font-mono text-[15px] sm:text-sm">{current.id}</div>
         </div>
         <span
           className={`rounded-full border px-3 py-1 text-xs font-medium ${STATUS_COLOR[current.status]}`}
@@ -356,19 +356,19 @@ export default function TokenStatus({ token }: { token: TokenView }) {
 
       {current.contact && (
         <div className="rounded-lg bg-amber-500/10 border border-amber-500/30 p-3">
-          <div className="text-amber-400 text-xs mb-1">售后联系方式（请牢记）</div>
-          <div className="text-sm break-all">{current.contact}</div>
+          <div className="text-amber-400 text-sm sm:text-xs mb-1">售后联系方式（请牢记）</div>
+          <div className="text-[15px] sm:text-sm break-all">{current.contact}</div>
         </div>
       )}
 
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-[15px] sm:text-sm">
         <div className="rounded-lg bg-slate-800/60 p-3">
-          <div className="text-slate-400 text-xs mb-1">UUID（即连接凭证）</div>
+          <div className="text-slate-400 text-sm sm:text-xs mb-1">UUID（即连接凭证）</div>
           <div className="font-mono break-all">{current.uuid}</div>
         </div>
         {current.expires_at && (
           <div className="rounded-lg bg-slate-800/60 p-3">
-            <div className="text-slate-400 text-xs mb-1">剩余有效期</div>
+            <div className="text-slate-400 text-sm sm:text-xs mb-1">剩余有效期</div>
             <div className={active ? "text-emerald-300 font-semibold" : "text-rose-300"}>
               {active ? `${remainingDays} 天 ${remainingHours} 小时` : "已到期"}
             </div>
@@ -377,14 +377,14 @@ export default function TokenStatus({ token }: { token: TokenView }) {
       </div>
 
       {current.last_active_at && (
-        <div className="text-xs text-slate-500">
+        <div className="text-sm sm:text-xs text-slate-500">
           最近活跃：{new Date(current.last_active_at).toLocaleString()}
         </div>
       )}
 
       {limitGb > 0 && (
         <div className="rounded-lg bg-slate-800/60 p-3 space-y-2">
-          <div className="flex justify-between text-xs">
+          <div className="flex justify-between text-sm sm:text-xs">
             <span className="text-slate-400">流量额度</span>
             <span className={trafficExhausted ? "text-rose-400 font-medium" : "text-slate-200"}>
               {usedGb.toFixed(2)} / {limitGb} GB
@@ -397,11 +397,11 @@ export default function TokenStatus({ token }: { token: TokenView }) {
               style={{ width: `${trafficPercent}%` }}
             />
           </div>
-          <div className="text-xs text-slate-400">
+          <div className="text-sm sm:text-xs text-slate-400">
             剩余 {remainingGb.toFixed(2)} GB{monthlyQuotaGb ? "（总流量）" : "（总额度，不限月）"}
           </div>
           {monthlyQuotaGb && (
-            <div className="text-xs text-slate-400">
+            <div className="text-sm sm:text-xs text-slate-400">
               本月已用 {((current.month_used_bytes ?? 0) / 1024 ** 3).toFixed(2)} / {monthlyQuotaGb} GB
               <span className="text-slate-500">
                 （当月用超将预支下月额度，有效期提前一个月；次月 1 日恢复新额度）
@@ -410,7 +410,7 @@ export default function TokenStatus({ token }: { token: TokenView }) {
           )}
           {trafficExhausted && (
             <div className="space-y-2">
-              <p className="text-xs text-amber-400">
+              <p className="text-sm leading-relaxed sm:text-xs text-amber-400">
                 流量已用完。不会立即断线：48 小时宽限期内服务照常，请尽快
                 <Link to="/" className="text-sky-400 hover:underline"> 续费 </Link>
                 ；宽限期结束后服务才会暂停。
@@ -418,7 +418,7 @@ export default function TokenStatus({ token }: { token: TokenView }) {
               <button
                 onClick={onResetPenalty}
                 disabled={resetting}
-                className="w-full rounded-lg border border-amber-500/50 bg-amber-500/10 py-2 text-xs font-medium text-amber-400 hover:bg-amber-500/20 transition-colors disabled:opacity-60"
+                className="w-full rounded-lg border border-amber-500/50 bg-amber-500/10 py-3 sm:py-2 text-sm sm:text-xs font-medium text-amber-400 hover:bg-amber-500/20 transition-colors disabled:opacity-60"
               >
                 {resetting ? "重置中…" : "立即重置流量（有效期 -30 天）"}
               </button>
@@ -429,18 +429,18 @@ export default function TokenStatus({ token }: { token: TokenView }) {
 
       {limitGb <= 0 && (
         <div className="rounded-lg bg-slate-800/60 p-3 space-y-1">
-          <div className="flex justify-between text-xs">
+          <div className="flex justify-between text-sm sm:text-xs">
             <span className="text-slate-400">流量</span>
             <span className="text-emerald-300 font-medium">不限量（公平使用）</span>
           </div>
-          <div className="text-xs text-slate-400">累计已用 {usedGb.toFixed(2)} GB</div>
+          <div className="text-sm sm:text-xs text-slate-400">累计已用 {usedGb.toFixed(2)} GB</div>
         </div>
       )}
 
       {current.status === "paid" && (
         <button
           onClick={onActivate}
-          className="w-full rounded-lg bg-emerald-500 py-2.5 font-medium hover:bg-emerald-400 transition-colors"
+          className="w-full rounded-lg bg-emerald-500 py-3 sm:py-2.5 font-medium hover:bg-emerald-400 transition-colors"
         >
           ⚡ 立即激活（开始计时）
         </button>
@@ -448,8 +448,8 @@ export default function TokenStatus({ token }: { token: TokenView }) {
 
       {activatedRestricted && (
         <div className="rounded-xl border border-emerald-500/40 bg-emerald-500/10 p-4 space-y-2">
-          <p className="text-sm text-emerald-300">✅ 激活成功</p>
-          <p className="text-xs text-slate-400">
+          <p className="text-[15px] sm:text-sm text-emerald-300">✅ 激活成功</p>
+          <p className="text-sm sm:text-xs text-slate-400">
             在上方输入购买时填写的邮箱并发送登录链接，点邮件里的链接即可查看订阅信息。
           </p>
         </div>
@@ -458,26 +458,26 @@ export default function TokenStatus({ token }: { token: TokenView }) {
       {active && (
         <div className="flex flex-col gap-3 rounded-xl border border-slate-700 bg-slate-950 p-4">
           <div>
-            <div className="text-sky-300 text-xs mb-1 font-medium">订阅链接（一键导入见下方按钮，或复制后粘贴到 Clash / sing-box / Stash）</div>
-            <div className="font-mono text-sm break-all text-sky-200 rounded-lg border border-sky-500/50 bg-sky-500/15 p-2.5 select-all">{subUrl}</div>
+            <div className="text-sky-300 text-sm sm:text-xs mb-1 font-medium">订阅链接（一键导入见下方按钮，或复制后粘贴到 Clash / sing-box / Stash）</div>
+            <div className="font-mono text-[15px] sm:text-sm break-all text-sky-200 rounded-lg border border-sky-500/50 bg-sky-500/15 p-2.5 select-all">{subUrl}</div>
           </div>
 
-          <p className="text-xs text-slate-300">
+          <p className="text-sm leading-relaxed sm:text-xs text-slate-300">
             这个链接<span className="text-sky-300">不是用浏览器直接打开的</span>，而是 Clash 用来下载配置的地址。复制链接 → 打开 Clash → 粘贴到「订阅/Profiles」里即可自动导入节点。
           </p>
 
-          <p className="text-xs text-emerald-300/90 rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-2.5">
+          <p className="text-sm leading-relaxed sm:text-xs text-emerald-300/90 rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-2.5">
             ⚡ 使用新版客户端（Clash Verge Rev / FlClash / Stash 等）导入后，节点列表会出现带 ⚡ 后缀的直连节点：
             延迟更低、不依赖域名解析、抗封锁更强。老客户端（Clash for Windows / ClashX）不受影响，可继续用原节点，但建议升级。
           </p>
 
-          <p className="text-xs text-rose-400">
+          <p className="text-sm leading-relaxed sm:text-xs text-rose-400">
             ⚠️ 请勿把订阅链接分享给他人：UUID 就是全部连接凭证，泄露后会被他人盗用并消耗你的流量额度。
           </p>
 
           {current.multi_device_detected_at &&
             current.multi_device_detected_at > now - 24 * 3_600_000 && (
-            <p className="text-xs text-amber-400">
+            <p className="text-sm leading-relaxed sm:text-xs text-amber-400">
               ⚠️ 检测到该凭证在多个节点同时在线（{new Date(current.multi_device_detected_at).toLocaleString()}）。
               如果是你自己多台设备同时使用可忽略；否则说明订阅链接可能已泄露，可点下方「重新生成订阅链接」更换，旧链接立即失效。
             </p>
@@ -486,14 +486,14 @@ export default function TokenStatus({ token }: { token: TokenView }) {
           <div className="grid grid-cols-2 gap-3">
             <button
               onClick={copySub}
-              className="rounded-lg bg-sky-500 py-2.5 font-medium hover:bg-sky-400 transition-colors"
+              className="rounded-lg bg-sky-500 py-3 sm:py-2.5 font-medium hover:bg-sky-400 transition-colors"
             >
               {copied ? "✓ 已复制" : "复制订阅链接"}
             </button>
             <button
               onClick={loadPreview}
               disabled={previewLoading}
-              className="rounded-lg border border-slate-600 py-2.5 font-medium hover:border-sky-500 transition-colors disabled:opacity-60"
+              className="rounded-lg border border-slate-600 py-3 sm:py-2.5 font-medium hover:border-sky-500 transition-colors disabled:opacity-60"
             >
               {previewLoading ? "加载中…" : showPreview ? "隐藏配置内容" : "查看配置内容"}
             </button>
@@ -502,7 +502,7 @@ export default function TokenStatus({ token }: { token: TokenView }) {
           {/* 一键导入：deep link 必须放在 onClick（用户手势）里跳转，否则浏览器会拦截自定义协议 */}
           {importLinks.length > 0 && (
             <div className="space-y-2">
-              <p className="text-xs text-slate-400">
+              <p className="text-sm sm:text-xs text-slate-400">
                 手机点一下直接唤起客户端完成导入，不用复制粘贴：
               </p>
               <div className={`grid gap-3 ${importLinks.length > 1 ? "grid-cols-2" : "grid-cols-1"}`}>
@@ -512,7 +512,7 @@ export default function TokenStatus({ token }: { token: TokenView }) {
                     onClick={() => {
                       window.location.href = l.href;
                     }}
-                    className="rounded-lg border border-sky-500/50 bg-sky-500/10 py-2.5 font-medium text-sky-300 hover:bg-sky-500/20 transition-colors"
+                    className="rounded-lg border border-sky-500/50 bg-sky-500/10 py-3 sm:py-2.5 font-medium text-sky-300 hover:bg-sky-500/20 transition-colors"
                   >
                     {l.label}
                   </button>
@@ -524,21 +524,21 @@ export default function TokenStatus({ token }: { token: TokenView }) {
           {/* 下载配置文件：sub 接口已带 content-disposition，直接下载 .yaml/.json，
               客户端里选「导入本地文件」即可——适合 deep link 被拦截或想手动管理的场景 */}
           <div className="space-y-2">
-            <p className="text-xs text-slate-400">
+            <p className="text-sm sm:text-xs text-slate-400">
               也可以下载配置文件，在客户端里选「导入 / Import → 本地文件」：
             </p>
             <div className="grid grid-cols-2 gap-3">
               <a
                 href={`${subUrl}&format=clash`}
                 download
-                className="text-center rounded-lg border border-slate-600 py-2.5 text-sm font-medium text-slate-300 hover:border-sky-500 hover:text-sky-300 transition-colors"
+                className="text-center rounded-lg border border-slate-600 py-3 sm:py-2.5 text-base sm:text-sm font-medium text-slate-300 hover:border-sky-500 hover:text-sky-300 transition-colors"
               >
                 下载 Clash 配置 (.yaml)
               </a>
               <a
                 href={`${subUrl}&format=singbox`}
                 download
-                className="text-center rounded-lg border border-slate-600 py-2.5 text-sm font-medium text-slate-300 hover:border-sky-500 hover:text-sky-300 transition-colors"
+                className="text-center rounded-lg border border-slate-600 py-3 sm:py-2.5 text-base sm:text-sm font-medium text-slate-300 hover:border-sky-500 hover:text-sky-300 transition-colors"
               >
                 下载 sing-box 配置 (.json)
               </a>
@@ -548,11 +548,11 @@ export default function TokenStatus({ token }: { token: TokenView }) {
           {/* 跨设备导入：二维码内容是裸订阅链接（配置名由响应头 profile-title 下发）。
               深色主题下二维码必须垫白底，否则扫码对比度不够 */}
           <details className="rounded-lg border border-slate-700 bg-slate-900 p-3">
-            <summary className="cursor-pointer text-sm text-slate-300 select-none">
+            <summary className="cursor-pointer text-[15px] sm:text-sm text-slate-300 select-none">
               在其他设备上导入 ▸
             </summary>
             <div className="mt-3 space-y-2">
-              <p className="text-xs text-slate-400">
+              <p className="text-sm sm:text-xs text-slate-400">
                 电脑上买的套餐，用手机客户端扫这个码直接导入。
               </p>
               <div className="flex justify-center">
@@ -566,18 +566,18 @@ export default function TokenStatus({ token }: { token: TokenView }) {
           <button
             onClick={onVerify}
             disabled={verifying}
-            className="w-full rounded-lg border border-emerald-500/50 bg-emerald-500/10 py-2 font-medium text-emerald-400 hover:bg-emerald-500/20 transition-colors disabled:opacity-60"
+            className="w-full rounded-lg border border-emerald-500/50 bg-emerald-500/10 py-3 sm:py-2 font-medium text-emerald-400 hover:bg-emerald-500/20 transition-colors disabled:opacity-60"
           >
             {verifying ? "诊断中…" : "Clash 导入失败？一键诊断"}
           </button>
 
           {verify?.valid ? (
             <div className="rounded-lg border border-emerald-500/40 bg-emerald-500/5 p-3 space-y-2">
-              <p className="text-xs text-emerald-400">
+              <p className="text-sm sm:text-xs text-emerald-400">
                 ✅ 订阅链接可以正常访问（含 {verify.nodeCount} 个节点），服务端没有问题。
               </p>
-              <p className="text-xs text-slate-300 font-medium">Clash 仍导入失败的话，按顺序排查：</p>
-              <ol className="text-xs text-slate-400 list-decimal pl-4 space-y-1">
+              <p className="text-sm sm:text-xs text-slate-300 font-medium">Clash 仍导入失败的话，按顺序排查：</p>
+              <ol className="text-sm leading-relaxed sm:text-xs text-slate-400 list-decimal pl-4 space-y-1">
                 <li>彻底退出其他 VPN / 加速器（右键状态栏图标选「退出」，只关窗口不够）</li>
                 <li>Clash Verge：设置 → 订阅 → 关闭「使用系统代理」后重新导入</li>
                 <li>确认复制的是完整链接（https:// 开头，没有多余空格或换行）</li>
@@ -587,8 +587,8 @@ export default function TokenStatus({ token }: { token: TokenView }) {
             </div>
           ) : verify ? (
             <div className="rounded-lg border border-rose-500/40 bg-rose-500/5 p-3 space-y-2">
-              <p className="text-xs text-rose-400">❌ 订阅链接无法访问：{verify.error}</p>
-              <p className="text-xs text-slate-400">
+              <p className="text-sm sm:text-xs text-rose-400">❌ 订阅链接无法访问：{verify.error}</p>
+              <p className="text-sm sm:text-xs text-slate-400">
                 说明问题在链接或服务端：确认 token 未过期；等 1 分钟后再试一次；仍失败请到「问题反馈」页提交（注明 Token ID：{current.id}）。
               </p>
             </div>
@@ -597,7 +597,7 @@ export default function TokenStatus({ token }: { token: TokenView }) {
           {showPreview && (
             <div className="rounded-lg bg-slate-900 border border-slate-700 p-3">
               <div className="text-xs text-slate-400 mb-2">配置预览（YAML）</div>
-              <pre className="text-[10px] font-mono text-slate-300 overflow-x-auto whitespace-pre-wrap break-all max-h-64 overflow-y-auto">
+              <pre className="text-xs font-mono text-slate-300 overflow-x-auto whitespace-pre-wrap break-all max-h-64 overflow-y-auto">
                 {preview}
               </pre>
             </div>
@@ -605,7 +605,7 @@ export default function TokenStatus({ token }: { token: TokenView }) {
 
           {/* 作废旧订阅属于危险操作，降级为卡片底部小按钮，避免与主操作混排误点 */}
           <div className="flex items-center justify-between gap-3 border-t border-slate-800 pt-3">
-            <p className="text-[11px] text-slate-500">
+            <p className="text-sm leading-relaxed sm:text-xs text-slate-500">
               订阅泄露或凭证被盗用？重新生成后旧链接立即失效，Clash 需重新导入订阅。
             </p>
             <button
@@ -622,11 +622,11 @@ export default function TokenStatus({ token }: { token: TokenView }) {
 
       {ipStats.length > 0 && (
         <div className="rounded-lg bg-slate-800/60 p-3 space-y-2">
-          <div className="flex justify-between text-xs">
+          <div className="flex justify-between text-sm sm:text-xs">
             <span className="text-slate-400">接入 IP 统计</span>
             <span className="text-slate-500">按连接数比例估算，仅供参考</span>
           </div>
-          <div className="space-y-1 text-xs">
+          <div className="space-y-1 text-sm sm:text-xs">
             {ipStats.map(([ip, stat]) => {
               const blocked = blockedIpSet.has(ip);
               return (
@@ -646,7 +646,7 @@ export default function TokenStatus({ token }: { token: TokenView }) {
                   <button
                     onClick={() => toggleBlockIp(ip, blocked)}
                     disabled={ipActionLoading === ip}
-                    className={`shrink-0 rounded px-2 py-0.5 border text-[11px] transition-colors disabled:opacity-50 ${
+                    className={`shrink-0 rounded px-2 py-0.5 border text-xs transition-colors disabled:opacity-50 ${
                       blocked
                         ? "border-emerald-500/50 text-emerald-400 hover:bg-emerald-500/10"
                         : "border-rose-500/50 text-rose-400 hover:bg-rose-500/10"
@@ -658,7 +658,7 @@ export default function TokenStatus({ token }: { token: TokenView }) {
               );
             })}
           </div>
-          <p className="text-[11px] text-slate-500">
+          <p className="text-sm leading-relaxed sm:text-xs text-slate-500">
             出现陌生 IP 说明订阅可能泄露：点「封禁」后该 IP 30 秒内无法连接任何节点，误封可随时解封。
             如需彻底重置凭证请联系售后。
           </p>
@@ -669,11 +669,11 @@ export default function TokenStatus({ token }: { token: TokenView }) {
 
       {subFetchRows.length > 0 && (
         <div className="rounded-lg bg-slate-800/60 p-3 space-y-2">
-          <div className="flex justify-between text-xs">
+          <div className="flex justify-between text-sm sm:text-xs">
             <span className="text-slate-400">订阅客户端</span>
             <span className="text-slate-500">各设备最近一次更新订阅</span>
           </div>
-          <div className="space-y-1 text-xs">
+          <div className="space-y-1 text-sm sm:text-xs">
             {subFetchRows.map((row) => (
               <div key={row.subUuid} className="flex items-center justify-between gap-2">
                 <span className="text-slate-300">
@@ -692,7 +692,7 @@ export default function TokenStatus({ token }: { token: TokenView }) {
               </div>
             ))}
           </div>
-          <p className="text-[11px] text-slate-500">
+          <p className="text-sm leading-relaxed sm:text-xs text-slate-500">
             客户端类型变了（比如从 Clash 变成 Shadowrocket）通常说明在新设备上导入了订阅；
             建议给每台设备绑定独立槽位，用量与在线状态才能分开审计。
           </p>
@@ -701,7 +701,7 @@ export default function TokenStatus({ token }: { token: TokenView }) {
 
       {upgradeOrder && (
         <div className="rounded-xl border border-sky-500/50 bg-sky-500/10 p-4 space-y-3">
-          <p className="text-sm font-medium text-sky-300 text-center">
+          <p className="text-[15px] sm:text-sm font-medium text-sky-300 text-center">
             升级订单已创建，扫码补差价后点「我已支付」
           </p>
           <ManualPay orderId={upgradeOrder.id} payableCny={upgradeOrder.payable_cny ?? 0} />
@@ -717,7 +717,7 @@ export default function TokenStatus({ token }: { token: TokenView }) {
       {needUpgrade && !upgradeOrder && !showUpgrade && (
         <button
           onClick={() => setShowUpgrade(true)}
-          className="w-full rounded-xl border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-amber-300 hover:bg-amber-500/20 transition-colors"
+          className="w-full rounded-xl border border-amber-500/40 bg-amber-500/10 p-3 text-base sm:text-sm text-amber-300 hover:bg-amber-500/20 transition-colors"
         >
           {isTrial
             ? "试用转正专享：充值送 30 天，剩余天数并入首月，订阅链接不变 →"
@@ -728,7 +728,7 @@ export default function TokenStatus({ token }: { token: TokenView }) {
       {needUpgrade && !upgradeOrder && showUpgrade && (
         <div className="rounded-xl border border-slate-700 bg-slate-950 p-4 space-y-3">
           <div className="flex items-center justify-between">
-            <div className="text-sm font-medium text-slate-300">
+            <div className="text-[15px] sm:text-sm font-medium text-slate-300">
               {isTrial ? "充值转正" : "升级套餐"}
             </div>
             <button
@@ -739,21 +739,21 @@ export default function TokenStatus({ token }: { token: TokenView }) {
             </button>
           </div>
           {isTrial && (
-            <p className="text-xs text-amber-300/90 bg-amber-500/10 border border-amber-500/30 rounded-lg px-3 py-2">
+            <p className="text-sm leading-relaxed sm:text-xs text-amber-300/90 bg-amber-500/10 border border-amber-500/30 rounded-lg px-3 py-2">
               试用转正专享：额外赠送 30 天，试用期内剩余天数自动并入开通后第一个月；uuid、订阅链接与设备配置保持不变。
             </p>
           )}
           <div className="space-y-2">
             {upgradeTargets.map((p) => (
-              <div key={p.id} className="flex items-center justify-between gap-3 text-sm">
+              <div key={p.id} className="flex items-center justify-between gap-3 text-[15px] sm:text-sm">
                 <span>
                   {p.name}
-                  <span className="text-xs text-slate-500 ml-2">¥{p.price_cny} / {p.duration_days} 天</span>
+                  <span className="text-sm sm:text-xs text-slate-500 ml-2">¥{p.price_cny} / {p.duration_days} 天</span>
                 </span>
                 <button
                   onClick={() => startUpgrade(p.id)}
                   disabled={upgrading !== null}
-                  className="shrink-0 rounded-lg bg-sky-500 px-3 py-1.5 text-xs font-medium hover:bg-sky-400 transition-colors disabled:opacity-60"
+                  className="shrink-0 rounded-lg bg-sky-500 px-3 py-2 sm:py-1.5 text-sm sm:text-xs font-medium hover:bg-sky-400 transition-colors disabled:opacity-60"
                 >
                   {upgrading === p.id ? "下单中…" : isTrial ? `¥${estimatePayable(p)} 充值` : `≈¥${estimatePayable(p)} 升级`}
                 </button>

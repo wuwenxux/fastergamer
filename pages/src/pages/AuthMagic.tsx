@@ -61,10 +61,10 @@ export default function AuthMagic() {
   if (error) {
     return (
       <div className="max-w-md mx-auto text-center space-y-4 py-16">
-        <p className="text-rose-400 text-sm">{error}</p>
+        <p className="text-rose-400 text-[15px] sm:text-sm">{error}</p>
         <Link
           to="/tokens"
-          className="inline-block rounded-lg bg-sky-500 px-6 py-2.5 text-sm font-medium hover:bg-sky-400 transition-colors"
+          className="inline-block rounded-lg bg-sky-500 px-6 py-3 sm:py-2.5 text-base sm:text-sm font-medium hover:bg-sky-400 transition-colors"
         >
           前往「我的 Token」重新获取 →
         </Link>
@@ -75,7 +75,7 @@ export default function AuthMagic() {
   if (!session) {
     return (
       <div className="max-w-md mx-auto text-center py-16">
-        <p className="text-slate-400 text-sm">正在登录，请稍候…</p>
+        <p className="text-slate-400 text-[15px] sm:text-sm">正在登录，请稍候…</p>
       </div>
     );
   }
@@ -111,8 +111,8 @@ export default function AuthMagic() {
   return (
     <div className="max-w-md mx-auto py-12 space-y-6">
       <div className="text-center space-y-1">
-        <h1 className="text-xl font-semibold text-emerald-300">✅ 登录成功</h1>
-        <p className="text-sm text-slate-400">
+        <h1 className="text-2xl sm:text-xl font-semibold text-emerald-300">✅ 登录成功</h1>
+        <p className="text-[15px] sm:text-sm text-slate-400">
           导入订阅后自动激活并开始计时，选择你喜欢的客户端：
         </p>
       </div>
@@ -124,7 +124,7 @@ export default function AuthMagic() {
               <a
                 key={l.href}
                 href={l.href}
-                className="block text-center rounded-lg bg-sky-500 px-4 py-3 text-sm font-medium hover:bg-sky-400 transition-colors"
+                className="block text-center rounded-lg bg-sky-500 px-4 py-3 text-base sm:text-sm font-medium hover:bg-sky-400 transition-colors"
               >
                 {l.label} →
               </a>
@@ -132,30 +132,30 @@ export default function AuthMagic() {
           </div>
 
           <div className="rounded-lg bg-slate-900/60 p-3 space-y-2">
-            <p className="text-xs text-slate-400">或手动复制订阅链接，粘贴到客户端：</p>
-            <code className="block text-xs text-slate-300 break-all">{subUrl}</code>
+            <p className="text-sm sm:text-xs text-slate-400">或手动复制订阅链接，粘贴到客户端：</p>
+            <code className="block text-sm sm:text-xs text-slate-300 break-all">{subUrl}</code>
             <button
               onClick={copySub}
-              className="w-full rounded-lg border border-slate-600 px-4 py-2 text-sm hover:bg-slate-800 transition-colors"
+              className="w-full rounded-lg border border-slate-600 px-4 py-3 sm:py-2 text-base sm:text-sm hover:bg-slate-800 transition-colors"
             >
               {copied ? "已复制 ✓" : "复制订阅链接"}
             </button>
           </div>
 
           <div className="space-y-2">
-            <p className="text-xs text-slate-400">也可以下载配置文件，在客户端里选「导入 → 本地文件」：</p>
+            <p className="text-sm sm:text-xs text-slate-400">也可以下载配置文件，在客户端里选「导入 → 本地文件」：</p>
             <div className="grid grid-cols-2 gap-2">
               <a
                 href={`${subUrl}&format=clash`}
                 download
-                className="text-center rounded-lg border border-slate-600 px-3 py-2 text-sm text-slate-300 hover:border-sky-500 hover:text-sky-300 transition-colors"
+                className="text-center rounded-lg border border-slate-600 px-3 py-2 text-[15px] sm:text-sm text-slate-300 hover:border-sky-500 hover:text-sky-300 transition-colors"
               >
                 Clash 配置 (.yaml)
               </a>
               <a
                 href={`${subUrl}&format=singbox`}
                 download
-                className="text-center rounded-lg border border-slate-600 px-3 py-2 text-sm text-slate-300 hover:border-sky-500 hover:text-sky-300 transition-colors"
+                className="text-center rounded-lg border border-slate-600 px-3 py-2 text-[15px] sm:text-sm text-slate-300 hover:border-sky-500 hover:text-sky-300 transition-colors"
               >
                 sing-box 配置 (.json)
               </a>
@@ -174,7 +174,7 @@ export default function AuthMagic() {
       <div className="text-center">
         <Link
           to={`/tokens?id=${session.token_id}`}
-          className="text-sm text-sky-400 hover:underline"
+          className="text-[15px] sm:text-sm text-sky-400 hover:underline"
         >
           进入管理页，查看用量与设备 →
         </Link>

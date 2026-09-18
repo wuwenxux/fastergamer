@@ -65,18 +65,18 @@ export default function ManualPay({
       </div>
 
       <div className="flex justify-between items-center">
-        <span className="text-slate-400 text-sm">订单号</span>
+        <span className="text-slate-400 text-[15px] sm:text-sm">订单号</span>
         <button onClick={copyOrderId} className="font-mono text-sky-400 hover:text-sky-300">
           {orderId} {copied ? "✓ 已复制" : "📋"}
         </button>
       </div>
 
-      <p className="text-xs text-slate-400 text-center">
+      <p className="text-sm sm:text-xs text-slate-400 text-center">
         扫码转账时请务必备注订单号；确认收款后 token 自动发到你的邮箱。
       </p>
 
       {notifyState === "notified" ? (
-        <div className="rounded-lg bg-emerald-500/10 border border-emerald-500/40 py-3 text-center text-sm text-emerald-300">
+        <div className="rounded-lg bg-emerald-500/10 border border-emerald-500/40 py-3 text-center text-[15px] sm:text-sm text-emerald-300">
           已通知客服，将在确认收款后开通
         </div>
       ) : (
@@ -92,9 +92,9 @@ export default function ManualPay({
         </>
       )}
       {notifyState === "duplicate" && (
-        <p className="text-xs text-amber-400 text-center">已通知过客服，无需重复点击</p>
+        <p className="text-sm sm:text-xs text-amber-400 text-center">已通知过客服，无需重复点击</p>
       )}
-      {notifyError && <p className="text-xs text-rose-400 text-center">{notifyError}</p>}
+      {notifyError && <p className="text-sm sm:text-xs text-rose-400 text-center">{notifyError}</p>}
     </div>
   );
 }
@@ -198,7 +198,7 @@ function PayQr({ src, label }: { src: string; label: string }) {  const [broken,
   return (
     <div className="flex-1 space-y-2 text-center">
       {broken ? (
-        <div className="flex aspect-square items-center justify-center rounded-lg border border-slate-700 bg-slate-950 p-3 text-xs text-slate-500">
+        <div className="flex aspect-square items-center justify-center rounded-lg border border-slate-700 bg-slate-950 p-3 text-sm sm:text-xs text-slate-500">
           收款码维护中，请邮件联系 support@fastergamer.cn
         </div>
       ) : (
