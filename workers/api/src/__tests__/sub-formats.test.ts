@@ -420,3 +420,30 @@ describe("订阅拉取的客户端识别记录", () => {
     expect(tokens.store.has(KV.PRESENCE + UUID)).toBe(false);
   });
 });
+
+describe("GET /api/sub/qr 订阅二维码", () => {
+  const PNG_SIG = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
+
+  it("存在的 uuid 返回 PNG 二维码，内容为裸订阅链接（不带名称片段）", async () => {
+    const { env } = await setup(makeToken());
+    const res = await app.request(`/api/sub/qr?uuid=${UUID}`, {}, env, ctx);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toBe("image/png");
+    expect(res.headers.get("cache-control")).toContain("max-age");
+    const buf = new Uint8Array(await res.arrayBuffer());
+    expect([...buf.slice(0, 8)]).toEqual(PNG_SIG);
+    // 宽度/高度在 IHDR（第 16 字节起）：35 模块 + 各 4 留白，×6px = 258
+    const dv = new DataView(buf.buffer);
+    expect(dv.getUint32(16)).toBe(dv.getUint32(20));
+    expect(dv.getUint32(16)).toBeGreaterThan(150);
+    expect(buf.length).toBeGreaterThan(500);
+  });
+
+  it("uuid 缺失 400；token 不存在 404（不对外开放成匿名二维码服务）", async () => {
+    const { env } = await setup(makeToken());
+    const noParam = await app.request(`/api/sub/qr`, {}, env, ctx);
+    expect(noParam.status).toBe(400);
+    const notFound = await app.request(`/api/sub/qr?uuid=00000000-0000-0000-0000-000000000000`, {}, env, ctx);
+    expect(notFound.status).toBe(404);
+  });
+});

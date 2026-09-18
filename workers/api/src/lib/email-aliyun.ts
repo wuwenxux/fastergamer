@@ -141,6 +141,9 @@ export async function sendTokenEmail(
   // 链接不带 #名称片段：配置名由响应头 profile-title / content-disposition 下发，
   // 一键导入 deep link 自带 name 参数；裸链接保持干净，避免片段随复制/转发扩散
   const subUrl = `${site}/api/sub?uuid=${encodeURIComponent(ctx.uuid)}`;
+  // 订阅二维码（Worker /api/sub/qr 实时生成 PNG）：移动端用户很多不知道链接该粘贴到哪，
+  // 扫码是最低门槛的导入方式
+  const qrUrl = `${site}/api/sub/qr?uuid=${encodeURIComponent(ctx.uuid)}`;
   const mainBtnLabel = ctx.magicUrl ? "一键进入管理页（免登录）" : "查看 Token 与订阅链接";
 
   const subject = "【GameBoost】你的加速 Token 已生成";
@@ -193,13 +196,20 @@ export async function sendTokenEmail(
   <div style="margin-top: 24px; padding: 20px; background: #fff7ed; border-radius: 12px; border: 1px solid #fed7aa;">
     <p style="margin: 0; font-weight: 500; color: #9a3412;">使用步骤</p>
     <ol style="margin: 10px 0 0; padding-left: 20px; color: #7c2d12; font-size: 14px;">
-      <li>复制下方订阅链接，粘贴到 Clash / Stash 客户端（首次导入自动激活并开始计时）</li>
+      <li>手机：用客户端「扫一扫」扫下方二维码直接导入；电脑：复制下方订阅链接粘贴到客户端（首次导入自动激活并开始计时）</li>
       <li>选择节点并开启系统代理</li>
       <li>点上方按钮可随时进入管理页查看用量与有效期</li>
     </ol>
   </div>
 
   <div style="margin-top: 24px; padding: 16px; background: #f1f5f9; border-radius: 12px; font-size: 13px; color: #64748b;">
+    <p style="margin: 0;"><strong>手机导入（推荐）：</strong>用 Clash / Shadowrocket 的「扫一扫」扫这个二维码</p>
+    <div style="text-align: center; margin: 12px 0;">
+      <img src="${qrUrl}" width="180" height="180" alt="订阅二维码" style="border-radius: 8px; background: #fff;" />
+    </div>
+    <p style="margin: 0 0 4px; font-size: 12px; color: #94a3b8;">
+      在手机上直接看本邮件时：长按二维码保存图片，在客户端里选「从相册识别二维码」；图片不显示时先点「显示图片」。电脑使用则复制下方链接：
+    </p>
     <p style="margin: 0;"><strong>订阅链接（复制到 Clash，${ctx.status === "paid" ? "首次导入会自动激活并开始计时" : "可直接使用"}）：</strong></p>
     <code style="display: block; margin-top: 8px; padding: 10px; background: #0f172a; color: #e2e8f0; border-radius: 6px; word-break: break-all;">${subUrl}</code>
   </div>
@@ -222,9 +232,10 @@ ${ctx.expiresAt ? `有效期至：${new Date(ctx.expiresAt).toLocaleString("zh-C
 管理入口（${ctx.magicUrl ? "一键免登录，72 小时内有效" : "网页"}）：${tokenUrl}
 找回 Token：${recoverUrl}
 订阅链接（粘贴到 Clash${ctx.status === "paid" ? "，首次导入自动激活并开始计时" : ""}）：${subUrl}
+订阅二维码（手机客户端「扫一扫」导入，在浏览器打开这个地址即可看到）：${qrUrl}
 
 使用步骤：
-1. 复制订阅链接，粘贴到 Clash / Stash 客户端（首次导入自动激活并开始计时）
+1. 手机扫二维码直接导入；电脑复制订阅链接粘贴到客户端（首次导入自动激活并开始计时）
 2. 选择节点并开启系统代理
 3. 点管理入口链接可随时查看用量与有效期
   `.trim();

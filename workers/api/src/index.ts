@@ -68,6 +68,8 @@ app.use("/api/orders", rateLimit(20, 60_000), turnstile);
 app.use("/api/orders/*/notify-paid", rateLimit(10, 60_000), turnstile);
 app.use("/api/feedback", rateLimit(5, 60_000), turnstile);
 app.use("/api/register", rateLimit(10, 60_000));
+// 二维码生成有少量 CPU 开销且面向公网，限流防刷（正常用户只在打开邮件/页面时加载）
+app.use("/api/sub/qr", rateLimit(20, 60_000));
 
 app.route("/api/plans", plansRoutes);
 app.route("/api/orders", ordersRoutes);

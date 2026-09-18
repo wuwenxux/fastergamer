@@ -7,6 +7,7 @@ import { buildSingboxConfig } from "../lib/singbox";
 import { getNodes, isBudgetExhausted } from "../lib/nodes";
 import { ispFromAsn, orderNodesForIsp } from "../lib/isp";
 import { pushAuthRefresh } from "../lib/authpush";
+import { qrPng } from "../lib/qr-png";
 import type { Env } from "../types";
 
 export const subRoutes = new Hono<{ Bindings: Env }>();
@@ -81,6 +82,29 @@ const resolveNodeIps = async (hosts: string[]): Promise<Record<string, string>> 
   }
   return result;
 };
+
+/**
+ * GET /api/sub/qr?uuid={uuid} —— 订阅链接二维码（PNG）。
+ * 凭证邮件内嵌 + 移动端「扫一扫」导入用（很多用户不知道链接该粘贴到哪）。
+ * 编码内容用请求源 origin 拼接，备用域名访问时二维码跟着指备用域名。
+ * 先校验 token 存在：不校验就成了免费匿名二维码服务，且扫出来的链接本来也是无效的。
+ */
+subRoutes.get("/qr", async (c) => {
+  const uuid = c.req.query("uuid");
+  if (!uuid) {
+    return c.json({ ok: false, error: "uuid parameter is required" }, 400);
+  }
+  const found = await getTokenByAnyUuid(c.env, uuid);
+  if (!found) {
+    return c.text("token not found", 404);
+  }
+  const subUrl = `${new URL(c.req.url).origin}/api/sub?uuid=${encodeURIComponent(uuid)}`;
+  const png = await qrPng(subUrl);
+  c.header("content-type", "image/png");
+  // 内容只随 uuid 变化：邮件客户端/浏览器可长缓存（rotate 换 uuid 后自然是新 URL）
+  c.header("cache-control", "public, max-age=86400");
+  return c.body(png.buffer as ArrayBuffer);
+});
 
 /**
  * GET /api/sub?uuid={uuid}[&format=clash|vless|singbox] —— 订阅下发

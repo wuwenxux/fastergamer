@@ -9,7 +9,8 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "hono": "^4.6.0"
+    "hono": "^4.6.0",
+    "uqr": "^0.1.3"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20250101.0",
