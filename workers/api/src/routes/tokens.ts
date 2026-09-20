@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { KV } from "../../../../shared/types";
+import { isTrialPlan, KV, TRIAL_PLAN_ID } from "../../../../shared/types";
 import type { Device, Order, Token } from "../../../../shared/types";
 import { deleteDeviceIndex, getPlans, getTokenById, getTokenPresence, listTokensByContact, rotateTokenUuid, saveDeviceIndex, saveOrder, saveToken } from "../lib/kv";
 import { isDisposableEmail } from "../lib/disposable-email";
@@ -47,11 +47,11 @@ tokensRoutes.post("/trial", async (c) => {
   }
 
   const plans = await getPlans(c.env);
-  const plan = plans.find((p) => p.id === "plan_3days");
+  const plan = plans.find((p) => isTrialPlan(p.id));
   const token: Token = {
     id: newTokenId(),
     uuid: crypto.randomUUID(),
-    plan_id: plan?.id ?? "plan_3days",
+    plan_id: plan?.id ?? TRIAL_PLAN_ID,
     status: "paid", // 待激活，点击「激活」后开始计时
     contact: email,
     traffic_limit_gb: plan?.traffic_limit_gb ?? 8,
@@ -481,7 +481,7 @@ tokensRoutes.post("/:id/upgrade", async (c) => {
   if (!oldPlan) {
     return c.json({ ok: false, error: "当前套餐已下架，请联系售后升级" }, 400);
   }
-  if (!target || target.id === "plan_3days") {
+  if (!target || isTrialPlan(target.id)) {
     return c.json({ ok: false, error: "目标套餐不存在" }, 404);
   }
   // 企业套餐已从 click 站下架，不作为升级目标

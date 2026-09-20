@@ -3,6 +3,7 @@ import Admin from "./pages/Admin";
 import AuthMagic from "./pages/AuthMagic";
 import Home from "./pages/Home";
 import Guide from "./pages/Guide";
+import OrderStatus from "./pages/OrderStatus";
 import Purchase from "./pages/Purchase";
 import Recover from "./pages/Recover";
 import Register from "./pages/Register";
@@ -36,6 +37,9 @@ export default function App() {
         <Routes>
           <Route path="/" element={<Home />} />
           <Route path="/buy" element={<Purchase />} />
+          {/* 订单查询：凭订单号查进度/继续支付（刷新丢单、换设备续付都走这里） */}
+          <Route path="/orders" element={<OrderStatus />} />
+          <Route path="/orders/:id" element={<OrderStatus />} />
           <Route path="/tokens" element={<Tokens />} />
           {/* 找回 Token：发货邮件里固定的找回入口（邮箱收一键登录链接） */}
           <Route path="/recover" element={<Recover />} />
@@ -60,6 +64,10 @@ export default function App() {
         </a>
         <Link to="/recover" className="text-sky-400 hover:underline mx-1">
           找回 Token
+        </Link>
+        或
+        <Link to="/orders" className="text-sky-400 hover:underline mx-1">
+          查询订单
         </Link>
       </footer>
     </div>

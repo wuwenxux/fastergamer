@@ -4,7 +4,7 @@
  * 发货锁（isOrderLocked）与对账（reconcileFulfillment/deleteTokenCascade）
  * 机制为并发触发（人工重复确认、将来新支付通道的回调重推）兜底。
  */
-import { KV, type Order, type Plan, type Token } from "../../../../shared/types";
+import { isTrialPlan, KV, type Order, type Plan, type Token } from "../../../../shared/types";
 import { isEmail, sendMail, sendTokenEmail, shouldSendEmail } from "./email-aliyun";
 import { createMagicTicket } from "./accounts";
 import { deleteTokenCascade, getPlans, getTokenById, getTrialMarker, listTokensByContact, markTrialConverted, saveOrder, saveToken } from "./kv";
@@ -42,7 +42,7 @@ export const issueTokenForOrder = async (
     const email = order.contact.trim().toLowerCase();
     const now = Date.now();
     const trials = (await listTokensByContact(env, email)).filter(
-      (t) => t.plan_id === "plan_3days" && t.status === "active" && (t.expires_at ?? 0) > now
+      (t) => isTrialPlan(t.plan_id) && t.status === "active" && (t.expires_at ?? 0) > now
     );
     for (const t of trials) {
       token.bonus_ms = (token.bonus_ms ?? 0) + Math.max(0, t.expires_at! - now);
@@ -64,7 +64,7 @@ export const issueTokenForOrder = async (
   const remainingDays = Math.max(0, Math.round(((token.bonus_ms ?? 0) - TRIAL_CONVERT_BONUS_MS) / 86_400_000));
   const mergeNote =
     (token.bonus_ms ?? 0) > 0
-      ? `试用转正专享：另赠 30 天${remainingDays > 0 ? `；试用剩余 ${remainingDays} 天已并入本套餐，不会浪费` : ""}`
+      ? `新用户专享：另赠 30 天${remainingDays > 0 ? `；试用剩余 ${remainingDays} 天已并入本套餐，不会浪费` : ""}`
       : undefined;
 
   // 如果联系方式是邮箱，自动发送凭证邮件（附带免登录管理链接，免去手动登录）
@@ -97,7 +97,7 @@ export const TRIAL_CONVERT_BONUS_MS = 30 * 86_400_000;
  * 套餐、流量上限、设备上限换新；有效期从升级时刻按新套餐时长重计；
  * 流量记账清零（offset 基准对齐当前 Xray 累计值），月度配额账期重置。
  *
- * 试用转正（plan_3days → 付费套餐，即「给试用 token 充值」）额外激励：
+ * 试用转正（plan_trial → 付费套餐，即「给试用 token 充值」）额外激励：
  * +30 天赠送时长（每邮箱一次性，由试用标记 trial:{email} 的 converted_at 把关，
  * 防止「新购已赠送后又给同一邮箱的过期试用充值」重复赠送）、
  * 试用期内的剩余时长并入有效期；剩余流量不结转（客户决策：提前充值不送流量）。
@@ -112,7 +112,7 @@ export const upgradeTokenForOrder = async (
   if (!token) throw new Error(`upgrade token '${order.upgrade_token_id}' not found`);
 
   const now = Date.now();
-  const fromTrial = token.plan_id === "plan_3days";
+  const fromTrial = isTrialPlan(token.plan_id);
   const trialRemainingMs = fromTrial ? Math.max(0, (token.expires_at ?? 0) - now) : 0;
   // 30 天赠送每邮箱一次：标记缺失（存量数据/直接建站导入）视为未消费，照常赠送
   let grantBonus = fromTrial;
@@ -161,8 +161,8 @@ export const upgradeTokenForOrder = async (
     const bonusTextParts: string[] = [];
     if (grantBonus) bonusTextParts.push("已额外赠送 30 天");
     if (trialRemainingMs > 0) bonusTextParts.push("试用剩余时长已并入有效期");
-    const bonusHtml = bonusParts.length > 0 ? `<p>试用转正专享：${bonusParts.join("，")}。</p>` : "";
-    const bonusText = bonusTextParts.length > 0 ? `\n试用转正专享：${bonusTextParts.join("，")}。` : "";
+    const bonusHtml = bonusParts.length > 0 ? `<p>新用户专享：${bonusParts.join("，")}。</p>` : "";
+    const bonusText = bonusTextParts.length > 0 ? `\n新用户专享：${bonusTextParts.join("，")}。` : "";
     ctx.waitUntil(
       sendMail(
         env,

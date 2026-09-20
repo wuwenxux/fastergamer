@@ -51,6 +51,8 @@ const Turnstile = forwardRef<
   const widgetIdRef = useRef<string | null>(null);
   // 拿到 sitekey 才渲染容器；未启用（null）时组件对外不可见
   const [sitekey, setSitekey] = useState<string | null>(null);
+  // widget 渲染完成前给加载提示：脚本慢/被墙时用户面对禁用按钮至少知道在等什么
+  const [rendered, setRendered] = useState(false);
   // 回调存 ref：父组件多传内联函数，避免回调引用变化触发 widget 重渲染
   const onStateChangeRef = useRef(onStateChange);
   onStateChangeRef.current = onStateChange;
@@ -89,6 +91,7 @@ const Turnstile = forwardRef<
         "refresh-expired": "auto",
         theme: "dark",
       });
+      setRendered(true);
       clearInterval(timer);
     }, 100);
     return () => {
@@ -111,8 +114,9 @@ const Turnstile = forwardRef<
 
   if (!sitekey) return null;
   return (
-    <div className="flex justify-center">
+    <div className="flex flex-col items-center gap-1.5">
       <div ref={containerRef} />
+      {!rendered && <p className="text-xs text-slate-500">人机验证加载中…</p>}
     </div>
   );
 });

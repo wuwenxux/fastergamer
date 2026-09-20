@@ -5,13 +5,15 @@
  * 幂等：token.notify_log 记录每类提醒的发送时间，同类提醒不重复发送
  *   - exhausted / multi_device：每个 token 只发一次
  *
- * 客户要求只保留交易类与安全类邮件：traffic_80（流量 80%）、expire_24h（到期提醒）、
- * month80（月度配额预警）、borrow_N（预支提醒）等预警/催续费类邮件已全部下线。
- * 例外：trial_convert（试用转化）——试用到期/流量耗尽时发一次性的同 token 充值引导，
- * 属交易类触达，两条触发路径共用幂等键，只发一次。
+ * 提醒类邮件现状：traffic_80（流量 80%）、month80（月度配额预警）、borrow_N（预支提醒）
+ * 等预警类邮件已全部下线；保留的交易/安全类触达：
+ *   - trial_convert（试用转化）——试用到期/流量耗尽时发一次性的同 token 充值引导；
+ *   - expire_24h（付费 token 到期前 24h 续费提醒，带免登录续费按钮，notify-scan 触发）；
+ *   - exhausted / multi_device / 接入地点变更等安全类提醒。
+ * 两条 trial_convert 触发路径共用幂等键，只发一次。
  */
 
-import type { Node, Presence, Token } from "../../../../shared/types";
+import { isTrialPlan, type Node, type Presence, type Token } from "../../../../shared/types";
 import { createMagicTicket } from "./accounts";
 import { sendMail, shouldSendEmail } from "./email-aliyun";
 import { currentMonthKey } from "./nodes";
@@ -104,6 +106,61 @@ export async function sendTrialConvertEmail(env: Env, token: Token): Promise<boo
 }
 
 /**
+ * 付费 token 到期前 24 小时续费提醒（一次性，幂等键 expire_24h）：
+ * notify-scan 每 15 分钟扫到 active 付费 token 进入最后 24 小时窗口时发送。
+ * 带 72h 免登录链接直达管理页续费；过期后仍可凭邮箱从找回页重新进入。
+ * 调用方负责在返回后把 notify_log 变更键级合并写回（与 checkTokenRisks 同一约定）。
+ */
+export async function sendExpire24hEmail(env: Env, token: Token): Promise<boolean> {
+  if (!shouldSendEmail(token.contact)) return false;
+  token.notify_log = token.notify_log ?? {};
+  if (token.notify_log.expire_24h) return false;
+  const ticket = await createMagicTicket(env, token.contact!, token.id, "login");
+  const magicUrl = `${siteUrl(env)}/auth/magic?ticket=${ticket}`;
+  const expiry = new Date(token.expires_at!).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" });
+  const { subject, html, text } = shell(
+    env,
+    "你的套餐将于 24 小时内到期",
+    `<p>你好，你的 Token（<strong>${token.id}</strong>）将于 <strong>${expiry}</strong>（北京时间）到期。</p>
+     <p>到期后服务自动停止；点击下方按钮免登录进入管理页即可续费，订阅链接和已配置的设备都不受影响。</p>
+     <p style="color:#64748b;font-size:13px;">按钮链接 72 小时内有效；过期后可到 <a href="${siteUrl(env)}/recover" style="color:#0ea5e9;">找回页面</a> 输入邮箱重新获取。</p>`,
+    `你的 Token（${token.id}）将于 ${expiry}（北京时间）到期。\n到期后服务自动停止；免登录进入管理页即可续费，订阅链接和设备不受影响。\n按钮链接 72 小时内有效；过期后可到找回页面重新获取：${siteUrl(env)}/recover`,
+    { url: magicUrl, label: "免登录续费" }
+  );
+  const res = await sendMail(env, token.contact!, subject, html, text);
+  if (res.ok) {
+    token.notify_log.expire_24h = Date.now();
+    console.log(`[risk] notified ${token.id} kind=expire_24h`);
+  } else {
+    console.error(`[risk] notify failed ${token.id} kind=expire_24h: ${res.error}`);
+  }
+  return res.ok;
+}
+
+/**
+ * 管理员主动触达用户的服务邮件（公告/售后；人工触发，无幂等键）：
+ * 带 72h 免登录链接直达管理页。bodyHtml 由调用方负责转义拼接。
+ */
+export async function sendServiceEmail(
+  env: Env,
+  token: Token,
+  title: string,
+  bodyHtml: string,
+  bodyText: string
+): Promise<boolean> {
+  if (!shouldSendEmail(token.contact)) return false;
+  const ticket = await createMagicTicket(env, token.contact!, token.id, "login");
+  const magicUrl = `${siteUrl(env)}/auth/magic?ticket=${ticket}`;
+  const { subject, html, text } = shell(env, title, bodyHtml, bodyText, {
+    url: magicUrl,
+    label: "免登录查看我的 Token",
+  });
+  const res = await sendMail(env, token.contact!, subject, html, text);
+  if (!res.ok) console.error(`[risk] service mail failed ${token.id}: ${res.error}`);
+  return res.ok;
+}
+
+/**
  * 在 token 数据更新后调用：检查流量耗尽与多设备风险，必要时提醒客户。
  * 注意：本函数可能修改 notify_log；调用方负责在此函数返回后把 notify_log 变更
  * 键级合并写回（mergeTokenSettlement），且必须在结算字段写库之后调用。
@@ -117,7 +174,7 @@ export async function checkTokenRisks(env: Env, token: Token): Promise<void> {
   // 流量耗尽：进入 48 小时宽限期，优先引导续费，不立即断连
   if (limit > 0 && used >= limit) {
     // 试用 token 流量提前跑完：与到期共用转化邮件（同一幂等键），不发普通续费提醒
-    if (token.plan_id === "plan_3days") {
+    if (isTrialPlan(token.plan_id)) {
       await sendTrialConvertEmail(env, token);
     } else {
       await notifyOnce(
@@ -327,7 +384,7 @@ export function updateSpikeWindow(token: Token, deltaBytes: number, now = Date.n
  */
 export async function sendSpikeAlert(env: Env, token: Token): Promise<void> {
   const gb = ((token.rate_window_bytes ?? 0) / 1024 ** 3).toFixed(1);
-  const trial = token.plan_id === "plan_3days";
+  const trial = isTrialPlan(token.plan_id);
   console.log(`[risk] traffic spike ${trial ? "revoked" : "rate-limited"} ${token.id}: ${gb} GB in 1h`);
 
   const base = `Token <strong>${token.id}</strong>（${token.contact ?? "无联系方式"}）过去 1 小时新增流量 <strong>${gb} GB</strong>（阈值 3GB）`;

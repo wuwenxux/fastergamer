@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import type { CreateOrderRequest, CreateOrderResponse, Order } from "../../../../shared/types";
+import { isTrialPlan, type CreateOrderRequest, type CreateOrderResponse, type Order } from "../../../../shared/types";
 import { getSessionAccount } from "../lib/accounts";
 import { isDisposableEmail } from "../lib/disposable-email";
 import { isEmail } from "../lib/email-aliyun";
@@ -45,7 +45,7 @@ ordersRoutes.post("/", async (c) => {
     return c.json({ ok: false, error: `plan '${body.plan_id}' not found` }, 404);
   }
   // 试用套餐只能在首页免费领取，不出售
-  if (plan.id === "plan_3days") {
+  if (isTrialPlan(plan.id)) {
     return c.json({ ok: false, error: "该套餐为免费体验，请在首页输入邮箱直接领取" }, 400);
   }
   // 企业套餐已从 click 站下架，只在 fastergamer.cn 展示、邮件洽谈

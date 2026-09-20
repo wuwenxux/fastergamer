@@ -1,18 +1,32 @@
 import { useEffect, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
-import type { Order, Plan } from "../../../shared/types";
+import { isTrialPlan, type Order, type Plan } from "../../../shared/types";
 import ManualPay from "../components/ManualPay";
 import PaymentModal from "../components/PaymentModal";
+import PlanCard from "../components/PlanCard";
 import type { TurnstileHandle, TurnstileState } from "../components/Turnstile";
 import { api } from "../services/api";
 
 type Step = "summary" | "paying" | "result";
+
+/** 年付「买 12 送 1」为常驻权益（套餐数据 395 天 = 365 + 赠送 30 天），横幅不再限时 */
+function YearlyPromoBanner() {
+  return (
+    <section className="max-w-3xl mx-auto rounded-2xl border border-amber-500/40 bg-gradient-to-r from-amber-500/10 to-slate-900 p-5 text-center space-y-1">
+      <p className="font-semibold text-amber-300">🔥 年付 ¥120，买 12 个月送 1 个月</p>
+      <p className="text-[15px] leading-relaxed sm:text-sm text-slate-300">
+        开通或续费年付套餐，有效期 <strong className="text-amber-300">13 个月</strong>（395 天）。
+      </p>
+    </section>
+  );
+}
 
 export default function Purchase() {
   const [params] = useSearchParams();
   const planId = params.get("plan") ?? "";
 
   const [plan, setPlan] = useState<Plan | null>(null);
+  const [plans, setPlans] = useState<Plan[]>([]);
   const [error, setError] = useState("");
   const [step, setStep] = useState<Step>("summary");
   const [processing, setProcessing] = useState(false);
@@ -22,13 +36,20 @@ export default function Purchase() {
   const [ts, setTs] = useState<TurnstileState>({ enabled: false });
   const tsRef = useRef<TurnstileHandle>(null);
 
-  // 根据 plan 参数加载套餐信息
+  // 无 plan 参数时本页就是套餐列表页（首页已弱化付费，价格表挪到这里）；
+  // 带 plan 参数时加载该套餐进入确认订单流程
   useEffect(() => {
     api
       .plans()
       .then((plans) => {
+        setPlans(plans);
+        if (!planId) {
+          setPlan(null);
+          setError("");
+          return;
+        }
         const found = plans.find((p) => p.id === planId);
-        if (!found) setError("未找到该套餐，请返回选择");
+        setError(found ? "" : "未找到该套餐，请从下方重新选择");
         setPlan(found ?? null);
       })
       .catch((e: Error) => setError(e.message));
@@ -58,6 +79,24 @@ export default function Purchase() {
 
   if (step === "result" && order && plan) {
     return <PaymentResult order={order} plan={plan} />;
+  }
+
+  // 套餐列表视图：无 plan 参数（或参数无效）时展示，点卡片带参回本页进入下单流程
+  if (!plan) {
+    return (
+      <div className="space-y-8">
+        <h2 className="text-2xl sm:text-xl font-semibold text-center">选择套餐</h2>
+        {error && <p className="text-center text-rose-400">{error}</p>}
+        <YearlyPromoBanner />
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-5 max-w-3xl mx-auto">
+          {plans
+            .filter((p) => !isTrialPlan(p.id) && !p.id.startsWith("plan_biz")) // 试用在首页免费领；企业套餐只在 fastergamer.cn 展示
+            .map((p) => (
+              <PlanCard key={p.id} plan={p} />
+            ))}
+        </div>
+      </div>
+    );
   }
 
   return (
@@ -192,9 +231,9 @@ function PaymentResult({ order, plan }: { order: Order; plan: Plan }) {
       </div>
 
       <p className="text-sm leading-relaxed sm:text-xs text-slate-500 text-center">
-        确认收款后本页自动跳转，token 同时发送到你的邮箱；也可在
-        <Link to="/tokens" className="text-sky-400 hover:underline"> 我的 Token </Link>
-        页输入邮箱收取一键登录链接。
+        确认收款后本页自动跳转，token 同时发送到你的邮箱；页面关闭后可随时到
+        <Link to={`/orders/${order.id}`} className="text-sky-400 hover:underline"> 订单查询 </Link>
+        页继续支付或查看进度（建议收藏该链接）。
       </p>
     </div>
   );

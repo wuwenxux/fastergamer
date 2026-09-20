@@ -43,7 +43,7 @@ const ctx = {
 } as unknown as ExecutionContext;
 
 const TRIAL_PLAN = {
-  id: "plan_3days",
+  id: "plan_trial",
   name: "3 天免费体验",
   duration_days: 3,
   price_cny: 0,

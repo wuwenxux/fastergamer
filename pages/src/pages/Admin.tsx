@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { isTrialPlan, type Order } from "../../../shared/types";
 import { STATUS_COLOR, STATUS_LABEL } from "../lib/status";
 import { api, ApiError, type AdminNode, type AdminToken } from "../services/api";
 
@@ -7,7 +8,8 @@ const KEY_STORAGE = "fg_admin_key";
 
 /** 套餐 id → 短名（新增细分、用量表用）；未收录的 id 去掉 plan_ 前缀兜底 */
 const PLAN_SHORT: Record<string, string> = {
-  plan_3days: "7天",
+  plan_trial: "试用",
+  plan_3days: "试用", // 历史 id，存量 token/订单仍是它
   plan_monthly: "月付",
   plan_quarterly: "季付",
   plan_yearly: "包年",
@@ -20,7 +22,7 @@ function planShort(planId: string): string {
 
 /** 套餐 id → 完整中文名（用量表「套餐」列用） */
 function planName(planId: string): string {
-  if (planId === "plan_3days") return "7 天体验";
+  if (isTrialPlan(planId)) return "免费体验";
   if (planId === "plan_monthly") return "月付";
   return planShort(planId);
 }
@@ -49,6 +51,18 @@ function fmtGb(gb: number): string {
   return gb.toFixed(2);
 }
 
+/** 订单状态的中文展示名与徽标配色（pending 高亮提醒站长处理） */
+const ORDER_STATUS_LABEL: Record<Order["status"], string> = {
+  pending: "待支付",
+  paid: "已支付",
+  failed: "已取消",
+};
+const ORDER_STATUS_COLOR: Record<Order["status"], string> = {
+  pending: "bg-amber-500/20 text-amber-300 border-amber-500/40",
+  paid: "bg-emerald-500/20 text-emerald-300 border-emerald-500/40",
+  failed: "bg-slate-600/30 text-slate-400 border-slate-500/40",
+};
+
 interface DayRow {
   date: string;
   /** 当天新增总数 */
@@ -65,6 +79,8 @@ export default function Admin() {
   const [keyError, setKeyError] = useState("");
   const [tokens, setTokens] = useState<AdminToken[]>([]);
   const [nodes, setNodes] = useState<AdminNode[]>([]);
+  const [orders, setOrders] = useState<Order[]>([]);
+  const [tab, setTab] = useState<"overview" | "orders">("overview");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [days, setDays] = useState<14 | 30>(14);
@@ -73,9 +89,10 @@ export default function Admin() {
     setLoading(true);
     setError("");
     try {
-      const [t, n] = await Promise.all([api.adminTokens(k), api.adminNodes(k)]);
+      const [t, n, o] = await Promise.all([api.adminTokens(k), api.adminNodes(k), api.adminOrders(k)]);
       setTokens(t);
       setNodes(n);
+      setOrders(o);
     } catch (e) {
       // 401 说明密钥不对：清掉已存密钥退回登录表单
       if (e instanceof ApiError && e.status === 401) {
@@ -209,10 +226,36 @@ export default function Admin() {
         </div>
       </div>
 
+      {/* 标签页：概览 / 订单（待支付订单数角标提醒站长核账） */}
+      <div className="flex gap-1 text-[15px] sm:text-sm">
+        {(
+          [
+            ["overview", "概览"],
+            ["orders", `订单${orders.some((o) => o.status === "pending") ? `（${orders.filter((o) => o.status === "pending").length} 待支付）` : ""}`],
+          ] as const
+        ).map(([t, label]) => (
+          <button
+            key={t}
+            onClick={() => setTab(t)}
+            className={`rounded-md px-4 py-1.5 border transition-colors ${
+              tab === t
+                ? "border-sky-500 bg-sky-500/20 text-sky-300"
+                : "border-slate-700 bg-slate-900 text-slate-400 hover:border-slate-500"
+            }`}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+
       {error && <p className="text-rose-400 text-[15px] sm:text-sm">{error}</p>}
       {loading && tokens.length === 0 && <p className="text-[15px] sm:text-sm text-slate-500">正在加载数据…</p>}
 
-      {tokens.length > 0 && (
+      {tab === "orders" && (
+        <OrdersSection adminKey={key} orders={orders} onChanged={() => void load(key)} />
+      )}
+
+      {tab === "overview" && tokens.length > 0 && (
         <>
           {/* 概览卡片 */}
           <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
@@ -389,5 +432,199 @@ function OverviewCard({ label, value, accent }: { label: string; value: string; 
       <div className="text-sm sm:text-xs text-slate-500">{label}</div>
       <div className={`mt-1 text-2xl sm:text-xl font-bold ${accent ?? "text-slate-100"}`}>{value}</div>
     </div>
+  );
+}
+
+/**
+ * 测试订单识别：联调/E2E 留下的订单邮箱集中在 example.com/.invalid、temp.local、
+ * test-* 前缀和站内域名，真实用户邮箱不会命中。仅用于管理端展示区分。
+ */
+const TEST_CONTACT_RE = /test|@example\.|@temp\.|\.invalid$|@fastergamer\.cn$|@auto/i;
+const isTestOrder = (o: Order) => TEST_CONTACT_RE.test(o.contact ?? "");
+
+/**
+ * 订单管理：人工收款码过渡方案的核账入口。
+ * pending 订单可「确认收款」（fulfillOrder 自动发货发邮件）或「取消」（归还推广额度）；
+ * 用户点过「我已支付」的订单带提醒徽标，优先核账。操作后由父组件整体刷新。
+ * 测试订单默认折叠（列表以真实用户为主），点角标可展开。
+ */
+function OrdersSection({
+  adminKey,
+  orders,
+  onChanged,
+}: {
+  adminKey: string;
+  orders: Order[];
+  onChanged: () => void;
+}) {
+  const [filter, setFilter] = useState<"all" | Order["status"]>("all");
+  const [showTest, setShowTest] = useState(false);
+  const [busyId, setBusyId] = useState("");
+  const [actionError, setActionError] = useState("");
+  // 应收金额兜底：老订单无 payable_cny 字段时用套餐原价（套餐表是公开接口）
+  const [planPrice, setPlanPrice] = useState<Record<string, number>>({});
+
+  useEffect(() => {
+    api
+      .plans()
+      .then((ps) => setPlanPrice(Object.fromEntries(ps.map((p) => [p.id, p.price_cny]))))
+      .catch(() => {/* 套餐价拿不到时金额列显示 —，不影响操作 */});
+  }, []);
+
+  const testCount = orders.filter(isTestOrder).length;
+  const visible = showTest ? orders : orders.filter((o) => !isTestOrder(o));
+  const filtered = filter === "all" ? visible : visible.filter((o) => o.status === filter);
+
+  const act = async (o: Order, kind: "paid" | "cancel") => {
+    const amount = o.payable_cny ?? planPrice[o.plan_id];
+    const hint =
+      kind === "paid"
+        ? `确认已收到 ${o.contact ?? "未知邮箱"} 的转账${amount != null ? `（应收 ¥${amount}）` : ""}？确认后立即发货并邮件通知买家。`
+        : `取消订单 ${o.id}？${o.discount_cny ? "已用的推广额度会归还买家。" : ""}未到账的刷单订单可取消。`;
+    if (!window.confirm(hint)) return;
+    setBusyId(o.id);
+    setActionError("");
+    try {
+      if (kind === "paid") await api.adminOrderPaid(adminKey, o.id);
+      else await api.adminOrderCancel(adminKey, o.id);
+      onChanged();
+    } catch (e) {
+      setActionError(`${o.id}：${(e as Error).message}`);
+    } finally {
+      setBusyId("");
+    }
+  };
+
+  return (
+    <section className="space-y-3">
+      <div className="flex items-center justify-between flex-wrap gap-2">
+        <h3 className="font-semibold text-slate-300">订单（{filtered.length}）</h3>
+        <div className="flex gap-1 text-xs">
+          {testCount > 0 && (
+            <button
+              onClick={() => setShowTest((v) => !v)}
+              title="联调/E2E 测试产生的订单"
+              className={`rounded-md px-3 py-1 border transition-colors ${
+                showTest
+                  ? "border-violet-500 bg-violet-500/20 text-violet-300"
+                  : "border-slate-700 bg-slate-900 text-slate-500 hover:border-slate-500"
+              }`}
+            >
+              测试 {testCount} 笔
+            </button>
+          )}
+          {(
+            [
+              ["all", "全部"],
+              ["pending", "待支付"],
+              ["paid", "已支付"],
+              ["failed", "已取消"],
+            ] as const
+          ).map(([f, label]) => (
+            <button
+              key={f}
+              onClick={() => setFilter(f)}
+              className={`rounded-md px-3 py-1 border transition-colors ${
+                filter === f
+                  ? "border-sky-500 bg-sky-500/20 text-sky-300"
+                  : "border-slate-700 bg-slate-900 text-slate-400 hover:border-slate-500"
+              }`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {actionError && <p className="text-rose-400 text-[15px] sm:text-sm">{actionError}</p>}
+
+      <div className="overflow-x-auto rounded-xl border border-slate-700 bg-slate-900">
+        <table className="w-full text-[15px] sm:text-sm">
+          <thead>
+            <tr className="text-left text-sm sm:text-xs text-slate-500 border-b border-slate-800">
+              <th className="px-4 py-2.5 font-medium">订单号</th>
+              <th className="px-4 py-2.5 font-medium">邮箱</th>
+              <th className="px-4 py-2.5 font-medium">套餐</th>
+              <th className="px-4 py-2.5 font-medium">应收</th>
+              <th className="px-4 py-2.5 font-medium">状态</th>
+              <th className="px-4 py-2.5 font-medium">创建时间</th>
+              <th className="px-4 py-2.5 font-medium">操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            {filtered.map((o) => {
+              const amount = o.payable_cny ?? planPrice[o.plan_id];
+              return (
+                <tr key={o.id} className="border-b border-slate-800/60 last:border-0 align-middle">
+                  <td className="px-4 py-2.5 font-mono text-sm sm:text-xs whitespace-nowrap">{o.id}</td>
+                  <td className="px-4 py-2.5 text-sm sm:text-xs text-slate-400 max-w-44 truncate">
+                    {o.contact ?? "—"}
+                    {isTestOrder(o) && (
+                      <span className="ml-1.5 inline-block rounded-full border border-violet-500/40 bg-violet-500/20 px-2 py-0.5 text-xs text-violet-300">
+                        测试
+                      </span>
+                    )}
+                  </td>
+                  <td className="px-4 py-2.5 whitespace-nowrap">
+                    {planName(o.plan_id)}
+                    {o.upgrade_token_id && (
+                      <span className="ml-1.5 text-sm sm:text-xs text-slate-500">升级</span>
+                    )}
+                  </td>
+                  <td className="px-4 py-2.5 whitespace-nowrap">
+                    {amount != null ? `¥${amount}` : "—"}
+                    {o.discount_cny ? (
+                      <span className="ml-1 text-sm sm:text-xs text-emerald-400">-{o.discount_cny}</span>
+                    ) : null}
+                  </td>
+                  <td className="px-4 py-2.5">
+                    <span
+                      className={`inline-block rounded-full border px-2.5 py-0.5 text-xs font-medium whitespace-nowrap ${ORDER_STATUS_COLOR[o.status]}`}
+                    >
+                      {ORDER_STATUS_LABEL[o.status]}
+                    </span>
+                    {o.status === "pending" && o.paid_notify_at && (
+                      <span className="ml-1.5 inline-block rounded-full border border-amber-500/40 bg-amber-500/20 px-2.5 py-0.5 text-xs text-amber-300">
+                        已点「我已支付」
+                      </span>
+                    )}
+                  </td>
+                  <td className="px-4 py-2.5 text-sm sm:text-xs text-slate-400 whitespace-nowrap">
+                    {fmtTime(o.created_at)}
+                  </td>
+                  <td className="px-4 py-2.5 whitespace-nowrap">
+                    {o.status === "pending" && (
+                      <span className="space-x-2 text-sm sm:text-xs">
+                        <button
+                          onClick={() => void act(o, "paid")}
+                          disabled={busyId === o.id}
+                          className="rounded-md border border-emerald-500/50 bg-emerald-500/10 px-3 py-1 text-emerald-300 hover:bg-emerald-500/20 transition-colors disabled:opacity-60"
+                        >
+                          确认收款
+                        </button>
+                        <button
+                          onClick={() => void act(o, "cancel")}
+                          disabled={busyId === o.id}
+                          className="rounded-md border border-slate-600 bg-slate-800 px-3 py-1 text-slate-300 hover:border-rose-500/50 hover:text-rose-300 transition-colors disabled:opacity-60"
+                        >
+                          取消
+                        </button>
+                      </span>
+                    )}
+                  </td>
+                </tr>
+              );
+            })}
+            {filtered.length === 0 && (
+              <tr>
+                <td colSpan={7} className="px-4 py-8 text-center text-slate-500 text-[15px] sm:text-sm">
+                  暂无订单
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    </section>
   );
 }

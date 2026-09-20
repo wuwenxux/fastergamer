@@ -16,7 +16,7 @@ import type { Env } from "../types";
 
 export const ticketsRoutes = new Hono<{ Bindings: Env }>();
 
-const CATEGORIES = new Set(["install", "connect", "speed", "other"]);
+const CATEGORIES = new Set(["install", "connect", "speed", "pay", "other"]);
 
 /**
  * POST /api/feedback

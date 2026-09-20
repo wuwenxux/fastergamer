@@ -2,6 +2,16 @@
  * 共享类型定义 —— 供 API Worker 与前端共同使用
  */
 
+/** 试用套餐 id。原名 plan_3days（3 天试用时代的遗留），现名 plan_trial */
+export const TRIAL_PLAN_ID = "plan_trial";
+
+/**
+ * 判定试用套餐：新旧 id 都算。
+ * 存量 token/订单的 plan_id 仍是历史 plan_3days，随 90 天清理周期自然消亡后才能去掉旧分支。
+ */
+export const isTrialPlan = (planId: string): boolean =>
+  planId === TRIAL_PLAN_ID || planId === "plan_3days";
+
 /** 套餐定义（购买项） */
 export interface Plan {
   id: string;

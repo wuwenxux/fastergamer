@@ -20,7 +20,7 @@ const mockNs = () => {
 };
 
 const PLANS: Plan[] = [
-  { id: "plan_3days", name: "3 天免费体验", duration_days: 3, price_cny: 0, description: "", traffic_limit_gb: 20, max_devices: 1 },
+  { id: "plan_trial", name: "3 天免费体验", duration_days: 3, price_cny: 0, description: "", traffic_limit_gb: 20, max_devices: 1 },
   { id: "plan_yearly", name: "年付套餐", duration_days: 395, price_cny: 120, description: "", traffic_limit_gb: 260, max_devices: 3, monthly_quota_gb: 20 },
 ];
 
@@ -39,7 +39,7 @@ const mockCtx = (): WaitUntilCtx => ({ waitUntil: (p) => void Promise.resolve(p)
 const makeTrial = (overrides: Partial<Token> = {}): Token => ({
   id: "tk_trial",
   uuid: "uuid-trial",
-  plan_id: "plan_3days",
+  plan_id: "plan_trial",
   status: "active",
   contact: "user@example.com",
   traffic_limit_gb: 20,

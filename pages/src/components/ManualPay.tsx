@@ -1,4 +1,5 @@
 import { useRef, useState } from "react";
+import { Link } from "react-router-dom";
 import type { Plan } from "../../../shared/types";
 import Turnstile, { type TurnstileHandle, type TurnstileState } from "./Turnstile";
 import { api } from "../services/api";
@@ -72,7 +73,13 @@ export default function ManualPay({
       </div>
 
       <p className="text-sm sm:text-xs text-slate-400 text-center">
-        扫码转账时请务必备注订单号；确认收款后 token 自动发到你的邮箱。
+        扫码转账时请务必备注订单号；
+        {plan
+          ? "确认收款后 token 自动发到你的邮箱。"
+          : "确认收款后原 Token 自动升级生效，订阅链接和设备都不用动。"}
+        页面关闭了也没关系，随时可到
+        <Link to={`/orders/${orderId}`} className="text-sky-400 hover:underline"> 订单查询 </Link>
+        页看进度。
       </p>
 
       {notifyState === "notified" ? (

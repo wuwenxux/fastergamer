@@ -7,7 +7,7 @@ import type { Env } from "../types";
 
 /**
  * 机房 IP 滥用识别与限速（POST /api/agent/traffic 结算链路驱动）：
- * - 只处理 plan_3days 的 active token，付费 token 不检查
+ * - 只处理 plan_trial 的 active token，付费 token 不检查
  * - 判定：机房流量 > 0.5GB 且占接入总流量 > 50%（与 scripts/user-audit.mjs 同口径）
  * - 命中不撤销：打 abuse_machine 标记 + notify_log 幂等键 + 站长邮件一次；二次触发不重复
  * - 被标记 token 每日定额 500MB：窗口内超限 → abuse_suspended_until 暂停到 24h 窗口终点，
@@ -46,7 +46,7 @@ const ctx = {
 } as unknown as ExecutionContext;
 
 const TRIAL_PLAN = {
-  id: "plan_3days",
+  id: "plan_trial",
   name: "3 天免费体验",
   duration_days: 3,
   price_cny: 0,
@@ -121,7 +121,7 @@ const seedToken = (store: Map<string, string>, over: Partial<Token> = {}): Token
   const token: Token = {
     id: `tk_abuse${seq}`,
     uuid: `uuid-abuse-${seq}`,
-    plan_id: "plan_3days",
+    plan_id: "plan_trial",
     status: "active",
     traffic_limit_gb: 20,
     traffic_used_gb: 0,
@@ -157,7 +157,7 @@ beforeEach(() => vi.clearAllMocks());
 afterEach(() => vi.unstubAllGlobals());
 
 describe("体验 token 机房 IP 滥用识别与限速", () => {
-  it("付费 token（非 plan_3days）不检查：大流量机房 IP 也不触发，连 ip-api 都不查", async () => {
+  it("付费 token（非 plan_trial）不检查：大流量机房 IP 也不触发，连 ip-api 都不查", async () => {
     const { env, tokens } = makeEnv();
     const spy = stubFetch(() => {
       throw new Error("不应被调用");

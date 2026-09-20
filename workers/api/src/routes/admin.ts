@@ -1,9 +1,9 @@
 import { Hono } from "hono";
-import { KV } from "../../../../shared/types";
+import { isTrialPlan, KV, TRIAL_PLAN_ID } from "../../../../shared/types";
 import type { Plan, Presence, Registration, Token } from "../../../../shared/types";
 import { adminAuth } from "../middleware/admin";
 import { deleteDeviceIndex, deleteTokenCascade, getOrder, getPlans, getTicket, getTokenById, getTokenPresence, listKeys, listOrders, listTickets, listTokensByContact, mergeTokenSettlement, rotateTokenUuid, saveOrder, savePlans, savePresenceIfChanged, saveTicket, saveToken } from "../lib/kv";
-import { notifyAdmin, sendTrialConvertEmail } from "../lib/risk-notify";
+import { notifyAdmin, sendExpire24hEmail, sendServiceEmail, sendTrialConvertEmail } from "../lib/risk-notify";
 import { getNodes } from "../lib/nodes";
 import { sendMail, shouldSendEmail } from "../lib/email-aliyun";
 import { getEpayConfig, refundEpayOrder } from "../lib/epay";
@@ -21,7 +21,7 @@ adminRoutes.use("*", adminAuth);
 /** 默认套餐（可通过请求体覆盖，见 /api/admin/seed） */
 const DEFAULT_PLANS: Plan[] = [
   {
-    id: "plan_3days",
+    id: TRIAL_PLAN_ID,
     pitch: "先试用，好用再买",
     name: "7 天免费体验",
     duration_days: 7,
@@ -381,9 +381,13 @@ adminRoutes.delete("/tokens/:id/devices/:deviceId", async (c) => {
 
 /**
  * PUT /api/admin/tokens/:id —— 管理员调整 token 属性（售后用）
- * body: { max_devices?: number, extend_days?: number }
+ * body: { max_devices?: number, extend_days?: number, reactivate?: boolean }
  * - max_devices：token 级设备上限，覆盖套餐值（不影响同套餐其他用户）
- * - extend_days：有效期设为 当前时间 + N 天（base_expires_at 同步；months_borrowed 不动）
+ * - extend_days：有效期设为 当前时间 + N 天（base_expires_at 同步；months_borrowed 不动）。
+ *   延长已过期的 token 时自动恢复为 active 并推送授权刷新（延期就是为了恢复服务，
+ *   只改时间不改状态等于没延）
+ * - reactivate：显式为 true 时，revoked 的 token 也随延期恢复 active。
+ *   revoked 通常对应滥用/退款，恢复必须是管理员的明确意图，不随延期静默发生
  */
 adminRoutes.put("/tokens/:id", async (c) => {
   const token = await getTokenById(c.env, c.req.param("id"));
@@ -392,6 +396,7 @@ adminRoutes.put("/tokens/:id", async (c) => {
   const body = (await c.req.json().catch(() => null)) as {
     max_devices?: number;
     extend_days?: number;
+    reactivate?: boolean;
   } | null;
   if (!body) return c.json({ ok: false, error: "invalid body" }, 400);
 
@@ -411,32 +416,38 @@ adminRoutes.put("/tokens/:id", async (c) => {
     token.expires_at = to;
     if (token.base_expires_at) token.base_expires_at = to;
     changed = true;
+    // 已过期被延期 = 恢复使用：翻转回 active 并推送授权刷新，节点白名单立即加回；
+    // revoked 通常对应滥用/退款，必须带显式 reactivate 才恢复
+    if (token.status === "expired" || (token.status === "revoked" && body.reactivate === true)) {
+      token.status = "active";
+      c.executionCtx.waitUntil(pushAuthRefresh(c.env));
+    }
   }
   if (!changed) return c.json({ ok: false, error: "nothing to update" }, 400);
 
   await saveToken(c.env, token);
   return c.json({
     ok: true,
-    data: { id: token.id, max_devices: token.max_devices, expires_at: token.expires_at },
+    data: { id: token.id, status: token.status, max_devices: token.max_devices, expires_at: token.expires_at },
   });
 });
 
 /**
  * POST /api/admin/notify-scan —— 定时风险扫描（cron 每 15 分钟调用）
- * 做三件事：清理过期 90 天的 token 与已结工单；
+ * 做四件事：清理过期 90 天的 token 与已结工单；
  * 清理超 3 天未激活的免费体验 token（白嫖/假邮箱垃圾）；
- * 试用 token 到期翻转 expired 时发一次性转化邮件（同 token 充值引导，存量不补发）。
- * （付费 token 的 24h 到期提醒已按客户要求下线——只保留交易/安全类邮件；
- *  节点失联告警由 probe-nodes.sh 主动探测承担，agent 事件驱动后 last_seen 不再可靠）
+ * 试用 token 到期翻转 expired 时发一次性转化邮件（同 token 充值引导，存量不补发）；
+ * 付费 token 进入到期前 24 小时窗口时发一次性续费提醒（免登录续费按钮，幂等键 expire_24h）。
+ * （节点失联告警由 probe-nodes.sh 主动探测承担，agent 事件驱动后 last_seen 不再可靠）
  */
 adminRoutes.post("/notify-scan", async (c) => {
   const now = Date.now();
   const RETENTION_MS = 90 * 86_400_000;
+  const EXPIRE_REMIND_MS = 24 * 3_600_000;
 
   const keys = await listKeys(c.env.TOKENS, KV.TOKEN);
   let scanned = 0;
-  // 到期提醒邮件已下线，保留该字段只为响应结构兼容运维脚本
-  const notified = 0;
+  let notified = 0;
   let purgedTokens = 0;
   let expiredNow = 0;
   for (const key of keys) {
@@ -447,7 +458,7 @@ adminRoutes.post("/notify-scan", async (c) => {
     // 未激活的免费体验 token 超 3 天：白嫖/假邮箱留下的垃圾（永远不会激活，90 天规则扫不到
     // paid 状态），直接清掉。trial 领取标记保留——该邮箱仍算已领过，防同址反复领取
     if (
-      token.plan_id === "plan_3days" &&
+      isTrialPlan(token.plan_id) &&
       token.status === "paid" &&
       (token.purchased_at ?? 0) > 0 &&
       (token.purchased_at ?? 0) < now - 3 * 86_400_000
@@ -479,12 +490,27 @@ adminRoutes.post("/notify-scan", async (c) => {
       token.status = "expired";
       // 试用到期：发一次性转化邮件（同 token 充值引导 + 转正激励），幂等键
       // trial_convert 只在此翻转分支打——存量已 expired 的试用 token 不补发
-      if (token.plan_id === "plan_3days") {
+      if (isTrialPlan(token.plan_id)) {
         await sendTrialConvertEmail(c.env, token);
       }
       await mergeTokenSettlement(c.env, token.uuid, { status: "expired", notify_log: token.notify_log });
       expiredNow++;
       continue;
+    }
+
+    // 付费 token 进入到期前 24 小时窗口：发一次性续费提醒（幂等键 expire_24h 打在函数内）。
+    // 试用 token 不参与——它走 trial_convert 转化邮件；合并写只回写 notify_log
+    if (
+      token.status === "active" &&
+      !isTrialPlan(token.plan_id) &&
+      token.expires_at &&
+      token.expires_at > now &&
+      token.expires_at < now + EXPIRE_REMIND_MS
+    ) {
+      if (await sendExpire24hEmail(c.env, token)) {
+        notified++;
+        await mergeTokenSettlement(c.env, token.uuid, { notify_log: token.notify_log });
+      }
     }
 
     // 在线状态清扫：Xray 只在用户在线时才有 online 计数器，离线即消失，
@@ -529,6 +555,40 @@ adminRoutes.post("/notify-scan", async (c) => {
       purged_tickets: purgedTickets,
     },
   });
+});
+
+/**
+ * POST /api/admin/notify-user —— 给指定 token 的联系人发服务邮件（公告/售后）
+ * body: { token_id, title, text }；text 按空行分段渲染为 HTML 段落（自动转义）。
+ * 邮件带 72h 免登录管理链接，文案与工单回复同一模板（shell）。
+ */
+adminRoutes.post("/notify-user", async (c) => {
+  const body = (await c.req.json().catch(() => null)) as {
+    token_id?: string;
+    title?: string;
+    text?: string;
+  } | null;
+  const title = body?.title?.trim();
+  const text = body?.text?.trim();
+  if (!body?.token_id || !title || !text) {
+    return c.json({ ok: false, error: "token_id/title/text 均为必填" }, 400);
+  }
+  if (title.length > 100 || text.length > 4000) {
+    return c.json({ ok: false, error: "title ≤100 字，text ≤4000 字" }, 400);
+  }
+  const token = await getTokenById(c.env, body.token_id);
+  if (!token) return c.json({ ok: false, error: "token not found" }, 404);
+  if (!token.contact || !shouldSendEmail(token.contact)) {
+    return c.json({ ok: false, error: "该用户联系方式不是有效邮箱" }, 400);
+  }
+
+  const html = text
+    .split(/\n{2,}/)
+    .map((p) => `<p>${escapeHtml(p).replace(/\n/g, "<br>")}</p>`)
+    .join("\n");
+  const sent = await sendServiceEmail(c.env, token, title, html, text);
+  if (!sent) return c.json({ ok: false, error: "邮件发送失败" }, 502);
+  return c.json({ ok: true, data: { sent: true } });
 });
 
 /**

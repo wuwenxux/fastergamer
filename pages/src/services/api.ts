@@ -198,6 +198,26 @@ export const api = {
       headers: { "x-admin-key": key },
     }),
 
+  /** 管理接口：全部订单（含联系方式，按创建时间倒序）；需 x-admin-key */
+  adminOrders: (key: string) =>
+    request<Order[]>("/api/admin/orders", {
+      headers: { "x-admin-key": key },
+    }),
+
+  /** 管理接口：人工确认收款并发货（fulfillOrder）；需 x-admin-key */
+  adminOrderPaid: (key: string, id: string) =>
+    request<{ token_id?: string }>(`/api/admin/orders/${id}/paid`, {
+      method: "POST",
+      headers: { "x-admin-key": key },
+    }),
+
+  /** 管理接口：取消未支付订单（已用推广额度自动归还）；需 x-admin-key */
+  adminOrderCancel: (key: string, id: string) =>
+    request<Order>(`/api/admin/orders/${id}/cancel`, {
+      method: "POST",
+      headers: { "x-admin-key": key },
+    }),
+
   /**
    * Clash 订阅链接（需 token 处于 active）；由 CF Worker 渲染。
    * 同源优先：从备用域名访问时给出备用域名的链接，主域被污染时用户复制即用；

@@ -8,7 +8,7 @@ import type { Env } from "../types";
 /**
  * 流量暴增分级处置（POST /api/agent/traffic 结算链路驱动）：
  * - 1h 窗口内新增 >3GB，24h 幂等（notify_log.traffic_spike）两种处置共用
- * - 体验 token（plan_3days）：触发即吊销（revoked 并入结算写）+ authChanged 推送 + 站长邮件
+ * - 体验 token（plan_trial）：触发即吊销（revoked 并入结算写）+ authChanged 推送 + 站长邮件
  * - 付费 token：不吊销，打 abuse_machine 标记进入每日 500MB 限速（纯打标不推送、不摘除）；
  *   后续结算超 500MB 窗口才暂停，快照摘除
  * - 未超阈值不变；结算路径只处理 active token，重复吊销不会发生
@@ -45,7 +45,7 @@ const ctx = {
 } as unknown as ExecutionContext;
 
 const PLANS = [
-  { id: "plan_3days", name: "3 天免费体验", duration_days: 3, price_cny: 0, traffic_limit_gb: 20, max_devices: 1 },
+  { id: "plan_trial", name: "3 天免费体验", duration_days: 3, price_cny: 0, traffic_limit_gb: 20, max_devices: 1 },
   { id: "plan_monthly", name: "月付", duration_days: 30, price_cny: 25, traffic_limit_gb: 200 },
 ];
 
@@ -81,11 +81,11 @@ const makeEnv = () => {
 let seq = 0;
 const seedToken = (store: Map<string, string>, over: Partial<Token> = {}): Token => {
   seq += 1;
-  const paid = over.plan_id !== "plan_3days";
+  const paid = over.plan_id !== "plan_trial";
   const token: Token = {
     id: `tk_spike${seq}`,
     uuid: `uuid-spike-${seq}`,
-    plan_id: paid ? "plan_monthly" : "plan_3days",
+    plan_id: paid ? "plan_monthly" : "plan_trial",
     status: "active",
     traffic_limit_gb: paid ? 200 : 20,
     traffic_used_gb: 0,
@@ -124,7 +124,7 @@ afterEach(() => vi.unstubAllGlobals());
 describe("流量暴增分级处置", () => {
   it("体验 token 暴增：触发即吊销 + 幂等键 + 站长邮件（吊销文案）+ 快照摘除", async () => {
     const { env, tokens } = makeEnv();
-    const t = seedToken(tokens.store, { plan_id: "plan_3days" });
+    const t = seedToken(tokens.store, { plan_id: "plan_trial" });
     const res = await report(env, t.uuid, 4e9);
     expect(res.status).toBe(200);
 
@@ -186,7 +186,7 @@ describe("流量暴增分级处置", () => {
 
   it("24h 幂等（体验）：站长改回 active 后窗口内再次暴增，不重复吊销、不重复通知", async () => {
     const { env, tokens } = makeEnv();
-    const t = seedToken(tokens.store, { plan_id: "plan_3days" });
+    const t = seedToken(tokens.store, { plan_id: "plan_trial" });
     await report(env, t.uuid, 4e9);
     expect(readToken(tokens.store, t.uuid).status).toBe("revoked");
     expect(sendMail).toHaveBeenCalledTimes(1);

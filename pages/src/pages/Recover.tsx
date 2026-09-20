@@ -62,7 +62,7 @@ export default function Recover() {
 
       {sent && (
         <p className="text-[15px] leading-relaxed sm:text-sm text-emerald-400">
-          ✅ 如果该邮箱购买过或领取过服务，登录链接已发送，请查收邮件（含垃圾邮件文件夹）。链接 15 分钟内有效。
+          ✅ 如果该邮箱购买过或领取过服务，登录链接已发送，请查收邮件（含垃圾邮件文件夹）。链接 72 小时内有效。
         </p>
       )}
       {error && <p className="text-rose-400 text-[15px] sm:text-sm">{error}</p>}

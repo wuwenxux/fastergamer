@@ -51,7 +51,7 @@ let trialTotal = 0, trialActivated = 0, trialExhausted = 0;
 for (const t of tokens) {
   if (t.purchased_at >= since) bump(dayKey(t.purchased_at), t.plan_id, "new");
   if (t.activated_at && t.activated_at >= since) bump(dayKey(t.activated_at), t.plan_id, "act");
-  if (t.plan_id === "plan_3days") {
+  if (t.plan_id === "plan_trial" || t.plan_id === "plan_3days") {
     trialTotal++;
     trialHours[hourOf(t.purchased_at)]++;
     if (t.activated_at) trialActivated++;
@@ -111,7 +111,7 @@ if (topIsp.length) console.log(`运营商分布: ${topIsp.map(([k, n]) => `${k}�
 // ---------- 流量日增量（快照差分） ----------
 fs.mkdirSync(STATS_DIR, { recursive: true });
 const totalBytes = tokens.reduce((a, t) => a + (t.traffic_used_gb ?? 0) * 1e9, 0);
-const trialBytes = tokens.filter((t) => t.plan_id === "plan_3days").reduce((a, t) => a + (t.traffic_used_gb ?? 0) * 1e9, 0);
+const trialBytes = tokens.filter((t) => t.plan_id === "plan_trial" || t.plan_id === "plan_3days").reduce((a, t) => a + (t.traffic_used_gb ?? 0) * 1e9, 0);
 const today = dayKey(now);
 const snap = { day: today, total_bytes: Math.round(totalBytes), trial_bytes: Math.round(trialBytes), token_count: tokens.length };
 fs.writeFileSync(path.join(STATS_DIR, `daily-${today}.json`), JSON.stringify(snap));

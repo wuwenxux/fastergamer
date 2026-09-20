@@ -148,11 +148,11 @@ describe("fulfillOrder · 升级订单（upgrade_token_id）", () => {
   });
 });
 
-describe("试用转正充值（plan_3days → 付费套餐，同一 token）", () => {
+describe("试用转正充值（plan_trial → 付费套餐，同一 token）", () => {
   const makeTrial = (overrides: Partial<Token> = {}): Token => ({
     id: "tk_trial",
     uuid: "uuid-trial",
-    plan_id: "plan_3days",
+    plan_id: "plan_trial",
     status: "active",
     contact: "user@example.com",
     traffic_limit_gb: 20,

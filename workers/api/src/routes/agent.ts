@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { KV, type Device, type Node, type Plan, type Presence, type Token } from "../../../../shared/types";
+import { isTrialPlan, KV, type Device, type Node, type Plan, type Presence, type Token } from "../../../../shared/types";
 import { getNodeByKey, saveNodeStat, currentMonthKey, isBudgetExhausted, monthAccounting } from "../lib/nodes";
 import {
   getTokenByAnyUuid,
@@ -231,7 +231,7 @@ async function applyTrafficDelta(
   //   （applyAbuseWindow 在上方已跑过，当时还未打标），从下一次结算起计。
   // 结算路径只处理 active token，重复吊销不会发生。
   if (spike) {
-    if (token.plan_id === "plan_3days") {
+    if (isTrialPlan(token.plan_id)) {
       token.status = "revoked";
       authChanged = true; // 写库后推送全节点刷新，立即踢掉该 uuid
     } else {

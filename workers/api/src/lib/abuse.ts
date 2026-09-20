@@ -10,7 +10,7 @@
  *
  * 判定口径与运维脚本 scripts/user-audit.mjs 保持一致（worker 不能 import scripts，逻辑复制于此）：
  *   机房/代理 IP 的估算流量 > 0.5GB 且占全部接入流量 > 50%（绝对量阈值排除移动端 NAT 出口误判）。
- * 只处理 plan_3days 的 active token：付费用户误伤成本高，公司专线/云桌面也可能是正常场景。
+ * 只处理体验套餐的 active token：付费用户误伤成本高，公司专线/云桌面也可能是正常场景。
  *
  * fail-open 语义：IP 分类查询失败（网络异常/ip-api 限速）时本次结算跳过判定，
  * 绝不因分类失败误标；下个结算周期有新 IP 时会重试。
@@ -18,7 +18,7 @@
  * KV 成本：IP 分类结果缓存 ipinfo:{ip}（TTL 30 天，IP 归属短期不变）；
  * 只对新出现的 IP 调 ip-api 批量接口（免费限速 45 次/分钟，单次结算的新 IP 数量很小，一批即可）。
  */
-import { KV, type Presence, type Token } from "../../../../shared/types";
+import { isTrialPlan, KV, type Presence, type Token } from "../../../../shared/types";
 import { mergeTokenSettlement } from "./kv";
 import { notifyAdmin } from "./risk-notify";
 import type { Env } from "../types";
@@ -125,7 +125,7 @@ export async function checkTrialAbuse(
   token: Token,
   presence: Presence
 ): Promise<boolean> {
-  if (token.plan_id !== "plan_3days" || token.status !== "active") return false;
+  if (!isTrialPlan(token.plan_id) || token.status !== "active") return false;
   if (token.notify_log?.abuse_machine) return false;
 
   const table = presence.traffic_by_ip ?? {};

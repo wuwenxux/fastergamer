@@ -23,7 +23,7 @@ const fakeNs = () => {
 };
 
 const PLANS: Plan[] = [
-  { id: "plan_3days", name: "3 天免费体验", duration_days: 3, price_cny: 0, description: "", traffic_limit_gb: 20, max_devices: 1 },
+  { id: "plan_trial", name: "3 天免费体验", duration_days: 3, price_cny: 0, description: "", traffic_limit_gb: 20, max_devices: 1 },
   { id: "plan_monthly", name: "月付套餐", duration_days: 30, price_cny: 12, description: "", traffic_limit_gb: 20, max_devices: 2 },
   { id: "plan_biz_yearly", name: "企业年付", duration_days: 365, price_cny: 999, description: "", traffic_limit_gb: 500, max_devices: 20 },
 ];
@@ -58,7 +58,7 @@ describe("企业套餐下架（click 站）", () => {
     const res = await app.request("/api/plans", {}, env, ctx);
     const body = (await res.json()) as { data: Plan[] };
     expect(res.status).toBe(200);
-    expect(body.data.map((p) => p.id)).toEqual(["plan_3days", "plan_monthly"]);
+    expect(body.data.map((p) => p.id)).toEqual(["plan_trial", "plan_monthly"]);
   });
 
   it("POST /api/orders 企业套餐拒绝下单", async () => {

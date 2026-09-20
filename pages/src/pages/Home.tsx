@@ -1,24 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
-import type { Plan } from "../../../shared/types";
-import PlanCard from "../components/PlanCard";
 import Turnstile, { type TurnstileHandle, type TurnstileState } from "../components/Turnstile";
 import { CLASH_DOWNLOADS, platformMatches, usePlatform } from "../components/ClashGuide";
 import { api } from "../services/api";
 
 const REF_KEY = "fg_ref";
-
-/** 年付「买 12 送 1」为常驻权益（套餐数据 395 天 = 365 + 赠送 30 天），横幅不再限时 */
-function YearlyPromoBanner() {
-  return (
-    <section className="max-w-3xl mx-auto rounded-2xl border border-amber-500/40 bg-gradient-to-r from-amber-500/10 to-slate-900 p-5 text-center space-y-1">
-      <p className="font-semibold text-amber-300">🔥 年付 ¥120，买 12 个月送 1 个月</p>
-      <p className="text-[15px] leading-relaxed sm:text-sm text-slate-300">
-        开通或续费年付套餐，有效期 <strong className="text-amber-300">13 个月</strong>（395 天）。
-      </p>
-    </section>
-  );
-}
 
 /** 从 URL 捕获推广码（?ref=xxx）存入 localStorage，领取试用/下单时使用 */
 function captureRefCode() {
@@ -40,41 +26,49 @@ function savedRefCode(): string | undefined {
   }
 }
 
+/**
+ * 首页定位：帮新用户最快用上客户端 + 建立信任，付费转化交给
+ * 邮件（试用转化/到期提醒）与 Token 管理页。首页只留一个低价干扰的
+ * 「查看套餐价格」小入口，给不试直接买的用户留路。
+ */
 export default function Home() {
-  const [plans, setPlans] = useState<Plan[]>([]);
-  const [error, setError] = useState("");
   const currentPlatform = usePlatform();
 
   useEffect(() => {
     captureRefCode();
-    api
-      .plans()
-      .then(setPlans)
-      .catch((e: Error) => setError(e.message));
   }, []);
 
   return (
     <div className="space-y-12">
       <section className="text-center py-8 space-y-4">
-        <h1 className="text-4xl font-bold">Token 即游戏加速</h1>
+        <h1 className="text-4xl font-bold">游戏加速，先免费体验 7 天</h1>
         <p className="text-slate-400 max-w-xl mx-auto">
-          购买激活即用，全球多节点智能路由，降低游戏延迟。
+          无需注册，输入邮箱即可领取体验 Token，导入客户端立即加速；好用再付费。
         </p>
       </section>
 
       <TrialCard />
 
-      <YearlyPromoBanner />
-
-      <section>
-        <h2 className="text-2xl sm:text-xl font-semibold mb-5 text-center">选择套餐</h2>
-        {error && <p className="text-center text-rose-400 mb-4">{error}</p>}
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-5 max-w-3xl mx-auto">
-          {plans
-            .filter((p) => p.id !== "plan_3days" && !p.id.startsWith("plan_biz")) // 试用只在上方免费领；企业套餐只在 fastergamer.cn 展示
-            .map((p) => (
-              <PlanCard key={p.id} plan={p} />
-            ))}
+      {/* 优势 / 信任：新用户决策「要不要试」最需要的信息 */}
+      <section className="max-w-3xl mx-auto space-y-5">
+        <h2 className="text-2xl sm:text-xl font-semibold text-center">为什么选 GameBoost</h2>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <Feature
+            title="免注册，邮箱即账号"
+            desc="没有账号密码，Token 凭证发到邮箱；丢失随时凭邮箱一键找回，订阅链接不变。"
+          />
+          <Feature
+            title="全球多节点智能路由"
+            desc="港日美等多地落地节点，订阅按实测延迟排序，自动为你选最快的线路。"
+          />
+          <Feature
+            title="多设备共享"
+            desc="一个 Token 可绑多台设备，每台设备独立订阅链接，用量透明可查。"
+          />
+          <Feature
+            title="先用后付，随时续费"
+            desc="体验到期前邮件提醒，按需在管理页续费开通；首次开通付费额外赠送 30 天。"
+          />
         </div>
       </section>
 
@@ -106,6 +100,24 @@ export default function Home() {
           </Link>
         </p>
       </section>
+
+      {/* 低价干扰的直接购买入口：留给不试直接买的用户 */}
+      <p className="text-center text-[15px] sm:text-sm text-slate-500">
+        已体验过，想直接购买？
+        <Link to="/buy" className="text-sky-400 hover:underline ml-1">
+          查看套餐价格 →
+        </Link>
+      </p>
+    </div>
+  );
+}
+
+/** 优势卡片：一句话标题 + 两行说明 */
+function Feature({ title, desc }: { title: string; desc: string }) {
+  return (
+    <div className="rounded-2xl border border-slate-700 bg-slate-900 p-5 space-y-1.5">
+      <h3 className="font-semibold text-slate-100">{title}</h3>
+      <p className="text-[15px] leading-relaxed sm:text-sm text-slate-400">{desc}</p>
     </div>
   );
 }

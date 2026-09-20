@@ -105,7 +105,7 @@ for (const t of targets) {
   // 机房流量过半且有一定量级才标记，排除移动端 NAT 出口误判
   if (hostingBytes > 0.5e9 && hostingBytes > totalBytes * 0.5) flags.push("hosting");
   if (ips.length >= 5) flags.push("multi-ip");
-  if (t.plan_id === "plan_3days" && t.traffic_limit_gb > 0 && usedGb >= t.traffic_limit_gb * 0.8) flags.push("trial-hot");
+  if ((t.plan_id === "plan_trial" || t.plan_id === "plan_3days") && t.traffic_limit_gb > 0 && usedGb >= t.traffic_limit_gb * 0.8) flags.push("trial-hot");
   if (flags.length) flagged[t.id] = flags;
 
   const topIps = ips.slice(0, 3).map(([ip, s]) => `${ipLabel(ip)}(${gb(s.bytes)}GB)`).join("、") || "无接入";

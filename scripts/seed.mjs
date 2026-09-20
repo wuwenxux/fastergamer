@@ -15,7 +15,7 @@ const [base = "http://localhost:8787", adminKey = "change-me-in-production"] =
 
 const plans = [
   {
-    "id": "plan_3days",
+    "id": "plan_trial",
     "name": "7 天免费体验",
     "duration_days": 7,
     "price_cny": 0,

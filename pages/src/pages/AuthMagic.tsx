@@ -129,6 +129,12 @@ export default function AuthMagic() {
                 {l.label} →
               </a>
             ))}
+            {/* 深链依赖已装客户端，未安装时浏览器静默无反应，必须给出路 */}
+            <p className="text-center text-sm sm:text-xs text-slate-500">
+              点了没反应？说明还没安装客户端，先去
+              <Link to="/guide" className="text-sky-400 hover:underline"> 使用教程 </Link>
+              下载安装。
+            </p>
           </div>
 
           <div className="rounded-lg bg-slate-900/60 p-3 space-y-2">

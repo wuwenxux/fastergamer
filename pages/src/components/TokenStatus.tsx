@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { QRCodeSVG } from "qrcode.react";
-import type { Order, Plan, Token } from "../../../shared/types";
+import { isTrialPlan, type Order, type Plan, type Token } from "../../../shared/types";
 import { api, type TokenView } from "../services/api";
 import { copyText } from "../utils/clipboard";
 import { usePlatform } from "./ClashGuide";
@@ -48,6 +48,8 @@ export default function TokenStatus({ token }: { token: TokenView }) {
   const [upgradeOrder, setUpgradeOrder] = useState<Order | null>(null);
   const [upgrading, setUpgrading] = useState<string | null>(null);
   const [showUpgrade, setShowUpgrade] = useState(false);
+  // 升级轮询超过 10 分钟停止（人工收款确认没那么快），卡片保留并给订单查询指引
+  const [upgradePollStopped, setUpgradePollStopped] = useState(false);
 
   // 套餐带月度配额时拉取配额值用于展示
   useEffect(() => {
@@ -62,14 +64,15 @@ export default function TokenStatus({ token }: { token: TokenView }) {
   }, [current.plan_id]);
 
   // 升级订单轮询支付状态，管理员确认（置 paid）升级完成后刷新 token；
-  // 10 分钟后停止轮询并收起，避免无限空转
+  // 10 分钟后停止轮询（人工收款确认可能更久），卡片保留并展示订单查询入口
   useEffect(() => {
     if (!upgradeOrder) return;
+    setUpgradePollStopped(false);
     const startedAt = Date.now();
     const timer = setInterval(async () => {
       if (Date.now() - startedAt > 10 * 60_000) {
         clearInterval(timer);
-        setUpgradeOrder(null);
+        setUpgradePollStopped(true);
         return;
       }
       try {
@@ -295,10 +298,10 @@ export default function TokenStatus({ token }: { token: TokenView }) {
   const upgradeTargets =
     current.status === "revoked" || !currentPlan
       ? []
-      : plans.filter((p) => p.id !== "plan_3days" && p.price_cny > currentPlan.price_cny);
+      : plans.filter((p) => !isTrialPlan(p.id) && p.price_cny > currentPlan.price_cny);
 
   // 试用 token（含已过期）随时可充值转正：入口常驻，不受「不够用」门槛限制
-  const isTrial = current.plan_id === "plan_3days";
+  const isTrial = isTrialPlan(current.plan_id);
   // 升级入口只在「不够用」时出现：流量剩余 ≤10%，或设备槽（主设备+子设备）已满
   const trafficLow =
     current.traffic_limit_gb > 0 &&
@@ -412,7 +415,7 @@ export default function TokenStatus({ token }: { token: TokenView }) {
             <div className="space-y-2">
               <p className="text-sm leading-relaxed sm:text-xs text-amber-400">
                 流量已用完。不会立即断线：48 小时宽限期内服务照常，请尽快
-                <Link to="/" className="text-sky-400 hover:underline"> 续费 </Link>
+                <Link to="/buy" className="text-sky-400 hover:underline"> 续费 </Link>
                 ；宽限期结束后服务才会暂停。
               </p>
               <button
@@ -518,6 +521,12 @@ export default function TokenStatus({ token }: { token: TokenView }) {
                   </button>
                 ))}
               </div>
+              {/* 深链依赖已装客户端，未安装时点了没反应，给出路 */}
+              <p className="text-center text-sm sm:text-xs text-slate-500">
+                点了没反应？说明还没安装客户端，先去
+                <Link to="/guide" className="text-sky-400 hover:underline"> 使用教程 </Link>
+                下载安装。
+              </p>
             </div>
           )}
 
@@ -705,6 +714,13 @@ export default function TokenStatus({ token }: { token: TokenView }) {
             升级订单已创建，扫码补差价后点「我已支付」
           </p>
           <ManualPay orderId={upgradeOrder.id} payableCny={upgradeOrder.payable_cny ?? 0} />
+          {upgradePollStopped && (
+            <p className="text-center text-[15px] leading-relaxed sm:text-sm text-slate-400">
+              客服确认收款后自动生效。页面关闭了也没关系，随时可到
+              <Link to={`/orders/${upgradeOrder.id}`} className="text-sky-400 hover:underline"> 订单查询 </Link>
+              页看进度。
+            </p>
+          )}
           <button
             onClick={() => setUpgradeOrder(null)}
             className="block mx-auto text-xs text-slate-500 hover:text-slate-300"
@@ -720,7 +736,7 @@ export default function TokenStatus({ token }: { token: TokenView }) {
           className="w-full rounded-xl border border-amber-500/40 bg-amber-500/10 p-3 text-base sm:text-sm text-amber-300 hover:bg-amber-500/20 transition-colors"
         >
           {isTrial
-            ? "试用转正专享：充值送 30 天，剩余天数并入首月，订阅链接不变 →"
+            ? "续费开通专享：送 30 天，剩余天数并入首月，订阅链接不变 →"
             : `${trafficLow ? "流量快用完了" : "设备槽已满"}，点这里升级套餐 →`}
         </button>
       )}
@@ -729,7 +745,7 @@ export default function TokenStatus({ token }: { token: TokenView }) {
         <div className="rounded-xl border border-slate-700 bg-slate-950 p-4 space-y-3">
           <div className="flex items-center justify-between">
             <div className="text-[15px] sm:text-sm font-medium text-slate-300">
-              {isTrial ? "充值转正" : "升级套餐"}
+              {isTrial ? "续费开通" : "升级套餐"}
             </div>
             <button
               onClick={() => setShowUpgrade(false)}
@@ -740,7 +756,7 @@ export default function TokenStatus({ token }: { token: TokenView }) {
           </div>
           {isTrial && (
             <p className="text-sm leading-relaxed sm:text-xs text-amber-300/90 bg-amber-500/10 border border-amber-500/30 rounded-lg px-3 py-2">
-              试用转正专享：额外赠送 30 天，试用期内剩余天数自动并入开通后第一个月；uuid、订阅链接与设备配置保持不变。
+              续费开通专享：额外赠送 30 天，试用期内剩余天数自动并入开通后第一个月；uuid、订阅链接与设备配置保持不变。
             </p>
           )}
           <div className="space-y-2">
@@ -755,7 +771,7 @@ export default function TokenStatus({ token }: { token: TokenView }) {
                   disabled={upgrading !== null}
                   className="shrink-0 rounded-lg bg-sky-500 px-3 py-2 sm:py-1.5 text-sm sm:text-xs font-medium hover:bg-sky-400 transition-colors disabled:opacity-60"
                 >
-                  {upgrading === p.id ? "下单中…" : isTrial ? `¥${estimatePayable(p)} 充值` : `≈¥${estimatePayable(p)} 升级`}
+                  {upgrading === p.id ? "下单中…" : isTrial ? `¥${estimatePayable(p)} 续费` : `≈¥${estimatePayable(p)} 升级`}
                 </button>
               </div>
             ))}

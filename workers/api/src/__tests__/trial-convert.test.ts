@@ -38,7 +38,7 @@ const ctx = {
 const makeTrial = (overrides: Partial<Token> = {}): Token => ({
   id: "tk_trial",
   uuid: "uuid-trial",
-  plan_id: "plan_3days",
+  plan_id: "plan_trial",
   status: "active",
   contact: "user@example.com",
   traffic_limit_gb: 20,
@@ -110,6 +110,21 @@ describe("notify-scan 试用到期转化邮件", () => {
 
     await runScan(app, makeEnv(tokens.ns, tickets.ns));
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("历史 id（plan_3days）的存量试用 token 仍按试用处理：到期翻转 + 发转化邮件", async () => {
+    const tokens = mockNs();
+    const tickets = mockNs();
+    // 试用套餐改名 plan_trial 前的存量数据：plan_id 仍是 plan_3days
+    seedToken(tokens.store, makeTrial({ plan_id: "plan_3days" }));
+    const fetchMock = stubMailOk();
+
+    const res = await runScan(app, makeEnv(tokens.ns, tickets.ns));
+    expect(res.status).toBe(200);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const saved = JSON.parse(tokens.store.get(KV.TOKEN + "uuid-trial")!) as Token;
+    expect(saved.status).toBe("expired");
+    expect(saved.notify_log?.trial_convert).toBeGreaterThan(0);
   });
 
   it("付费 token 到期只翻转状态，不发邮件", async () => {

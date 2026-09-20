@@ -4,6 +4,7 @@ import Turnstile, { type TurnstileHandle, type TurnstileState } from "../compone
 import { api } from "../services/api";
 
 const CATEGORIES = [
+  { value: "pay", label: "支付 / 付款后未收到 Token" },
   { value: "install", label: "安装 / 导入失败" },
   { value: "connect", label: "无法连接 / 节点不通" },
   { value: "speed", label: "速度慢 / 延迟高" },
@@ -170,7 +171,16 @@ function FeedbackForm() {
             className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-base sm:text-sm focus:border-sky-500 focus:outline-none resize-y"
           />
         </label>
-        {error && <p className="text-[15px] sm:text-sm text-rose-400">{error}</p>}
+        {error && (
+          <p className="text-[15px] sm:text-sm text-rose-400">
+            {error}
+            <span className="block mt-1 text-slate-400">
+              提交一直失败的话，也可以直接邮件
+              <a href="mailto:support@fastergamer.cn" className="text-sky-400 hover:underline"> support@fastergamer.cn </a>
+              联系客服。
+            </span>
+          </p>
+        )}
         <Turnstile ref={tsRef} onStateChange={setTs} />
         <button
           type="submit"

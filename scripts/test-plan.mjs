@@ -18,7 +18,7 @@ const [countRaw = "2", apiBase = "https://fastergamer.click", adminKey = ""] =
   process.argv.slice(2);
 const USER_COUNT = Math.max(1, parseInt(countRaw, 10) || 2);
 const CONTACT = "test-plan@auto";
-const PLAN_ID = "plan_3days";
+const PLAN_ID = "plan_trial";
 const CLEANUP = true; // 测试结束后删除测试 token
 
 function log(...args) {
