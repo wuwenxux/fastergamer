@@ -226,12 +226,12 @@ export default function Admin() {
         </div>
       </div>
 
-      {/* 标签页：概览 / 订单（待支付订单数角标提醒站长核账） */}
+      {/* 标签页：概览 / 订单（待支付角标提醒站长核账；测试订单不算真实交易，不计入） */}
       <div className="flex gap-1 text-[15px] sm:text-sm">
         {(
           [
             ["overview", "概览"],
-            ["orders", `订单${orders.some((o) => o.status === "pending") ? `（${orders.filter((o) => o.status === "pending").length} 待支付）` : ""}`],
+            ["orders", `订单${orders.some((o) => o.status === "pending" && !isTestOrder(o)) ? `（${orders.filter((o) => o.status === "pending" && !isTestOrder(o)).length} 待支付）` : ""}`],
           ] as const
         ).map(([t, label]) => (
           <button
@@ -437,7 +437,7 @@ function OverviewCard({ label, value, accent }: { label: string; value: string; 
 
 /**
  * 测试订单识别：联调/E2E 留下的订单邮箱集中在 example.com/.invalid、temp.local、
- * test-* 前缀和站内域名，真实用户邮箱不会命中。仅用于管理端展示区分。
+ * test-* 前缀和站内域名，真实用户邮箱不会命中。管理端直接隐藏，不展示。
  */
 const TEST_CONTACT_RE = /test|@example\.|@temp\.|\.invalid$|@fastergamer\.cn$|@auto/i;
 const isTestOrder = (o: Order) => TEST_CONTACT_RE.test(o.contact ?? "");
@@ -446,7 +446,7 @@ const isTestOrder = (o: Order) => TEST_CONTACT_RE.test(o.contact ?? "");
  * 订单管理：人工收款码过渡方案的核账入口。
  * pending 订单可「确认收款」（fulfillOrder 自动发货发邮件）或「取消」（归还推广额度）；
  * 用户点过「我已支付」的订单带提醒徽标，优先核账。操作后由父组件整体刷新。
- * 测试订单默认折叠（列表以真实用户为主），点角标可展开。
+ * 测试订单不是真实交易，直接过滤不展示。
  */
 function OrdersSection({
   adminKey,
@@ -458,7 +458,6 @@ function OrdersSection({
   onChanged: () => void;
 }) {
   const [filter, setFilter] = useState<"all" | Order["status"]>("all");
-  const [showTest, setShowTest] = useState(false);
   const [busyId, setBusyId] = useState("");
   const [actionError, setActionError] = useState("");
   // 应收金额兜底：老订单无 payable_cny 字段时用套餐原价（套餐表是公开接口）
@@ -471,8 +470,7 @@ function OrdersSection({
       .catch(() => {/* 套餐价拿不到时金额列显示 —，不影响操作 */});
   }, []);
 
-  const testCount = orders.filter(isTestOrder).length;
-  const visible = showTest ? orders : orders.filter((o) => !isTestOrder(o));
+  const visible = orders.filter((o) => !isTestOrder(o));
   const filtered = filter === "all" ? visible : visible.filter((o) => o.status === filter);
 
   const act = async (o: Order, kind: "paid" | "cancel") => {
@@ -500,19 +498,6 @@ function OrdersSection({
       <div className="flex items-center justify-between flex-wrap gap-2">
         <h3 className="font-semibold text-slate-300">订单（{filtered.length}）</h3>
         <div className="flex gap-1 text-xs">
-          {testCount > 0 && (
-            <button
-              onClick={() => setShowTest((v) => !v)}
-              title="联调/E2E 测试产生的订单"
-              className={`rounded-md px-3 py-1 border transition-colors ${
-                showTest
-                  ? "border-violet-500 bg-violet-500/20 text-violet-300"
-                  : "border-slate-700 bg-slate-900 text-slate-500 hover:border-slate-500"
-              }`}
-            >
-              测试 {testCount} 笔
-            </button>
-          )}
           {(
             [
               ["all", "全部"],
@@ -559,11 +544,6 @@ function OrdersSection({
                   <td className="px-4 py-2.5 font-mono text-sm sm:text-xs whitespace-nowrap">{o.id}</td>
                   <td className="px-4 py-2.5 text-sm sm:text-xs text-slate-400 max-w-44 truncate">
                     {o.contact ?? "—"}
-                    {isTestOrder(o) && (
-                      <span className="ml-1.5 inline-block rounded-full border border-violet-500/40 bg-violet-500/20 px-2 py-0.5 text-xs text-violet-300">
-                        测试
-                      </span>
-                    )}
                   </td>
                   <td className="px-4 py-2.5 whitespace-nowrap">
                     {planName(o.plan_id)}
