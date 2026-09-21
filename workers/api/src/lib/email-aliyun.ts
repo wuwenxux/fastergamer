@@ -22,6 +22,8 @@ interface TokenEmailContext {
   magicUrl?: string;
   /** 试用转正并入的时长说明（如 "另赠 30 天；试用剩余 2 天已并入"），有值时在邮件里展示 */
   mergeNote?: string;
+  /** 付费引导一句话（仅试用凭证邮件传）：首页已弱化付费，价格锚点放进邮件 */
+  upsellNote?: string;
 }
 
 /**
@@ -214,6 +216,8 @@ export async function sendTokenEmail(
     <code style="display: block; margin-top: 8px; padding: 10px; background: #0f172a; color: #e2e8f0; border-radius: 6px; word-break: break-all;">${subUrl}</code>
   </div>
 
+  ${ctx.upsellNote ? `<p style="margin-top: 16px; font-size: 14px; color: #64748b; text-align: center;">${ctx.upsellNote}</p>` : ""}
+
   <p style="margin-top: 24px; font-size: 13px; color: #94a3b8; text-align: center;">
     本邮件由 GameBoost 自动发送，请勿直接回复。
   </p>
@@ -238,6 +242,7 @@ ${ctx.expiresAt ? `有效期至：${new Date(ctx.expiresAt).toLocaleString("zh-C
 1. 手机扫二维码直接导入；电脑复制订阅链接粘贴到客户端（首次导入自动激活并开始计时）
 2. 选择节点并开启系统代理
 3. 点管理入口链接可随时查看用量与有效期
+${ctx.upsellNote ? `\n${ctx.upsellNote}` : ""}
   `.trim();
 
   return sendMail(env, ctx.contact, subject, html, text);

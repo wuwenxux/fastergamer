@@ -81,6 +81,13 @@ tokensRoutes.post("/trial", async (c) => {
       if (!(await mailThrottleAllows(c.env, email))) return;
       const site = siteUrl(c.env);
       const ticket = await createMagicTicket(c.env, email, token.id, "import");
+      // 首页已弱化付费，价格锚点放在凭证邮件里轻带一句（取在售最低价动态生成）
+      const paidPrices = plans
+        .filter((p) => p.price_cny > 0 && !isTrialPlan(p.id) && !p.id.startsWith("plan_biz"))
+        .map((p) => p.price_cny);
+      const upsellNote = paidPrices.length
+        ? `好用再付费：套餐 ¥${Math.min(...paidPrices)} 起，管理页随时续费开通，新用户专享额外送 30 天。`
+        : undefined;
       await sendTokenEmail(c.env, {
         tokenId: token.id,
         uuid: token.uuid,
@@ -88,6 +95,7 @@ tokensRoutes.post("/trial", async (c) => {
         status: "paid",
         contact: email,
         magicUrl: `${site}/auth/magic?ticket=${ticket}`,
+        upsellNote,
       });
     })()
   );

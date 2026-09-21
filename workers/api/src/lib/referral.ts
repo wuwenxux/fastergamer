@@ -208,7 +208,8 @@ export const tryAutoRenewWithBalance = async (env: Env, email: string): Promise<
   const plans = await getPlans(env);
   const renewPlan = plans.find((p) => p.id === "plan_yearly");
   const renewCost = renewPlan?.price_cny ?? 120;
-  const renewMs = (renewPlan?.duration_days ?? 365) * 86_400_000;
+  // 自动续期不含赠送时长：赠送（买 12 送 1）限首购，续期一律按净时长算
+  const renewMs = (renewPlan ? renewPlan.duration_days - (renewPlan.bonus_days ?? 0) : 365) * 86_400_000;
   const result: AutoRenewResult = { renewed: false, renewCostCny: renewCost };
 
   const credit = await getCredit(env, email);

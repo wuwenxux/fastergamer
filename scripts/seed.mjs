@@ -73,31 +73,31 @@ const plans = [
     "max_devices": 3,
     "monthly_quota_gb": 20,
     "tag": "家庭多设备",
-    "description": "13 个月有效（买一年送一月），每月 20GB（用超预支下月，有效期提前），3 台设备",
+    "description": "首购 13 个月（买一年送一月，每邮箱限一次），续费 12 个月；每月 20GB（用超预支下月，有效期提前），3 台设备",
     "features": [
       "每月 20 GB",
       "3 台设备",
       "多地域自动切换"
     ],
-    "pitch": "买 12 个月送 1 个月"
+    "pitch": "首购买 12 个月送 1 个月"
   },
   {
     "id": "plan_2years",
     "name": "两年付套餐",
-    "duration_days": 850,
-    "bonus_days": 120,
+    "duration_days": 790,
+    "bonus_days": 60,
     "price_cny": 220,
-    "traffic_limit_gb": 560,
+    "traffic_limit_gb": 520,
     "max_devices": 3,
     "monthly_quota_gb": 20,
     "tag": "长期超值",
-    "description": "28 个月有效（买两年送 4 个月），每月 20GB（用超预支下月，有效期提前），3 台设备",
+    "description": "首购 26 个月（买两年送 2 个月，每邮箱限一次），续费 24 个月；每月 20GB（用超预支下月，有效期提前），3 台设备",
     "features": [
       "每月 20 GB",
       "3 台设备",
       "多地域自动切换"
     ],
-    "pitch": "买 24 个月送 4 个月，最划算"
+    "pitch": "首购买 24 个月送 2 个月，最划算"
   },
   {
     "id": "plan_yearly_plus",

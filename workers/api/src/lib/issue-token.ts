@@ -7,7 +7,7 @@
 import { isTrialPlan, KV, type Order, type Plan, type Token } from "../../../../shared/types";
 import { isEmail, sendMail, sendTokenEmail, shouldSendEmail } from "./email-aliyun";
 import { createMagicTicket } from "./accounts";
-import { deleteTokenCascade, getPlans, getTokenById, getTrialMarker, listTokensByContact, markTrialConverted, saveOrder, saveToken } from "./kv";
+import { deleteTokenCascade, getPlans, getTokenById, getTrialMarker, hasPlanBonus, listTokensByContact, markPlanBonusGranted, markTrialConverted, saveOrder, saveToken } from "./kv";
 import { newTokenId } from "./ids";
 import { currentMonthKey } from "./nodes";
 import { rewardReferrerOnPayment } from "./referral";
@@ -126,8 +126,18 @@ export const upgradeTokenForOrder = async (
   token.traffic_limit_gb = plan.traffic_limit_gb ?? 0;
   token.max_devices = plan.max_devices;
   if (!token.activated_at) token.activated_at = now;
+  // 套餐赠送时长（买 12 送 1 等）每邮箱每套餐限首购一次，与激活路径同一标记口径：
+  // 月付升年付算首购年付（照送）；年付到期再升/买年付是续费（不送）
+  let planDays = plan.duration_days;
+  if (plan.bonus_days && token.contact) {
+    if (await hasPlanBonus(env, token.contact, plan.id)) {
+      planDays -= plan.bonus_days;
+    } else {
+      await markPlanBonusGranted(env, token.contact, plan.id);
+    }
+  }
   token.expires_at =
-    now + plan.duration_days * 86_400_000 + (grantBonus ? TRIAL_CONVERT_BONUS_MS : 0) + trialRemainingMs;
+    now + planDays * 86_400_000 + (grantBonus ? TRIAL_CONVERT_BONUS_MS : 0) + trialRemainingMs;
   if (plan.monthly_quota_gb) {
     token.base_expires_at = token.expires_at;
     token.months_borrowed = 0;

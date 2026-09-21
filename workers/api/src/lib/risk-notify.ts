@@ -13,12 +13,17 @@
  * 两条 trial_convert 触发路径共用幂等键，只发一次。
  */
 
-import { isTrialPlan, type Node, type Presence, type Token } from "../../../../shared/types";
+import { isTrialPlan, type Node, type Plan, type Presence, type Token } from "../../../../shared/types";
 import { createMagicTicket } from "./accounts";
 import { sendMail, shouldSendEmail } from "./email-aliyun";
+import { getPlans } from "./kv";
 import { currentMonthKey } from "./nodes";
 import { siteUrl } from "./site-url";
 import type { Env } from "../types";
+
+/** 在售个人付费套餐（排除试用与企业套餐），转化邮件里列价格用 */
+const paidPlans = (plans: Plan[]): Plan[] =>
+  plans.filter((p) => p.price_cny > 0 && !isTrialPlan(p.id) && !p.id.startsWith("plan_biz"));
 
 function shell(env: Env, title: string, bodyHtml: string, bodyText: string, cta?: { url: string; label: string }) {
   const ctaUrl = cta?.url ?? `${siteUrl(env)}/tokens`;
@@ -85,14 +90,28 @@ export async function sendTrialConvertEmail(env: Env, token: Token): Promise<boo
   if (token.notify_log.trial_convert) return false;
   const ticket = await createMagicTicket(env, token.contact!, token.id, "login");
   const magicUrl = `${siteUrl(env)}/auth/magic?ticket=${ticket}`;
+  // 首页已弱化付费，价格决策信息直接带进邮件，用户不用回站找
+  const paid = paidPlans(await getPlans(env));
+  const priceListHtml =
+    paid.length > 0
+      ? `<p style="margin:12px 0 4px;font-weight:500;">套餐价格：</p>
+     <ul style="margin:0;padding-left:20px;color:#334155;">
+       ${paid.map((p) => `<li>${p.name} <strong>¥${p.price_cny}</strong>${p.pitch ? `（${p.pitch}）` : ""}</li>`).join("\n       ")}
+     </ul>`
+      : "";
+  const priceListText =
+    paid.length > 0
+      ? `\n套餐价格：${paid.map((p) => `${p.name} ¥${p.price_cny}${p.pitch ? `（${p.pitch}）` : ""}`).join("；")}`
+      : "";
   const { subject, html, text } = shell(
     env,
     "体验已结束，现在开通送一个月",
     `<p>你好，你的免费体验 Token（<strong>${token.id}</strong>）的额度已用完或已到期。</p>
      <p>你的邮箱会保留：<strong>随时可以用它付费继续用</strong>；90 天内原 Token 可直接充值，订阅链接和已配置的设备都不用动。</p>
      <p>现在开通付费套餐，<strong>额外赠送一个月（30 天）</strong>。</p>
+     ${priceListHtml}
      <p style="color:#64748b;font-size:13px;">上面的按钮链接 72 小时内有效；过期了也没关系，随时可到 <a href="${siteUrl(env)}/recover" style="color:#0ea5e9;">找回页面</a> 输入邮箱重新获取。</p>`,
-    `你的免费体验 Token（${token.id}）的额度已用完或已到期。\n你的邮箱会保留：随时可以用它付费继续用；90 天内原 Token 可直接充值，订阅链接和设备不变。\n现在开通付费套餐，额外赠送一个月（30 天）。\n按钮链接 72 小时内有效；过期后可到找回页面重新获取：${siteUrl(env)}/recover`,
+    `你的免费体验 Token（${token.id}）的额度已用完或已到期。\n你的邮箱会保留：随时可以用它付费继续用；90 天内原 Token 可直接充值，订阅链接和设备不变。\n现在开通付费套餐，额外赠送一个月（30 天）。${priceListText}\n按钮链接 72 小时内有效；过期后可到找回页面重新获取：${siteUrl(env)}/recover`,
     { url: magicUrl, label: "免登录开通，送一个月" }
   );
   const res = await sendMail(env, token.contact!, subject, html, text);

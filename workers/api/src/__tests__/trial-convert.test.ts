@@ -19,16 +19,27 @@ const mockNs = () => {
   return { store, ns };
 };
 
-const makeEnv = (tokens: KVNamespace, tickets: KVNamespace) =>
-  ({
+const makeEnv = (tokens: KVNamespace, tickets: KVNamespace) => {
+  // 转化邮件会读套餐表列价格，mock 里给一份最小在售套餐
+  const plans = mockNs();
+  void plans.ns.put(
+    "plans",
+    JSON.stringify([
+      { id: "plan_trial", name: "7 天免费体验", duration_days: 7, price_cny: 0, traffic_limit_gb: 8, max_devices: 1 },
+      { id: "plan_monthly", name: "月付套餐", duration_days: 30, price_cny: 12, traffic_limit_gb: 20, max_devices: 3 },
+    ])
+  );
+  return {
     TOKENS: tokens,
     TICKETS: tickets,
+    PLANS: plans.ns,
     NODES: mockNs().ns, // notify-scan 翻转过期后会 pushAuthRefresh，需要 NODES 命名空间
     ADMIN_KEY: "secret-key",
     ALIYUN_ACCESS_KEY_ID: "test-id",
     ALIYUN_ACCESS_KEY_SECRET: "test-secret",
     SITE_URL: "https://fastergamer.click",
-  }) as unknown as Env;
+  } as unknown as Env;
+};
 
 const ctx = {
   waitUntil: () => {},
@@ -80,9 +91,11 @@ describe("notify-scan 试用到期转化邮件", () => {
     const res = await runScan(app, makeEnv(tokens.ns, tickets.ns));
     expect(res.status).toBe(200);
     expect(fetchMock).toHaveBeenCalledTimes(1);
-    // 邮件正文含免登录充值链接
-    const body = fetchMock.mock.calls[0][1]?.body as string;
-    expect(decodeURIComponent(body)).toContain("/auth/magic?ticket=");
+    // 邮件正文含免登录充值链接与套餐价格引导（首页弱化付费，价格锚点在邮件里）
+    const body = decodeURIComponent(fetchMock.mock.calls[0][1]?.body as string);
+    expect(body).toContain("/auth/magic?ticket=");
+    expect(body).toContain("月付套餐");
+    expect(body).toContain("¥12");
 
     const saved = JSON.parse(tokens.store.get(KV.TOKEN + "uuid-trial")!) as Token;
     expect(saved.status).toBe("expired");

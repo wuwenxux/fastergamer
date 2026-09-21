@@ -21,7 +21,8 @@ const mockNs = () => {
 
 const PLANS: Plan[] = [
   { id: "plan_trial", name: "3 天免费体验", duration_days: 3, price_cny: 0, description: "", traffic_limit_gb: 20, max_devices: 1 },
-  { id: "plan_yearly", name: "年付套餐", duration_days: 395, price_cny: 120, description: "", traffic_limit_gb: 260, max_devices: 3, monthly_quota_gb: 20 },
+  { id: "plan_monthly", name: "月付套餐", duration_days: 30, price_cny: 12, description: "", traffic_limit_gb: 20, max_devices: 3 },
+  { id: "plan_yearly", name: "年付套餐", duration_days: 395, bonus_days: 30, price_cny: 120, description: "", traffic_limit_gb: 260, max_devices: 3, monthly_quota_gb: 20 },
 ];
 
 const mockEnv = () => {
@@ -161,5 +162,61 @@ describe("试用转正激励锚定邮箱标记（token 可失效，邮箱永是�
     const res2 = await fulfillOrder(env, mockCtx(), makeOrder({ id: "ord_2" }));
     expect(res2.token!.bonus_ms).toBeUndefined();
     expect(res2.token!.traffic_limit_gb).toBe(260);
+  });
+});
+
+
+describe("套餐赠送时长限首购（bonus:{email}:{planId} 标记，续费不送）", () => {
+  const makePaid = (overrides: Partial<Token> = {}): Token => ({
+    id: "tk_y1",
+    uuid: "uuid-y1",
+    plan_id: "plan_yearly",
+    status: "paid",
+    contact: "user@example.com",
+    traffic_limit_gb: 260,
+    traffic_used_gb: 0,
+    purchased_at: Date.now(),
+    ...overrides,
+  });
+
+  it("首购激活含赠送月（395 天）并写标记", async () => {
+    const { env, tokens } = mockEnv();
+    const before = Date.now();
+    const t = await activatePaidToken(env, makePaid());
+    expect(t.expires_at!).toBeGreaterThanOrEqual(before + 395 * 86_400_000 - 5000);
+    expect(t.expires_at!).toBeLessThanOrEqual(before + 395 * 86_400_000 + 5000);
+    expect(tokens.store.has(`${KV.BONUS}user@example.com:plan_yearly`)).toBe(true);
+  });
+
+  it("续费（同邮箱第二个年付）激活不含赠送月（365 天）", async () => {
+    const { env } = mockEnv();
+    await activatePaidToken(env, makePaid());
+    const before = Date.now();
+    const t2 = await activatePaidToken(env, makePaid({ id: "tk_y2", uuid: "uuid-y2" }));
+    expect(t2.expires_at!).toBeGreaterThanOrEqual(before + 365 * 86_400_000 - 5000);
+    expect(t2.expires_at!).toBeLessThanOrEqual(before + 365 * 86_400_000 + 5000);
+  });
+
+  it("月付升年付算首购（照送 395 天）；同邮箱再升年付不送（365 天）", async () => {
+    const { env, tokens } = mockEnv();
+    const monthly = (id: string, uuid: string): Token =>
+      makePaid({
+        id,
+        uuid,
+        plan_id: "plan_monthly",
+        status: "active",
+        traffic_limit_gb: 20,
+        activated_at: Date.now() - 10 * 86_400_000,
+        expires_at: Date.now() + 20 * 86_400_000,
+      });
+    seedToken(tokens, monthly("tk_m1", "uuid-m1"));
+    seedToken(tokens, monthly("tk_m2", "uuid-m2"));
+
+    const res1 = await fulfillOrder(env, mockCtx(), makeOrder({ id: "ord_up1", upgrade_token_id: "tk_m1" }));
+    expect(res1.token!.expires_at!).toBeGreaterThan(Date.now() + 390 * 86_400_000);
+
+    const res2 = await fulfillOrder(env, mockCtx(), makeOrder({ id: "ord_up2", upgrade_token_id: "tk_m2" }));
+    expect(res2.token!.expires_at!).toBeGreaterThan(Date.now() + 360 * 86_400_000);
+    expect(res2.token!.expires_at!).toBeLessThan(Date.now() + 370 * 86_400_000);
   });
 });

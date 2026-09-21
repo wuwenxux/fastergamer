@@ -318,6 +318,21 @@ export const markTrialConverted = async (env: Env, email: string): Promise<void>
   await env.TOKENS.put(key, JSON.stringify(marker));
 };
 
+/**
+ * 套餐赠送时长标记（bonus:{email}:{planId}）：「买 12 送 1」这类赠送每邮箱每套餐限首购一次。
+ * 与试用标记同一思路：token 会被清理、订单可能重买，邮箱是永久锚点；
+ * 续费（含到期后重新购买同套餐）不再重复赠送。
+ */
+export const hasPlanBonus = async (env: Env, email: string, planId: string): Promise<boolean> =>
+  !!(await env.TOKENS.get(`${KV.BONUS}${email.trim().toLowerCase()}:${planId}`));
+
+/** 记录赠送已发放（直接写，KV 无 CAS，并发双赠窗口可接受） */
+export const markPlanBonusGranted = (env: Env, email: string, planId: string): Promise<void> =>
+  env.TOKENS.put(
+    `${KV.BONUS}${email.trim().toLowerCase()}:${planId}`,
+    JSON.stringify({ granted_at: Date.now() })
+  );
+
 /** 列出所有订单（按前缀扫描） */
 export const listOrders = async (env: Env): Promise<Order[]> => {
   const keys = await listKeys(env.ORDERS, KV.ORDER);

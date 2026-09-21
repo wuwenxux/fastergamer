@@ -9,13 +9,13 @@ import { api } from "../services/api";
 
 type Step = "summary" | "paying" | "result";
 
-/** 年付「买 12 送 1」为常驻权益（套餐数据 395 天 = 365 + 赠送 30 天），横幅不再限时 */
+/** 年付「买 12 送 1」为常驻首购权益（赠送月每邮箱限一次，续费为 12 个月），横幅不再限时 */
 function YearlyPromoBanner() {
   return (
     <section className="max-w-3xl mx-auto rounded-2xl border border-amber-500/40 bg-gradient-to-r from-amber-500/10 to-slate-900 p-5 text-center space-y-1">
-      <p className="font-semibold text-amber-300">🔥 年付 ¥120，买 12 个月送 1 个月</p>
+      <p className="font-semibold text-amber-300">🔥 年付 ¥110，首购买 12 个月送 1 个月</p>
       <p className="text-[15px] leading-relaxed sm:text-sm text-slate-300">
-        开通或续费年付套餐，有效期 <strong className="text-amber-300">13 个月</strong>（395 天）。
+        首次开通年付有效期 <strong className="text-amber-300">13 个月</strong>（395 天），续费为 12 个月。
       </p>
     </section>
   );

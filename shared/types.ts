@@ -372,6 +372,7 @@ export const KV = {
   SESSION: "session:", // session:{token} → { email, created_at }（存 TOKENS namespace）
   MAGIC: "magic:", // magic:{ticket} → MagicTicket JSON（一次性，用后即焚，存 TOKENS namespace）
   TRIAL: "trial:", // trial:{email} → { token_id, created_at }（免费体验每邮箱限领一次，存 TOKENS namespace）
+  BONUS: "bonus:", // bonus:{email}:{planId} → { granted_at }（套餐赠送时长每邮箱每套餐限一次，存 TOKENS namespace）
   TRIAL_IP: "trialip:", // trialip:{ip} → 1（免费体验每 IP 每天限领一次，TTL 24h，存 TOKENS namespace）
   REFCODE: "refcode:", // refcode:{code} → { email }（推广码反查邀请人，存 TOKENS namespace）
   REFCREDIT: "refcredit:", // refcredit:{email} → { earned, used }（推广减免额度，单位：个 ×10元，存 TOKENS namespace）
