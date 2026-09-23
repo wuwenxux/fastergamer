@@ -1,4 +1,4 @@
-import type { CreateOrderResponse, Device, FaqItem, Node, Order, Plan, Presence, Registration, Token } from "../../../shared/types";
+import type { CreateOrderResponse, Device, FaqItem, GeoStats, Node, Order, Plan, Presence, Registration, Token } from "../../../shared/types";
 
 // 生产前后端同源（Worker 托管静态资产），VITE_API_BASE 留空即可，仅在需要指向其他 API 域名时设置
 // 本地开发留空，由 Vite 代理到 localhost:8787 的 wrangler dev
@@ -218,6 +218,12 @@ export const api = {
   /** 管理接口：全部订单（含联系方式，按创建时间倒序）；需 x-admin-key */
   adminOrders: (key: string) =>
     request<Order[]>("/api/admin/orders", {
+      headers: { "x-admin-key": key },
+    }),
+
+  /** 管理接口：用户地理分布聚合（接入 IP 归属地 → 城市/国家统计）；需 x-admin-key */
+  adminGeoStats: (key: string) =>
+    request<GeoStats>("/api/admin/geo-stats", {
       headers: { "x-admin-key": key },
     }),
 

@@ -1,7 +1,10 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { isTrialPlan, type Order } from "../../../shared/types";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from "react";
+import { isTrialPlan, TEST_CONTACT_RE, type GeoStats, type Order } from "../../../shared/types";
 import { STATUS_COLOR, STATUS_LABEL } from "../lib/status";
 import { api, ApiError, type AdminNode, type AdminToken } from "../services/api";
+
+// echarts 体积较大（按需注册后仍有数百 KB），只在「分布」tab 首次渲染时才拉取对应 chunk
+const GeoMap = lazy(() => import("../components/GeoMap"));
 
 // 管理密钥只存 sessionStorage：关标签页即失效，避免长期留在本机
 const KEY_STORAGE = "fg_admin_key";
@@ -80,10 +83,13 @@ export default function Admin() {
   const [tokens, setTokens] = useState<AdminToken[]>([]);
   const [nodes, setNodes] = useState<AdminNode[]>([]);
   const [orders, setOrders] = useState<Order[]>([]);
-  const [tab, setTab] = useState<"overview" | "orders">("overview");
+  const [tab, setTab] = useState<"overview" | "orders" | "geo">("overview");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [days, setDays] = useState<14 | 30>(14);
+  // 地理分布独立懒加载：切到「分布」tab 才请求，避免拖慢概览首屏
+  const [geo, setGeo] = useState<GeoStats | null>(null);
+  const [geoLoading, setGeoLoading] = useState(false);
 
   const load = useCallback(async (k: string) => {
     setLoading(true);
@@ -115,6 +121,22 @@ export default function Admin() {
   useEffect(() => {
     if (key) void load(key);
   }, [key, load]);
+
+  const loadGeo = useCallback(async (k: string) => {
+    setGeoLoading(true);
+    try {
+      setGeo(await api.adminGeoStats(k));
+    } catch {
+      // 归属解析失败（ip-api 限速等）不打扰：保留旧数据，下次进入 tab 重试
+    } finally {
+      setGeoLoading(false);
+    }
+  }, []);
+
+  // 首次切到「分布」tab 时加载；失败重进 tab 会重试
+  useEffect(() => {
+    if (tab === "geo" && !geo && !geoLoading) void loadGeo(key);
+  }, [tab, geo, geoLoading, key, loadGeo]);
 
   const submitKey = () => {
     const k = keyInput.trim();
@@ -217,7 +239,10 @@ export default function Admin() {
             </span>
           )}
           <button
-            onClick={() => void load(key)}
+            onClick={() => {
+              void load(key);
+              if (geo) void loadGeo(key); // 已加载过分布数据时一并刷新
+            }}
             disabled={loading}
             className="rounded-lg border border-slate-700 bg-slate-900 px-4 py-2 hover:border-sky-500 transition-colors disabled:opacity-60"
           >
@@ -226,12 +251,13 @@ export default function Admin() {
         </div>
       </div>
 
-      {/* 标签页：概览 / 订单（待支付角标提醒站长核账；测试订单不算真实交易，不计入） */}
+      {/* 标签页：概览 / 订单（待支付角标提醒站长核账；测试订单不算真实交易，不计入）/ 分布 */}
       <div className="flex gap-1 text-[15px] sm:text-sm">
         {(
           [
             ["overview", "概览"],
             ["orders", `订单${orders.some((o) => o.status === "pending" && !isTestOrder(o)) ? `（${orders.filter((o) => o.status === "pending" && !isTestOrder(o)).length} 待支付）` : ""}`],
+            ["geo", "分布"],
           ] as const
         ).map(([t, label]) => (
           <button
@@ -254,6 +280,8 @@ export default function Admin() {
       {tab === "orders" && (
         <OrdersSection adminKey={key} orders={orders} onChanged={() => void load(key)} />
       )}
+
+      {tab === "geo" && <GeoSection stats={geo} loading={geoLoading} />}
 
       {tab === "overview" && tokens.length > 0 && (
         <>
@@ -435,11 +463,86 @@ function OverviewCard({ label, value, accent }: { label: string; value: string; 
   );
 }
 
-/**
- * 测试订单识别：联调/E2E 留下的订单邮箱集中在 example.com/.invalid、temp.local、
- * test-* 前缀和站内域名，真实用户邮箱不会命中。管理端直接隐藏，不展示。
- */
-const TEST_CONTACT_RE = /test|@example\.|@temp\.|\.invalid$|@fastergamer\.cn$|@auto/i;
+/** 「分布」tab：接入 IP 归属聚合（geo-stats 接口），地图只画中国境内城市，海外进国家汇总 */
+function GeoSection({ stats, loading }: { stats: GeoStats | null; loading: boolean }) {
+  if (loading && !stats) {
+    return <p className="text-[15px] sm:text-sm text-slate-500">正在解析接入 IP 归属地…</p>;
+  }
+  if (!stats) return null;
+
+  const cnCities = stats.cities.filter((c) => c.countryCode === "CN");
+  const abroad = stats.countries.filter((c) => c.countryCode !== "CN");
+  const resolved = stats.total_ips - stats.unresolved_ips;
+
+  return (
+    <section className="space-y-4">
+      <div className="grid gap-4 lg:grid-cols-[3fr_2fr]">
+        <div className="rounded-2xl border border-slate-700 bg-slate-900 p-4 space-y-2">
+          <h3 className="font-semibold text-slate-300">用户分布地图</h3>
+          <Suspense fallback={<div className="h-[420px] text-center leading-[420px] text-slate-500 text-sm">地图加载中…</div>}>
+            <GeoMap cities={cnCities} />
+          </Suspense>
+          <p className="text-xs text-slate-500">
+            按接入 IP 归属地聚合，覆盖 {resolved}/{stats.total_ips} 个 IP
+            {stats.unresolved_ips > 0 && `（${stats.unresolved_ips} 个暂未解析，稍后刷新补齐）`}
+          </p>
+        </div>
+        <div className="space-y-4">
+          <div className="rounded-2xl border border-slate-700 bg-slate-900 p-4">
+            <h3 className="font-semibold text-slate-300 mb-2">城市 Top 15</h3>
+            <table className="w-full text-sm sm:text-xs">
+              <thead>
+                <tr className="text-left text-slate-500 border-b border-slate-800">
+                  <th className="py-1.5 font-normal">城市</th>
+                  <th className="py-1.5 font-normal text-right">Token</th>
+                  <th className="py-1.5 font-normal text-right">流量</th>
+                </tr>
+              </thead>
+              <tbody>
+                {stats.cities.slice(0, 15).map((c) => (
+                  <tr key={`${c.country}/${c.region}/${c.name}`} className="border-b border-slate-800/50">
+                    <td className="py-1.5 text-slate-200">{c.name}</td>
+                    <td className="py-1.5 text-right text-slate-400">{c.tokens}</td>
+                    <td className="py-1.5 text-right text-slate-400">{(c.bytes / 1e9).toFixed(2)} GB</td>
+                  </tr>
+                ))}
+                {stats.cities.length === 0 && (
+                  <tr>
+                    <td colSpan={3} className="py-6 text-center text-slate-500">暂无接入记录</td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+          <div className="rounded-2xl border border-slate-700 bg-slate-900 p-4">
+            <h3 className="font-semibold text-slate-300 mb-2">国家 / 地区汇总（含海外）</h3>
+            <table className="w-full text-sm sm:text-xs">
+              <tbody>
+                {stats.countries.map((c) => (
+                  <tr key={c.name} className="border-b border-slate-800/50">
+                    <td className="py-1.5 text-slate-200">{c.name}</td>
+                    <td className="py-1.5 text-right text-slate-400">{c.tokens} Token</td>
+                    <td className="py-1.5 text-right text-slate-400">{(c.bytes / 1e9).toFixed(2)} GB</td>
+                  </tr>
+                ))}
+                {stats.countries.length === 0 && (
+                  <tr>
+                    <td colSpan={3} className="py-6 text-center text-slate-500">暂无接入记录</td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+            {abroad.length > 0 && (
+              <p className="mt-2 text-xs text-slate-500">海外用户不上中国地图，仅在此汇总。</p>
+            )}
+          </div>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+/** 测试订单识别：正则口径与地理分布排除共用（shared/types.ts 的 TEST_CONTACT_RE），管理端直接隐藏 */
 const isTestOrder = (o: Order) => TEST_CONTACT_RE.test(o.contact ?? "");
 
 /**

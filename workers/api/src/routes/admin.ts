@@ -11,6 +11,7 @@ import { fulfillOrder } from "../lib/issue-token";
 import { computeRefundQuote } from "../lib/refund";
 import { resetPenalty, sendPenaltyNoticeEmail } from "../lib/reset-penalty";
 import { pushAuthRefresh } from "../lib/authpush";
+import { buildGeoStats } from "../lib/geo-stats";
 import { escapeHtml } from "../lib/escape-html";
 import type { Env } from "../types";
 
@@ -192,6 +193,16 @@ adminRoutes.get("/tokens", async (c) => {
     return c.json({ ok: true, data: merged });
   }
   return c.json({ ok: true, data: tokens });
+});
+
+/**
+ * GET /api/admin/geo-stats —— 用户地理分布聚合：全部 token 的接入 IP 按归属地聚合成
+ * 城市/国家两级统计（ip-api 解析，geo:{ip} 缓存 30 天；解析失败 fail-open 计入未解析）。
+ * 供管理端「分布」tab 画地图用。
+ */
+adminRoutes.get("/geo-stats", async (c) => {
+  const stats = await buildGeoStats(c.env);
+  return c.json({ ok: true, data: stats });
 });
 
 /** GET /api/admin/registrations —— 导出全部防失联登记（批量通知用） */

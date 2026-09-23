@@ -13,9 +13,10 @@
  * 两条 trial_convert 触发路径共用幂等键，只发一次。
  */
 
-import { isTrialPlan, type Node, type Plan, type Presence, type Token } from "../../../../shared/types";
+import { isTrialPlan, type IpGeo, type Node, type Plan, type Presence, type Token } from "../../../../shared/types";
 import { createMagicTicket } from "./accounts";
 import { sendMail, shouldSendEmail } from "./email-aliyun";
+import { resolveIpGeo } from "./geo-stats";
 import { getPlans } from "./kv";
 import { currentMonthKey } from "./nodes";
 import { siteUrl } from "./site-url";
@@ -225,37 +226,12 @@ export async function checkTokenRisks(env: Env, token: Token): Promise<void> {
 
 // ---------- 管理员告警 ----------
 
-/** IP 归属地查询结果（ipwho.is 免费接口） */
-export interface IpGeo {
-  country?: string;
-  region?: string;
-  city?: string;
-  isp?: string;
-}
-
-/** IP 归属地查询（ipwho.is 免费接口，3s 超时；失败返回 null 不影响主流程） */
-export async function lookupIpGeo(ip: string): Promise<IpGeo | null> {
-  try {
-    const res = await fetch(`https://ipwho.is/${encodeURIComponent(ip)}`, {
-      signal: AbortSignal.timeout(3000),
-    });
-    const data = (await res.json()) as {
-      success?: boolean;
-      country?: string;
-      region?: string;
-      city?: string;
-      connection?: { isp?: string };
-    };
-    if (!data.success) return null;
-    return {
-      country: data.country,
-      region: data.region,
-      city: data.city,
-      isp: data.connection?.isp,
-    };
-  } catch {
-    return null;
-  }
+/** IP 归属地查询（geo-stats 的共享通道：geo:{ip} 缓存优先，miss 走 ip-api.com 批量接口并回写缓存）。
+ *  替换原 ipwho.is 单查——它从 Cloudflare Workers 出站持续失败，导致安全提醒邮件只显示 IP
+ *  显示不出归属地；ip-api 在 Worker 里稳定可用（管理端地理分布同一通道，生产已验证）。
+ *  失败返回 null 不影响主流程（fail-open，调用方按保守策略处理）。 */
+export async function lookupIpGeo(env: Env, ip: string): Promise<IpGeo | null> {
+  return (await resolveIpGeo(env, [ip]))[ip] ?? null;
 }
 
 /** 位置键：国家/省份/城市拼接。不含 isp——运营商标签抖动（家宽换 IP、WiFi 切 4G）不算接入地点变更 */
@@ -290,12 +266,13 @@ export interface IpLocationChange {
  * 会原地更新 presence.active_geo；调用方负责随后 savePresenceIfChanged 落库。
  */
 export async function resolveIpLocationChange(
+  env: Env,
   presence: Presence,
   key: string,
   ips: string[]
 ): Promise<IpLocationChange> {
   const prev = presence.active_geo?.[key];
-  const geo = await lookupIpGeo(ips[0]);
+  const geo = await lookupIpGeo(env, ips[0]);
   const cur = geo ? geoLocationKey(geo) : "";
   if (!geo || !cur) {
     // 查询失败：有基线才提醒（无基线 = 首次使用，没有任何变更证据）
@@ -328,23 +305,24 @@ export interface ConcurrentGeoConflict {
 }
 
 /**
- * 多地并发在线判定：给同一 token 本结算周期内并发出现过的接入 IP 逐个查归属地。
+ * 多地并发在线判定：给同一 token 本结算周期内并发出现过的接入 IP 批量查归属地
+ * （resolveIpGeo 共享通道：geo:{ip} 缓存优先，miss 走 ip-api 批量接口，一次调用查完全部 IP）。
  * - 少于 2 个不同 IP（单链接换城市/出差漫游）：无并发证据，不冲突，也不发 geo 请求；
  * - 所有 IP 同一位置：判定为本人新设备/同地多设备，不冲突；
  * - 出现 ≥2 个不同位置，或任一查询失败（保守，安全提醒宁可误发）：冲突。
  */
-export async function resolveConcurrentGeoConflict(ips: string[]): Promise<ConcurrentGeoConflict> {
+export async function resolveConcurrentGeoConflict(env: Env, ips: string[]): Promise<ConcurrentGeoConflict> {
   const uniq = [...new Set(ips)];
   if (uniq.length < 2) return { conflict: false, sources: [] };
-  const sources: GeoSource[] = [];
-  for (const ip of uniq) {
-    const geo = await lookupIpGeo(ip);
-    sources.push({
+  const geo = await resolveIpGeo(env, uniq);
+  const sources: GeoSource[] = uniq.map((ip) => {
+    const g = geo[ip];
+    return {
       ip,
-      locationKey: geo ? geoLocationKey(geo) : "",
-      display: geo ? geoDisplay(geo) : "归属地查询失败",
-    });
-  }
+      locationKey: g ? geoLocationKey(g) : "",
+      display: g ? geoDisplay(g) : "归属地查询失败",
+    };
+  });
   const anyFailed = sources.some((s) => !s.locationKey);
   const conflict = anyFailed || new Set(sources.map((s) => s.locationKey)).size >= 2;
   return { conflict, sources };

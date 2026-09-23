@@ -184,6 +184,60 @@ export interface Presence {
   sub_fetches?: Record<string, SubFetch>;
 }
 
+/** IP 归属解析结果（geo:{ip} 缓存值，TTL 30 天；管理端地理分布与安全提醒邮件共用） */
+export interface IpGeo {
+  /** 国家名（ip-api 免费版只返回英文，国家识别用 countryCode） */
+  country: string;
+  /** 国家代码，如 CN/US */
+  countryCode: string;
+  /** 省/州 */
+  region: string;
+  city: string;
+  lat: number;
+  lon: number;
+  /** 运营商（安全提醒邮件展示用；早期缓存可能缺此字段） */
+  isp?: string;
+}
+
+/** 管理端地理分布：单城市聚合（tokens/ips 均为去重计数） */
+export interface GeoCityStat {
+  /** 城市名（缺失时回退省份/国家名） */
+  name: string;
+  region: string;
+  country: string;
+  /** 国家代码（CN=境内，前端据此过滤中国地图散点） */
+  countryCode: string;
+  lat: number;
+  lon: number;
+  /** 在该城市有接入记录的去重 token 数 */
+  tokens: number;
+  /** 该城市去重 IP 数 */
+  ips: number;
+  bytes: number;
+}
+
+/** 管理端地理分布：单国家聚合 */
+export interface GeoCountryStat {
+  name: string;
+  /** 国家代码（CN=境内，前端据此区分境内/海外） */
+  countryCode: string;
+  tokens: number;
+  ips: number;
+  bytes: number;
+}
+
+/** GET /api/admin/geo-stats 响应：按接入 IP 归属聚合的用户分布 */
+export interface GeoStats {
+  /** 按流量降序 */
+  cities: GeoCityStat[];
+  /** 按流量降序 */
+  countries: GeoCountryStat[];
+  /** 全部接入 IP 数（去重） */
+  total_ips: number;
+  /** 本次未能解析归属的 IP 数（超出单批补查上限或查询失败，下次刷新重试） */
+  unresolved_ips: number;
+}
+
 /** 订单 —— 一次购买行为 */
 export interface Order {
   id: string;
@@ -366,6 +420,13 @@ export interface Registration {
   updated_at: number;
 }
 
+/**
+ * 测试账号联系方式识别（管理端订单隐藏、地理分布排除用）：
+ * 联调/E2E 留下的邮箱集中在 example.com/.invalid、temp.local、test-* 前缀和站内域名，
+ * 真实用户邮箱不会命中。
+ */
+export const TEST_CONTACT_RE = /test|@example\.|@temp\.|\.invalid$|@fastergamer\.cn$|@auto/i;
+
 /** KV 键前缀常量 */
 export const KV = {
   TOKEN: "token:", // token:{uuid} → Token JSON
@@ -387,4 +448,5 @@ export const KV = {
   REG: "reg:", // reg:{账号email} → Registration JSON（防失联登记，存 TOKENS namespace）
   MAILTHROTTLE: "mailthrottle:", // mailthrottle:{sha1(email)} → 计数（收件人邮件节流，1h TTL，存 TOKENS namespace）
   IPINFO: "ipinfo:", // ipinfo:{ip} → 机房/代理分类缓存（TTL 30 天，体验 token 滥用判定用，存 TOKENS namespace）
+  GEO: "geo:", // geo:{ip} → IpGeo 归属缓存（TTL 30 天，管理端地理分布用，存 TOKENS namespace）
 } as const;

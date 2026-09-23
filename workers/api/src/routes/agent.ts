@@ -329,7 +329,7 @@ async function applyTrafficDelta(
   if (changedIps.length > 0) {
     // 接入地址变更只更新 active_geo 基线（同城漂移/出差漫游都不打扰客户）；
     // 是否发安全提醒由调用方收齐本 token 全部 uuid 的周期 IP 后统一判定（多地并发在线才发）
-    await resolveIpLocationChange(presence, nodeKey, changedIps);
+    await resolveIpLocationChange(env, presence, nodeKey, changedIps);
     // active_geo 基线可能更新，补一次「有变化才写」
     await savePresenceIfChanged(env, token.uuid, presenceBase, presence);
     ipChangePending.set(token.uuid, token);
@@ -454,7 +454,7 @@ agentRoutes.post("/traffic", async (c) => {
     await savePresenceIfChanged(c.env, found.token.uuid, presenceBase, presence);
     if (changedIps.length > 0) {
       // 同 applyTrafficDelta：只更新 active_geo 基线，邮件判定收敛到下方统一通知段
-      await resolveIpLocationChange(presence, ipKey, changedIps);
+      await resolveIpLocationChange(c.env, presence, ipKey, changedIps);
       await savePresenceIfChanged(c.env, found.token.uuid, presenceBase, presence);
       ipChangePending.set(found.token.uuid, found.token);
     }
@@ -470,7 +470,7 @@ agentRoutes.post("/traffic", async (c) => {
       .map(([ip]) => ip);
     const ips = new Set([...(cycleIps.get(token.uuid) ?? []), ...recentIps]);
     if (ips.size < 2) continue;
-    const result = await resolveConcurrentGeoConflict([...ips]);
+    const result = await resolveConcurrentGeoConflict(c.env, [...ips]);
     if (!result.conflict) continue;
     // 邮件 await 在 presence 写库之后；notify_log 变更按键级合并写回
     const notifyBase = JSON.stringify(token.notify_log ?? {});

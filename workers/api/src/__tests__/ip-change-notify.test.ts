@@ -9,7 +9,7 @@ import type { Env } from "../types";
  * - 单链接换城市（出差/漫游）：只更新 active_geo 基线，不发邮件
  * - 同城多 IP（本人新设备）：不发邮件
  * - 12h 限流 + notify_log.ip_change 幂等
- * 只拦截 ipwho.is 的 fetch，其余出站请求（节点 refresh 推送等）假成功，不触网。
+ * 只拦截 ip-api.com 批量接口的 fetch，其余出站请求（节点 refresh 推送等）假成功，不触网。
  */
 
 vi.mock("../lib/email-aliyun", async (importOriginal) => {
@@ -79,24 +79,32 @@ const makeEnv = () => {
   return { env, tokens };
 };
 
-const IPWHOIS_PREFIX = "https://ipwho.is/";
+const IP_API_BATCH = "http://ip-api.com/batch";
 
-/** 按 IP 分别应答 ipwho.is；未登记的 IP 查询失败；其余出站请求假成功 */
+/** 按 IP 分别应答 ip-api 批量接口（POST body 为 IP 数组）；未登记的 IP 查询失败；其余出站请求假成功 */
 const stubGeoFetch = (map: Record<string, { region: string; city: string } | null>) => {
-  const spy = vi.fn(async (input: RequestInfo | URL) => {
+  const spy = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url =
       typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
-    if (url.startsWith(IPWHOIS_PREFIX)) {
-      const ip = decodeURIComponent(url.slice(IPWHOIS_PREFIX.length));
-      const g = map[ip];
-      if (!g) throw new Error("timeout");
-      return Response.json({
-        success: true,
-        country: "中国",
-        region: g.region,
-        city: g.city,
-        connection: { isp: "电信" },
-      });
+    if (url.startsWith(IP_API_BATCH) && init?.body) {
+      const ips = JSON.parse(init.body as string) as string[];
+      return Response.json(
+        ips.map((ip) => {
+          const g = map[ip];
+          if (!g) return { status: "fail", query: ip };
+          return {
+            status: "success",
+            query: ip,
+            country: "中国",
+            countryCode: "CN",
+            regionName: g.region,
+            city: g.city,
+            lat: 30,
+            lon: 104,
+            isp: "电信",
+          };
+        })
+      );
     }
     return new Response("ok");
   });

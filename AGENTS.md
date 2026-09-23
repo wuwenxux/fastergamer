@@ -20,7 +20,7 @@ Token 制 VPN 服务（对外品牌 GameBoost / FasterGamer）：用户无需注
 | 目录 | 说明 | 技术栈 |
 |------|------|--------|
 | `workers/api` | 中心 API（售卖、token 状态机、节点注册表、流量结算、工单） | Hono 4 + Cloudflare KV + TypeScript |
-| `pages` | 前端售卖站点（GameBoost 界面） | React 18 + Vite 5 + Tailwind 3 + react-router 6 |
+| `pages` | 前端售卖站点（GameBoost 界面；管理端「分布」tab 用 echarts 按需注册画中国地图） | React 18 + Vite 5 + Tailwind 3 + react-router 6 + echarts |
 | `infra/xray` | VPS 落地节点：vpn-agent（`agent.py`）+ 部署脚本 | Python 3 标准库（无三方依赖） |
 | `shared/types.ts` | API 与前端共享的 TypeScript 类型（Worker 经 `@shared/*` 路径别名引用） | TypeScript |
 | `scripts` | 运维脚本：部署、探测、拨测、初始化套餐、DNS、端到端测试 | bash / Node.mjs / Python |
@@ -31,7 +31,7 @@ Token 制 VPN 服务（对外品牌 GameBoost / FasterGamer）：用户无需注
 
 - `index.ts`：Hono 入口。CORS 中间件、敏感接口限流、路由挂载；`fetch` 导出里检测 `env.ASSETS` 绑定，非 `/api` 请求转给 Static Assets（404 回退 `index.html` 实现 SPA）。
 - `routes/`：按资源分文件（`plans / orders / tokens / sub / register / referral / tickets / admin / nodes / agent`）。
-- `lib/`：业务逻辑库（激活、签发、订阅生成——`clash.ts` Clash YAML / `sub-links.ts` vless 链接 / `singbox.ts` sing-box JSON 三格式，`sub.ts` 按 `?format=` 或 UA 路由；授权快照/推送、邮件 `email-aliyun.ts`、风控通知、推荐返利等）。
+- `lib/`：业务逻辑库（激活、签发、订阅生成——`clash.ts` Clash YAML / `sub-links.ts` vless 链接 / `singbox.ts` sing-box JSON 三格式，`sub.ts` 按 `?format=` 或 UA 路由；授权快照/推送、邮件 `email-aliyun.ts`、风控通知、推荐返利、地理分布聚合 `geo-stats.ts` 等）。
 - `middleware/`：`admin.ts`（x-admin-key 鉴权）、`rateLimit.ts`、`turnstile.ts`（人机验证）。
 - `__tests__/`：vitest 测试，与被测模块的 lib 一一对应。
 
