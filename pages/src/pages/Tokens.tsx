@@ -3,7 +3,7 @@ import { Link, useLocation } from "react-router-dom";
 import TokenStatus from "../components/TokenStatus";
 import ReferralCard from "../components/ReferralCard";
 import Turnstile, { type TurnstileHandle, type TurnstileState } from "../components/Turnstile";
-import { STATUS_COLOR, STATUS_LABEL } from "../lib/status";
+import { SHARE_SUSPENDED_COLOR, SHARE_SUSPENDED_LABEL, STATUS_COLOR, STATUS_LABEL } from "../lib/status";
 import { api, type TokenView } from "../services/api";
 
 const STORAGE_KEY = "my_tokens";
@@ -231,7 +231,9 @@ export default function Tokens() {
                 >
                   <div className="font-mono">{t.id}</div>
                   <div className="text-sm sm:text-xs text-slate-500">
-                    {t.status === "active" && t.expires_at
+                    {t.share_suspended_at
+                      ? "已暂停（疑似共享）· 续费后自动恢复"
+                      : t.status === "active" && t.expires_at
                       ? `使用中 · 到期 ${new Date(t.expires_at).toLocaleDateString()}`
                       : t.status === "paid"
                       ? "待激活"
@@ -298,12 +300,24 @@ function RestrictedTokenCard({ token }: { token: TokenView }) {
             </span>
           )}
           <span
-            className={`rounded-full border px-3 py-1 text-xs font-medium ${STATUS_COLOR[token.status]}`}
+            className={`rounded-full border px-3 py-1 text-xs font-medium ${
+              token.share_suspended_at ? SHARE_SUSPENDED_COLOR : STATUS_COLOR[token.status]
+            }`}
           >
-            {STATUS_LABEL[token.status]}
+            {token.share_suspended_at ? SHARE_SUSPENDED_LABEL : STATUS_LABEL[token.status]}
           </span>
         </div>
       </div>
+
+      {token.share_suspended_at && (
+        <div className="rounded-xl border border-orange-500/50 bg-orange-500/10 p-4 space-y-2">
+          <p className="text-[15px] sm:text-sm font-medium text-orange-300">检测到账号共享，服务已暂停</p>
+          <p className="text-sm leading-relaxed sm:text-xs text-slate-300">
+            检测到该账号存在多人同时使用的行为，服务已暂停。续费任意套餐后将自动恢复；
+            用购买邮箱登录后可查看订阅信息并续费。
+          </p>
+        </div>
+      )}
 
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-[15px] sm:text-sm">
         <div className="rounded-lg bg-slate-800/60 p-3">

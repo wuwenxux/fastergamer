@@ -102,7 +102,7 @@ class FlushCountersOnceTest(unittest.TestCase):
 
     def _fake_stats(self, traffic):
         return mock.patch.object(
-            agent, "collect_user_stats", return_value=(traffic, {}))
+            agent, "collect_user_stats", return_value=(traffic, {}, {}))
 
     def test_merges_delta_into_accum(self):
         with self._fake_stats({UUID_A: 100}):
@@ -129,7 +129,7 @@ class FlushCountersOnceTest(unittest.TestCase):
         self.assertEqual(e["last_counter"], 100)
 
     def test_query_failure_is_noop(self):
-        with mock.patch.object(agent, "collect_user_stats", return_value=(None, {})):
+        with mock.patch.object(agent, "collect_user_stats", return_value=(None, {}, {})):
             agent.flush_counters_once("xray", "api", self.ledger, None)
         self.assertEqual(self.ledger.users, {})
 
@@ -391,7 +391,7 @@ class ParseStatsTest(unittest.TestCase):
     STAT = [
         {"name": f"user>>>{UUID_A}>>>traffic>>>downlink", "value": "100"},
         {"name": f"user>>>{UUID_A}>>>traffic>>>uplink", "value": "999"},
-        {"name": f"user>>>{UUID_A}>>>online", "value": "1"},
+        {"name": f"user>>>{UUID_A}>>>online", "value": "3"},
         {"name": f"user>>>{UUID_B}>>>traffic>>>downlink", "value": "50"},
         {"name": f"user>>>{UUID_B}>>>online", "value": "0"},
         {"name": "inbound>>>vless-in>>>traffic>>>downlink", "value": "1234"},
@@ -399,9 +399,21 @@ class ParseStatsTest(unittest.TestCase):
     ]
 
     def test_parse_user_stats(self):
-        traffic, online = agent.parse_user_stats(self.STAT)
+        traffic, online, conns = agent.parse_user_stats(self.STAT)
         self.assertEqual(traffic, {UUID_A: 100, UUID_B: 50})   # 只计下行
         self.assertEqual(online, {UUID_A: True, UUID_B: False})
+
+    def test_parse_conns_extraction(self):
+        # online 计数即并发连接数：n>0 进 conns，online 布尔口径不受影响
+        _, online, conns = agent.parse_user_stats(self.STAT)
+        self.assertEqual(conns, {UUID_A: 3})
+        self.assertEqual(online, {UUID_A: True, UUID_B: False})
+
+    def test_parse_conns_empty_without_online_stats(self):
+        # hy2 用户/xray 无计数器时没有 online 条目：conns 为空 dict 而不是报错
+        stat = [{"name": f"user>>>{UUID_A}>>>traffic>>>downlink", "value": "10"}]
+        _, _, conns = agent.parse_user_stats(stat)
+        self.assertEqual(conns, {})
 
     def test_parse_node_stats(self):
         total, count = agent.parse_node_stats(self.STAT)
@@ -420,6 +432,50 @@ class ParseStatsTest(unittest.TestCase):
             stderr = ""
         with mock.patch.object(agent.subprocess, "run", return_value=R()):
             self.assertEqual(agent.query_stats_raw("xray", "api"), [])
+
+
+class ReportSettlementTest(unittest.TestCase):
+    """上报体组装：conns（各 uuid 并发连接数）随 v2 结算一起上报，供中心共享检测。"""
+
+    @staticmethod
+    def _capture(payload_holder):
+        class R:
+            def read(self):
+                return json.dumps({"ok": True}).encode()
+            def __enter__(self):
+                return self
+            def __exit__(self, *a):
+                return False
+
+        def fake_urlopen(req, **kw):
+            payload_holder["payload"] = json.loads(req.data.decode("utf-8"))
+            payload_holder["url"] = req.full_url
+            return R()
+
+        return mock.patch.object(agent, "urlopen", fake_urlopen)
+
+    def test_conns_included_in_payload(self):
+        holder = {}
+        with self._capture(holder):
+            agent.report_settlement(
+                "https://x/api/agent/config", "k",
+                {UUID_A: 100}, {UUID_A: True}, 1234, 1,
+                ip_conns={UUID_A: {"1.2.3.4": 2}}, conns={UUID_A: 3},
+            )
+        p = holder["payload"]
+        self.assertEqual(holder["url"], "https://x/api/agent/traffic")
+        self.assertEqual(p["conns"], {UUID_A: 3})
+        self.assertEqual(p["settled"], {UUID_A: 100})
+        self.assertEqual(p["ip_conns"], {UUID_A: {"1.2.3.4": 2}})
+        self.assertEqual(p["billing"], "downlink")
+
+    def test_conns_default_empty(self):
+        # hy2 无 per-user 并发计数、statsquery 失败等场景缺省传 None：上报 conns 为空表不炸
+        holder = {}
+        with self._capture(holder):
+            agent.report_settlement(
+                "https://x/api/agent/config", "k", {UUID_A: 1}, {}, 0, 0)
+        self.assertEqual(holder["payload"]["conns"], {})
 
 
 if __name__ == "__main__":

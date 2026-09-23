@@ -488,11 +488,15 @@ TRAFFIC_STAT_RE = re.compile(r"^user>>>([^>]+)>>>traffic>>>downlink$")
 ONLINE_STAT_RE = re.compile(r"^user>>>([^>]+)>>>online$")
 
 
-def parse_user_stats(stat: list) -> tuple[dict[str, int], dict[str, bool]]:
-    """从 statsquery 结果解析每个 email(uuid) 的下行流量（bytes）及在线状态。
-    只计下行（VPS 商家按出站计费，上行不计入配额）。"""
+def parse_user_stats(stat: list) -> tuple[dict[str, int], dict[str, bool], dict[str, int]]:
+    """从 statsquery 结果解析每个 email(uuid) 的下行流量（bytes）、在线状态与并发连接数。
+    只计下行（VPS 商家按出站计费，上行不计入配额）。
+    user>>>uuid>>>online 的值即该 uuid 当前并发连接数，n>0 的条目进 conns 随上报发给中心
+    做共享检测；online 布尔口径保持不变。
+    hy2（hysteria2）trafficStats 只有 rx/tx 流量计数器，没有 per-user 并发连接数，无法并入。"""
     traffic: dict[str, int] = {}
     online: dict[str, bool] = {}
+    conns: dict[str, int] = {}
     for item in stat:
         name = item.get("name", "")
         m = TRAFFIC_STAT_RE.match(name)
@@ -502,8 +506,11 @@ def parse_user_stats(stat: list) -> tuple[dict[str, int], dict[str, bool]]:
             continue
         m = ONLINE_STAT_RE.match(name)
         if m:
-            online[m.group(1)] = int(item.get("value", "0")) > 0
-    return traffic, online
+            n = int(item.get("value", "0"))
+            online[m.group(1)] = n > 0
+            if n > 0:
+                conns[m.group(1)] = n
+    return traffic, online, conns
 
 
 def parse_node_stats(stat: list) -> tuple[int, int]:
@@ -523,7 +530,7 @@ def parse_node_stats(stat: list) -> tuple[int, int]:
     return total_bytes, online_count
 
 
-def collect_user_stats(xray_bin: str, xray_api: str) -> tuple[dict[str, int] | None, dict[str, bool]]:
+def collect_user_stats(xray_bin: str, xray_api: str) -> tuple[dict[str, int] | None, dict[str, bool], dict[str, int]]:
     """
     抓一次用户计数器（rmu/restart 前落账等单次场景用；每周期主循环请用
     query_stats_raw + parse_user_stats，与用户级/节点级统计共用一次调用）。
@@ -531,7 +538,7 @@ def collect_user_stats(xray_bin: str, xray_api: str) -> tuple[dict[str, int] | N
     """
     stat = query_stats_raw(xray_bin, xray_api)
     if stat is None:
-        return None, {}
+        return None, {}, {}
     return parse_user_stats(stat)
 
 
@@ -658,7 +665,7 @@ def flush_counters_once(xray_bin: str, xray_api: str, ledger: Ledger,
     用于 rmu / restart 销毁计数器之前落账，避免漏算自上次轮询以来的流量。
     statsquery 失败时静默跳过（最多漏一个周期的量，但不阻塞配置同步）。
     """
-    traffic, _ = collect_user_stats(xray_bin, xray_api)
+    traffic, _, _ = collect_user_stats(xray_bin, xray_api)
     if traffic is None:
         return
     if allowed is not None:
@@ -763,9 +770,12 @@ def report_settlement(
     node_total_bytes: int,
     online_count: int,
     ip_conns=None,
+    conns=None,
 ):
     """把结算增量、用户在线状态、节点统计 POST 到 /api/agent/traffic（v2 格式）。
-    settled 里是「自上次中心确认以来的增量字节」，中心直接累加，不做计数器差值。"""
+    settled 里是「自上次中心确认以来的增量字节」，中心直接累加，不做计数器差值。
+    conns 是各 uuid 当前并发连接数（xray online 计数），中心做共享检测用——
+    hy2 无 per-user 并发计数，纯 hy2 用户缺省不上报，中心按无并发处理。"""
     # api_url 形如 .../agent/config，改成 .../agent/traffic
     traffic_url = api_url.rsplit("/", 1)[0] + "/traffic"
     payload = json.dumps({
@@ -776,6 +786,8 @@ def report_settlement(
         "online_count": online_count,
         # 接入 IP 连接计数（本结算周期内累计），中心按比例估算各 IP 流量
         "ip_conns": ip_conns or {},
+        # 各 uuid 当前并发连接数（>0 的条目），中心按 token 聚合做共享检测
+        "conns": conns or {},
         # 计费口径：只计下行。中心检测到口径变化时会重置基线，避免重复计费
         "billing": "downlink",
     }).encode("utf-8")
@@ -1000,10 +1012,10 @@ def main():
             # 用户级与节点级统计共用一次 statsquery（原来各调一次，每周期白跑一遍 gRPC）
             raw_stats = query_stats_raw(xray_bin, xray_api)
             if raw_stats is None:
-                traffic, user_online = None, {}
+                traffic, user_online, user_conns = None, {}, {}
                 node_total_bytes, online_count = 0, 0
             else:
-                traffic, user_online = parse_user_stats(raw_stats)
+                traffic, user_online, user_conns = parse_user_stats(raw_stats)
                 node_total_bytes, online_count = parse_node_stats(raw_stats)
             # Hy2 每周期计数器（未部署/端点异常时为 None，本轮跳过合并，不丢量）
             hy2_traffic = collect_hy2_stats(hy2_stats_url)
@@ -1037,9 +1049,11 @@ def main():
                 # 新计数器全量重计（双重计费）
                 traffic = {}
                 user_online = {}
+                user_conns = {}
             else:
                 traffic = {u: b for u, b in traffic.items() if u in allowed}
                 user_online = {u: o for u, o in user_online.items() if u in allowed}
+                user_conns = {u: n for u, n in user_conns.items() if u in allowed}
 
                 for u, counter in traffic.items():
                     e = ledger.entry(u)
@@ -1135,6 +1149,7 @@ def main():
                     report_resp = report_settlement(
                         api_url, node_key, merged, user_online,
                         node_total_bytes, online_count, merged_conns,
+                        user_conns,
                     )
                     if report_resp.get("ok"):
                         for u, b in merged.items():

@@ -4,13 +4,17 @@ import { fulfillOrder, type WaitUntilCtx } from "../lib/issue-token";
 import { resetPenalty } from "../lib/reset-penalty";
 import type { Env } from "../types";
 
-/** 内存版 KV namespace（Map 实现 get/put/delete） */
+/** 内存版 KV namespace（Map 实现 get/put/delete/list，续费解锁链路 listTokensByContact 需要 list） */
 const mockNs = () => {
   const store = new Map<string, string>();
   const ns = {
     get: vi.fn(async (key: string) => store.get(key) ?? null),
     put: vi.fn(async (key: string, value: string) => void store.set(key, value)),
     delete: vi.fn(async (key: string) => void store.delete(key)),
+    list: vi.fn(async ({ prefix, cursor }: { prefix?: string; cursor?: string }) => {
+      const keys = [...store.keys()].filter((k) => !prefix || k.startsWith(prefix)).map((name) => ({ name }));
+      return { keys, list_complete: true, cursor: cursor ?? "" };
+    }),
   } as unknown as KVNamespace;
   return { store, ns };
 };

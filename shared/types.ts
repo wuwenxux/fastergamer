@@ -121,6 +121,13 @@ export interface Token {
   abuse_window_bytes?: number;
   /** 暂停截止时间（unix 毫秒，= 窗口起点 + 24h）；0/缺省表示未暂停。授权快照生成时排除暂停未到期的 token */
   abuse_suspended_until?: number;
+  /** 共享检测暂停时间（unix 毫秒）：并发连接数持续超标（疑似订阅链接被多人共享）后置位，
+   *  授权快照生成侧剔除（无自动到期，只能续费或管理端清除后恢复）。0/缺省 = 正常 */
+  share_suspended_at?: number;
+  /** 最近一次共享警告邮件时间（unix 毫秒）：7 天冷却期内再犯直接暂停，超过则重新警告 */
+  share_warned_at?: number;
+  /** 连续超标记录：最近一次超标时间 + 连续次数。超过 30 分钟未再超标则重新计数 */
+  share_conn_strikes?: { at: number; count: number };
   /** 流量速率窗口起点（unix 毫秒），用于暴增检测 */
   rate_window_start?: number;
   /** 当前速率窗口内新增流量（bytes） */

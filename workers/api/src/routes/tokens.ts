@@ -118,6 +118,8 @@ const toSummary = (token: Token) => ({
   traffic_used_gb: token.traffic_used_gb,
   month_used_bytes: token.month_used_bytes,
   online: token.online,
+  /** 共享检测暂停时间（0/缺省 = 正常）：前端 TokenStatus 展示「已暂停」状态用 */
+  share_suspended_at: token.share_suspended_at,
   restricted: true as const,
 });
 

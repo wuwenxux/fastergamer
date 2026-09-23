@@ -12,6 +12,7 @@ import { newTokenId } from "./ids";
 import { currentMonthKey } from "./nodes";
 import { rewardReferrerOnPayment, consumeCredit } from "./referral";
 import { pushAuthRefresh } from "./authpush";
+import { unlockShareSuspendedByContact } from "./share-guard";
 import { siteUrl } from "./site-url";
 import type { Env } from "../types";
 
@@ -248,6 +249,8 @@ export const fulfillOrder = async (
     order.token_id = upgraded.id;
     order.paid_at = Date.now();
     await saveOrder(env, order);
+    // 续费/升级自动解锁：同 contact 名下被共享检测暂停的 token 恢复服务
+    await unlockShareSuspendedByContact(env, order.contact);
     ctx.waitUntil(pushAuthRefresh(env)); // 配额/状态变化立即同步各节点
     return { token: upgraded, already: false };
   }
@@ -257,8 +260,10 @@ export const fulfillOrder = async (
   order.token_id = token.id;
   order.paid_at = Date.now();
   await saveOrder(env, order);
+  // 续费自动解锁：同 contact 名下被共享检测暂停的旧 token 恢复服务（新发货路径）
+  const shareUnlocked = await unlockShareSuspendedByContact(env, order.contact);
   // 试用转正合并会吊销激活中的体验 token → 授权名单收缩，立即同步各节点
-  if (token.bonus_ms) ctx.waitUntil(pushAuthRefresh(env));
+  if (token.bonus_ms || shareUnlocked) ctx.waitUntil(pushAuthRefresh(env));
 
   // 防线 2：发货后对账自愈。订单上 token_id 指向别人且那个 token 真实存在 →
   // 本次是竞态 loser（锁因 KV 读延迟没拦住）：清理刚发的游离 token，返回胜者的 token。

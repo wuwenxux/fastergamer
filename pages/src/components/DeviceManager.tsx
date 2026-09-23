@@ -129,6 +129,12 @@ export default function DeviceManager({
         发现陌生 IP 可在上方封禁。
       </p>
 
+      {token.share_suspended_at && (
+        <p className="text-sm sm:text-xs text-orange-400">
+          服务暂停期间，所有设备（含主设备）的连接都会被节点拒绝；续费任意套餐后自动恢复，设备配置不受影响。
+        </p>
+      )}
+
       <div className="space-y-2">
         {/* 主设备行：流量未按主设备单独计量故不显示用量；订阅链接在上方 TokenStatus，不可解绑/改名 */}
         <div className="flex items-center justify-between rounded-lg border border-slate-700 bg-slate-900 px-3 py-2">

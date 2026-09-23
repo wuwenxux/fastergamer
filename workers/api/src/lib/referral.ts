@@ -240,6 +240,9 @@ export const tryAutoRenewWithBalance = async (env: Env, email: string): Promise<
     result.newExpiresAt = target.expires_at;
   }
   if (result.renewed) {
+    // 自动续期同样是续费：顺带解锁共享检测暂停（调用方在 renewed 时推送授权刷新）
+    delete target.share_suspended_at;
+    delete target.share_conn_strikes;
     await saveToken(env, target);
     await saveCredit(env, email, credit);
   }

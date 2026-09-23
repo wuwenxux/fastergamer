@@ -14,6 +14,7 @@ import { checkNodeBudget, checkTokenRisks, updateSpikeWindow, sendSpikeAlert, no
 import { checkTrialAbuse, applyAbuseWindow } from "../lib/abuse";
 import { getAuthSnapshot, TRAFFIC_GRACE_MS } from "../lib/authsnapshot";
 import { pushAuthRefresh } from "../lib/authpush";
+import { evaluateShareConns } from "../lib/share-guard";
 import type { Env } from "../types";
 
 export const agentRoutes = new Hono<{ Bindings: Env }>();
@@ -376,17 +377,21 @@ agentRoutes.post("/traffic", async (c) => {
     online_count?: number;
     billing?: string;
     ip_conns?: Record<string, Record<string, number>>;
+    /** uuid → 当前并发连接数（xray online 计数），共享检测用 */
+    conns?: Record<string, number>;
   } | null;
   const stats = body?.stats ?? {};
   const settled = body?.settled ?? {};
   const online = body?.online ?? {};
   const ipConns = body?.ip_conns ?? {};
+  const shareConns = body?.conns ?? {};
   // 计费口径：默认历史双向计费；agent 上报 downlink 表示只计下行
   const billing = body?.billing === "downlink" ? "downlink" : "sum";
   const now = Date.now();
 
-  // 月度配额需要套餐定义，循环前一次性加载
-  const plans = Object.keys(stats).length + Object.keys(settled).length > 0 ? await getPlans(c.env) : [];
+  // 月度配额与共享检测需要套餐定义，循环前一次性加载
+  const hasWork = Object.keys(stats).length + Object.keys(settled).length + Object.keys(shareConns).length > 0;
+  const plans = hasWork ? await getPlans(c.env) : [];
   const plansById = new Map(plans.map((p) => [p.id, p]));
 
   // 有授权相关变更（新耗尽/宽限结束过期/预支提前到期）时，结束后推送全节点立即刷新
@@ -533,6 +538,21 @@ agentRoutes.post("/traffic", async (c) => {
       await savePresenceIfChanged(c.env, token.uuid, presenceBase, presence);
     }
   });
+
+  // 共享检测：conns 按 token 聚合（主 uuid + 设备槽位并发数求和，settleByToken 复用
+  // uuid→token 分组与 active 过滤），与套餐设备上限比较，连续超标按警告/暂停处置
+  // （见 lib/share-guard.ts）。暂停返回 authChanged，统一走下方推送。
+  if (Object.keys(shareConns).length > 0) {
+    const totals = new Map<string, { token: Token; total: number }>();
+    await settleByToken(c.env, Object.entries(shareConns), async (uuid, found, n) => {
+      const agg = totals.get(found.token.uuid) ?? { token: found.token, total: 0 };
+      agg.total += n;
+      totals.set(found.token.uuid, agg);
+    });
+    for (const { token, total } of totals.values()) {
+      if (await evaluateShareConns(c.env, token, total, plansById, now)) authChanged = true;
+    }
+  }
 
   // 更新节点级总流量与在线连接数（含月度账期记账与配额检查）
   // 动态状态写 nodestat:<id> 单键，避免多节点并发写整表互相覆盖。

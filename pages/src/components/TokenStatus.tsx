@@ -1,8 +1,8 @@
 import { useEffect, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { QRCodeSVG } from "qrcode.react";
 import { isTrialPlan, type Order, type Plan, type Token } from "../../../shared/types";
-import { STATUS_COLOR, STATUS_LABEL } from "../lib/status";
+import { SHARE_SUSPENDED_COLOR, SHARE_SUSPENDED_LABEL, STATUS_COLOR, STATUS_LABEL } from "../lib/status";
 import { api, type TokenView } from "../services/api";
 import { copyText } from "../utils/clipboard";
 import { usePolling } from "../utils/polling";
@@ -100,6 +100,9 @@ export default function TokenStatus({ token }: { token: TokenView }) {
     current.status === "active" && current.expires_at !== undefined && current.expires_at <= now
       ? "expired"
       : current.status;
+  // 共享嫌疑暂停：独立于 status/到期口径（暂停≠到期），徽标与提示条优先级最高，倒计时/在线判定不联动
+  const shareSuspended = !!current.share_suspended_at;
+  const navigate = useNavigate();
 
   // 一键导入：按平台给出对应客户端的 deep link。订阅链接本身带 UA 自适应
   // （Clash UA 出 YAML、sing-box UA 出 JSON），deep link 直接传同一 URL 即可
@@ -335,6 +338,18 @@ export default function TokenStatus({ token }: { token: TokenView }) {
     }
   };
 
+  // 去续费：购买页从 localStorage 的 fg_contact 预填邮箱，先把 token 的联系方式带过去（同口径参考 Tokens 页下单流程）
+  const goRenew = () => {
+    if (current.contact) {
+      try {
+        localStorage.setItem("fg_contact", current.contact);
+      } catch {
+        /* Safari 隐私模式等场景 localStorage 不可写，忽略即可 */
+      }
+    }
+    navigate("/buy");
+  };
+
   return (
     <div className="rounded-2xl border border-slate-700 bg-slate-900 p-6 space-y-4">
       <div className="flex items-center justify-between flex-wrap gap-2">
@@ -343,9 +358,11 @@ export default function TokenStatus({ token }: { token: TokenView }) {
           <div className="font-mono text-[15px] sm:text-sm">{current.id}</div>
         </div>
         <span
-          className={`rounded-full border px-3 py-1 text-xs font-medium ${STATUS_COLOR[displayStatus]}`}
+          className={`rounded-full border px-3 py-1 text-xs font-medium ${
+            shareSuspended ? SHARE_SUSPENDED_COLOR : STATUS_COLOR[displayStatus]
+          }`}
         >
-          {STATUS_LABEL[displayStatus]}
+          {shareSuspended ? SHARE_SUSPENDED_LABEL : STATUS_LABEL[displayStatus]}
         </span>
         {isOnline && (
           <span className="rounded-full bg-sky-500/20 text-sky-300 border border-sky-500/40 px-3 py-1 text-xs font-medium">
@@ -353,6 +370,21 @@ export default function TokenStatus({ token }: { token: TokenView }) {
           </span>
         )}
       </div>
+
+      {shareSuspended && (
+        <div className="rounded-xl border border-orange-500/50 bg-orange-500/10 p-4 space-y-3">
+          <p className="text-[15px] sm:text-sm font-medium text-orange-300">检测到账号共享，服务已暂停</p>
+          <p className="text-sm leading-relaxed sm:text-xs text-slate-300">
+            检测到该账号存在多人同时使用的行为，服务已暂停。续费任意套餐后将自动恢复。
+          </p>
+          <button
+            onClick={goRenew}
+            className="w-full rounded-lg bg-orange-500 py-3 sm:py-2.5 font-medium hover:bg-orange-400 transition-colors"
+          >
+            去续费
+          </button>
+        </div>
+      )}
 
       {current.contact && (
         <div className="rounded-lg bg-amber-500/10 border border-amber-500/30 p-3">
@@ -459,6 +491,12 @@ export default function TokenStatus({ token }: { token: TokenView }) {
             <div className="text-sky-300 text-sm sm:text-xs mb-1 font-medium">订阅链接（一键导入见下方按钮，或复制后粘贴到 Clash / sing-box / Stash）</div>
             <div className="font-mono text-[15px] sm:text-sm break-all text-sky-200 rounded-lg border border-sky-500/50 bg-sky-500/15 p-2.5 select-all">{subUrl}</div>
           </div>
+
+          {shareSuspended && (
+            <p className="text-sm leading-relaxed sm:text-xs text-orange-400">
+              ⏸ 服务暂停期间，节点会拒绝该凭证的连接；续费后原订阅链接继续可用，无需重新导入或更换。
+            </p>
+          )}
 
           <p className="text-sm leading-relaxed sm:text-xs text-slate-300">
             这个链接<span className="text-sky-300">不是用浏览器直接打开的</span>，而是 Clash 用来下载配置的地址。复制链接 → 打开 Clash → 粘贴到「订阅/Profiles」里即可自动导入节点。

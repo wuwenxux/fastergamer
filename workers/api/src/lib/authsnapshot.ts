@@ -74,6 +74,8 @@ export async function computeAuthSnapshot(env: Env) {
       token.status === "active" &&
       // 机器标记 token 每日定额超限：暂停期内从授权名单摘除，窗口过期后自然恢复
       (token.abuse_suspended_until ?? 0) <= now &&
+      // 共享检测暂停：无自动到期，续费或管理端清除 share_suspended_at 后才恢复
+      !token.share_suspended_at &&
       (token.expires_at ?? 0) > now &&
       withinTrafficAllowance(token, now)
     ) {

@@ -380,13 +380,15 @@ adminRoutes.delete("/tokens/:id/devices/:deviceId", async (c) => {
 
 /**
  * PUT /api/admin/tokens/:id —— 管理员调整 token 属性（售后用）
- * body: { max_devices?: number, extend_days?: number, reactivate?: boolean }
+ * body: { max_devices?: number, extend_days?: number, reactivate?: boolean, clear_share_suspension?: boolean }
  * - max_devices：token 级设备上限，覆盖套餐值（不影响同套餐其他用户）
  * - extend_days：有效期设为 当前时间 + N 天（base_expires_at 同步；months_borrowed 不动）。
  *   延长已过期的 token 时自动恢复为 active 并推送授权刷新（延期就是为了恢复服务，
  *   只改时间不改状态等于没延）
  * - reactivate：显式为 true 时，revoked 的 token 也随延期恢复 active。
  *   revoked 通常对应滥用/退款，恢复必须是管理员的明确意图，不随延期静默发生
+ * - clear_share_suspension：显式为 true 时，清除共享检测暂停（误伤救济），
+ *   立即推送授权刷新让节点白名单加回
  */
 adminRoutes.put("/tokens/:id", async (c) => {
   const token = await getTokenById(c.env, c.req.param("id"));
@@ -396,6 +398,7 @@ adminRoutes.put("/tokens/:id", async (c) => {
     max_devices?: number;
     extend_days?: number;
     reactivate?: boolean;
+    clear_share_suspension?: boolean;
   } | null;
   if (!body) return c.json({ ok: false, error: "invalid body" }, 400);
 
@@ -422,12 +425,25 @@ adminRoutes.put("/tokens/:id", async (c) => {
       c.executionCtx.waitUntil(pushAuthRefresh(c.env));
     }
   }
+  if (body.clear_share_suspension === true && token.share_suspended_at) {
+    delete token.share_suspended_at;
+    delete token.share_conn_strikes;
+    changed = true;
+    // 误伤救济：立即恢复授权，节点白名单加回
+    c.executionCtx.waitUntil(pushAuthRefresh(c.env));
+  }
   if (!changed) return c.json({ ok: false, error: "nothing to update" }, 400);
 
   await saveToken(c.env, token);
   return c.json({
     ok: true,
-    data: { id: token.id, status: token.status, max_devices: token.max_devices, expires_at: token.expires_at },
+    data: {
+      id: token.id,
+      status: token.status,
+      max_devices: token.max_devices,
+      expires_at: token.expires_at,
+      share_suspended_at: token.share_suspended_at,
+    },
   });
 });
 
