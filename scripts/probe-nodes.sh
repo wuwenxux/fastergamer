@@ -24,12 +24,55 @@ alert() { # 标题 内容
 }
 
 # name|host|port 逐行（从中心 API 取实时节点清单）
-curl -s --max-time 10 -H "x-admin-key: $ADMIN_KEY" "$NODES_API" | python3 -c "
+# 清单拉取失败（网络错误/解析失败/清单为空）时节点状态页数据会停摆但无人知晓，
+# 必须告警：复用 /api/admin/alert 邮件通知站长，标志文件去重（只在故障发生/恢复时各报一次）
+FETCH_FAIL=0
+NODES_RAW=$(curl -s --max-time 10 -H "x-admin-key: $ADMIN_KEY" "$NODES_API") || FETCH_FAIL=1
+NODE_LIST=""
+if [ "$FETCH_FAIL" = 0 ]; then
+  NODE_LIST=$(printf '%s' "$NODES_RAW" | python3 -c "
 import json, sys
-for n in json.load(sys.stdin).get('data') or []:
+try:
+    data = json.load(sys.stdin).get('data') or []
+except Exception:
+    sys.exit(1)
+for n in data:
     if n.get('active'):
         print(f\"{n['name']}|{n['host']}|{n.get('port') or 443}\")
-" | while IFS='|' read -r NAME HOST PORT; do
+") || FETCH_FAIL=1
+fi
+if [ "$FETCH_FAIL" != 0 ] || [ -z "$NODE_LIST" ]; then
+  if [ ! -f "$STATE_DIR/.list-fetch-failed" ]; then
+    alert "节点清单拉取失败" \
+      "probe-nodes.sh 无法从中心获取节点清单（$(date '+%F %T')），节点状态页数据已停摆。请检查中心 API 与本机网络。"
+    touch "$STATE_DIR/.list-fetch-failed"
+  fi
+  echo "✗ 节点清单拉取失败（$(date '+%F %T')），已告警，本次跳过探测" >&2
+  exit 1
+fi
+if [ -f "$STATE_DIR/.list-fetch-failed" ]; then
+  alert "节点清单拉取恢复" "probe-nodes.sh 已恢复从中心获取节点清单（$(date '+%F %T')），节点探测已恢复。"
+  rm -f "$STATE_DIR/.list-fetch-failed"
+fi
+
+# 清理已下线节点的残留状态文件：不在当前清单且超过 7 天未更新
+NOW=$(date +%s)
+for f in "$STATE_DIR"/*; do
+  [ -f "$f" ] || continue
+  base="${f##*/}"
+  key="${base%.reported}"
+  host="${key%-*}"; port="${key##*-}"
+  if printf '%s\n' "$NODE_LIST" | awk -F'|' -v h="$host" -v p="$port" '$2==h && $3==p {found=1} END{exit !found}'; then
+    continue
+  fi
+  mtime=$(stat -c %Y "$f" 2>/dev/null || echo "$NOW")
+  if [ "$mtime" -lt $((NOW - 7 * 86400)) ]; then
+    rm -f "$f"
+    echo "已清理残留状态文件 $base（节点已下线超 7 天）"
+  fi
+done
+
+printf '%s\n' "$NODE_LIST" | while IFS='|' read -r NAME HOST PORT; do
   STATE="$STATE_DIR/$HOST-$PORT"
   FAILS=$(cat "$STATE" 2>/dev/null || echo 0)
 

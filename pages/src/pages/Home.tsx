@@ -1,10 +1,13 @@
 import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import Turnstile, { type TurnstileHandle, type TurnstileState } from "../components/Turnstile";
-import { CLASH_DOWNLOADS, platformMatches, usePlatform } from "../components/ClashGuide";
+import { CLASH_DOWNLOADS, platformMatches, usePlatform } from "../components/platform";
 import { api } from "../services/api";
 
 const REF_KEY = "fg_ref";
+
+// 邮箱格式校验，与下单页（Purchase/PaymentModal）同口径
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 /** 从 URL 捕获推广码（?ref=xxx）存入 localStorage，领取试用/下单时使用 */
 function captureRefCode() {
@@ -133,6 +136,11 @@ function TrialCard() {
 
   const claim = async () => {
     if (ts.enabled && !ts.token) return; // 已启用但验证未通过，按钮已禁用，这里兜底拦 Enter 提交
+    // 前端先校验邮箱格式，与下单页同口径，避免明显无效的领取打到后端
+    if (!EMAIL_RE.test(email.trim())) {
+      setError("请填写真实可用的邮箱，体验凭证将发送到你的邮箱");
+      return;
+    }
     setError("");
     setState("sending");
     try {
@@ -177,7 +185,7 @@ function TrialCard() {
         />
         <button
           onClick={claim}
-          disabled={state === "sending" || (ts.enabled && !ts.token)}
+          disabled={state === "sending" || !EMAIL_RE.test(email.trim()) || (ts.enabled && !ts.token)}
           className="rounded-lg bg-sky-500 px-5 py-3 sm:py-2.5 text-base sm:text-sm font-medium hover:bg-sky-400 transition-colors disabled:opacity-50"
         >
           {state === "sending" ? "领取中…" : "免费领取"}

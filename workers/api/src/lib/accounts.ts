@@ -3,7 +3,8 @@
  *
  * 账号体系已简化为「邮箱即身份」：没有密码/注册，用户点邮件里的 magic
  * 链接换取长期会话。会话与 ticket 都存 TOKENS namespace。
- * 注意：KV TTL 不作为过期依据，过期时间一律手动判断。
+ * 写入时直接带 KV TTL 兜底清理（永不被访问的过期键不残留）；
+ * 读取时的手动过期判断保留作语义兜底（KV TTL 不保证精确准时，且语义口径以这里为准）。
  */
 import { KV, type MagicTicket } from "../../../../shared/types";
 import type { Env } from "../types";
@@ -23,7 +24,9 @@ interface SessionData {
 export const createSession = async (env: Env, email: string): Promise<string> => {
   const token = crypto.randomUUID() + crypto.randomUUID(); // 72 位 hex，足够不可猜
   const data: SessionData = { email, created_at: Date.now() };
-  await env.TOKENS.put(KV.SESSION + token, JSON.stringify(data));
+  await env.TOKENS.put(KV.SESSION + token, JSON.stringify(data), {
+    expirationTtl: Math.ceil(SESSION_TTL_MS / 1000),
+  });
   return token;
 };
 
@@ -57,7 +60,9 @@ export const createMagicTicket = async (
 ): Promise<string> => {
   const ticket = crypto.randomUUID() + crypto.randomUUID();
   const data: MagicTicket = { email, token_id: tokenId, created_at: Date.now(), purpose };
-  await env.TOKENS.put(KV.MAGIC + ticket, JSON.stringify(data));
+  await env.TOKENS.put(KV.MAGIC + ticket, JSON.stringify(data), {
+    expirationTtl: Math.ceil(MAGIC_TTL_MS / 1000),
+  });
   return ticket;
 };
 

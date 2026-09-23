@@ -174,12 +174,20 @@ export const availableDiscount = async (env: Env, email: string): Promise<number
 export const orderDiscount = (availableCny: number, priceCny: number): number =>
   Math.min(availableCny, Math.floor(priceCny / DISCOUNT_PER_CREDIT) * DISCOUNT_PER_CREDIT);
 
-/** 下单时消耗额度（按实际抵扣金额折算个数） */
-export const consumeCredit = async (env: Env, email: string, discountCny: number): Promise<void> => {
-  if (discountCny <= 0) return;
+/**
+ * 发货成功时消耗额度（按实际抵扣金额折算个数）。
+ * check-and-set 收在本函数内：重读最新 credit 并校验可用个数，不足则返回 false 不写库，
+ * 调用方据此降级/告警。这样 availableDiscount（读）与扣减之间不再跨函数，
+ * 同一 session 并发两单不能共用同一笔额度（KV 无 CAS，极端并发仍有理论窗口，可接受）。
+ */
+export const consumeCredit = async (env: Env, email: string, discountCny: number): Promise<boolean> => {
+  if (discountCny <= 0) return true;
   const credit = await getCredit(env, email);
-  credit.used += Math.round(discountCny / DISCOUNT_PER_CREDIT);
+  const need = Math.round(discountCny / DISCOUNT_PER_CREDIT);
+  if (credit.earned - credit.used < need) return false;
+  credit.used += need;
   await saveCredit(env, email, credit);
+  return true;
 };
 
 /** 订单取消时归还额度 */

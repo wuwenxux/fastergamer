@@ -7,7 +7,7 @@ import { escapeHtml } from "../lib/escape-html";
 import { getOrder, getPlans, saveOrder } from "../lib/kv";
 import { newOrderId } from "../lib/ids";
 import { fulfillOrder } from "../lib/issue-token";
-import { availableDiscount, consumeCredit, orderDiscount, recordReferral } from "../lib/referral";
+import { availableDiscount, orderDiscount, recordReferral } from "../lib/referral";
 import { notifyAdmin } from "../lib/risk-notify";
 import type { Env } from "../types";
 
@@ -69,13 +69,14 @@ ordersRoutes.post("/", async (c) => {
 
   // 推广减免：登录 session 邮箱与下单邮箱一致时，用可用额度抵扣（每额度 10 元，可叠加）。
   // 抵扣金额向下取整到 10 的倍数，与 consumeCredit 按个数记账对齐，避免零头漏损。
+  // 这里只试算并记录在订单上，不扣额度——扣减挪到发货成功路径（fulfillOrder 内），
+  // 避免用户放弃支付/发货失败时额度被白扣（无归还路径）。
   const account = await getSessionAccount(c.env, c.req.header("authorization"));
   if (account && account.email === order.contact!.toLowerCase()) {
     const discount = orderDiscount(await availableDiscount(c.env, account.email), plan.price_cny);
     if (discount > 0) {
       order.discount_cny = discount;
       order.payable_cny = plan.price_cny - discount;
-      await consumeCredit(c.env, account.email, discount);
     }
   }
   const payable = order.payable_cny ?? plan.price_cny;

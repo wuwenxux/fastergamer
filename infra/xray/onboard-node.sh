@@ -162,13 +162,25 @@ sleep 40
 $SSH_WAFER "$SUDO journalctl -u vpn-agent -n 30 --no-pager | grep -q 'active uuids'" \
   && echo "✓ agent 配置同步正常" || echo "✗ 未检测到配置同步，请 journalctl -u vpn-agent 排查"
 $SSH_WAFER "systemctl is-active xray vpn-agent caddy" | tr '\n' ' '; echo
-UUID=$(curl -s -H "x-admin-key: $ADMIN_KEY" "$API_BASE/api/admin/tokens" | node -pe "
-  const ts = JSON.parse(require('fs').readFileSync(0, 'utf8')).data ?? [];
-  const t = ts.find((t) => t.status === 'active' && (t.expires_at ?? 0) > Date.now());
-  t ? t.uuid : '';
-")
-[ -n "$UUID" ] && curl -s --max-time 10 "$API_BASE/api/sub?uuid=$UUID" | grep -q "$NAME" \
-  && echo "✓ 订阅已包含 $NAME" || echo "✗ 订阅未包含 $NAME（或无 active token）"
+# 验证订阅：用专用拨测 token（contact=settle-test@fastergamer.cn，FG_PROBE_TOKEN 可指定），
+# 不用真实用户凭证（避免测试流量计入用户配额/污染画像/误触发 abuse 限速）
+if [ -n "${FG_PROBE_TOKEN:-}" ]; then
+  UUID="$FG_PROBE_TOKEN"
+else
+  UUID=$(curl -s --max-time 15 -H "x-admin-key: $ADMIN_KEY" "$API_BASE/api/admin/tokens" | node -pe "
+    const ts = JSON.parse(require('fs').readFileSync(0, 'utf8')).data ?? [];
+    const t = ts.find((t) => t.status === 'active' && (t.contact ?? '').toLowerCase() === 'settle-test@fastergamer.cn');
+    t ? t.uuid : '';
+  " || true)
+fi
+if [ -z "$UUID" ]; then
+  echo "✗ 没有找到拨测 token（contact=settle-test@fastergamer.cn），跳过订阅验证"
+  echo "  请先在中心创建专用拨测 token，或用 FG_PROBE_TOKEN=<uuid> 指定后重跑验证"
+elif curl -s --max-time 10 "$API_BASE/api/sub?uuid=$UUID" | grep -q "$NAME"; then
+  echo "✓ 订阅已包含 $NAME"
+else
+  echo "✗ 订阅未包含 $NAME"
+fi
 
 echo
 echo "===== 完成：$NODE_ID ($NAME, $DOMAIN, $IP) 已接入 ====="

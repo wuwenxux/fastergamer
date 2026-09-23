@@ -5,11 +5,12 @@ import {
   getTokenByAnyUuid,
   getPlans,
   getTokenPresence,
+  mapBatched,
   savePresenceIfChanged,
   mergeTokenSettlement,
   type TokenSettlementPatch,
 } from "../lib/kv";
-import { checkNodeBudget, checkTokenRisks, updateSpikeWindow, sendSpikeAlert, notifyIpChange, resolveIpLocationChange } from "../lib/risk-notify";
+import { checkNodeBudget, checkTokenRisks, updateSpikeWindow, sendSpikeAlert, notifyIpChange, resolveConcurrentGeoConflict, resolveIpLocationChange } from "../lib/risk-notify";
 import { checkTrialAbuse, applyAbuseWindow } from "../lib/abuse";
 import { getAuthSnapshot, TRAFFIC_GRACE_MS } from "../lib/authsnapshot";
 import { pushAuthRefresh } from "../lib/authpush";
@@ -61,6 +62,54 @@ function detectIpChange(presence: Presence, key: string, conns: Record<string, n
 
 /** nodestat 动态状态的最小写入间隔：流量累计按计数器差值计算，跳过中间写不丢量 */
 export const NODE_STAT_WRITE_MIN_INTERVAL_MS = 30 * 60_000;
+
+/** 并发接入源判定的时间窗口：断联结算约 90 秒内到达，窗口内最近活跃的 IP 视为仍可能在线 */
+const CONCURRENT_IP_WINDOW_MS = 30 * 60_000;
+
+/** 聚合本结算周期内某 token 各 uuid 上报出现过的接入 IP（跨 uuid 合并，供多地并发判定） */
+function addCycleIps(cycleIps: Map<string, Set<string>>, tokenUuid: string, conns: Record<string, number>) {
+  const set = cycleIps.get(tokenUuid) ?? new Set<string>();
+  for (const ip of Object.keys(conns)) set.add(ip);
+  cycleIps.set(tokenUuid, set);
+}
+
+/**
+ * 按 token 分组的有界并发结算：先并发解析 uuid → token（只读，任意并发安全），
+ * 再把同一 token 的多个上报 uuid（主 uuid + 设备槽位）聚成一组；组间分批并发（每批 10 组），
+ * 组内串行。并行安全依据：不同 token 的 KV 主键/presence 键互不相干，结算补丁经
+ * mergeTokenSettlement 重读-合并只覆盖结算字段，跨 token 无共享状态；
+ * 同一 token 必须组内串行——同主键的读-改-写并发会互相覆盖丢量。
+ * 解析不到或非 active 的条目与旧串行版一样直接跳过（ipConns 兜底循环会再看到它们）。
+ */
+async function settleByToken<T>(
+  env: Env,
+  entries: [string, T][],
+  run: (uuid: string, found: { token: Token; device?: Device }, data: T) => Promise<void>
+): Promise<void> {
+  // 并发解析仅用于分组与过滤（哪个 uuid 属于哪个 token、是否 active），结果不进结算
+  const resolved = await mapBatched(entries, async ([uuid, data]) => ({
+    uuid,
+    data,
+    found: await getTokenByAnyUuid(env, uuid),
+  }));
+  const groups = new Map<string, [string, T][]>();
+  for (const r of resolved) {
+    if (!r.found || r.found.token.status !== "active") continue;
+    const list = groups.get(r.found.token.uuid) ?? [];
+    list.push([r.uuid, r.data]);
+    groups.set(r.found.token.uuid, list);
+  }
+  // 组间分批并发；组内逐 uuid 重读最新副本再结算——与旧串行版语义一致：
+  // 同 token 的上一笔结算落库后下一笔必须看到，否则 traffic_used_gb 等
+  // 从 traffic_total_by_node 派生的标量会基于过期副本少算（计数器按键级合并丢不了，派生标量会错）
+  await mapBatched([...groups.values()], async (group) => {
+    for (const [uuid, data] of group) {
+      const found = await getTokenByAnyUuid(env, uuid);
+      if (!found || found.token.status !== "active") continue;
+      await run(uuid, found, data);
+    }
+  });
+}
 
 /**
  * GET /api/agent/config —— 节点 Agent 拉取本节点配置
@@ -129,7 +178,8 @@ async function applyTrafficDelta(
   billing: "sum" | "downlink",
   conns: Record<string, number>,
   plansById: Map<string, Plan>,
-  now: number
+  now: number,
+  ipChangePending: Map<string, Token>
 ): Promise<boolean> {
   const { token, device } = found;
   // 授权相关变更标记：新耗尽 / 宽限期结束过期 / 预支提前到期时置位
@@ -276,11 +326,12 @@ async function applyTrafficDelta(
   const notifyBase = JSON.stringify(token.notify_log ?? {});
   if (spike) await sendSpikeAlert(env, token);
   if (changedIps.length > 0) {
-    // IP 变了再细分是否「接入地点变了」：同城动态 IP 漂移只更新基线，不打扰客户
-    const loc = await resolveIpLocationChange(presence, nodeKey, changedIps);
+    // 接入地址变更只更新 active_geo 基线（同城漂移/出差漫游都不打扰客户）；
+    // 是否发安全提醒由调用方收齐本 token 全部 uuid 的周期 IP 后统一判定（多地并发在线才发）
+    await resolveIpLocationChange(presence, nodeKey, changedIps);
     // active_geo 基线可能更新，补一次「有变化才写」
     await savePresenceIfChanged(env, token.uuid, presenceBase, presence);
-    if (loc.changed) await notifyIpChange(env, token, changedIps, loc);
+    ipChangePending.set(token.uuid, token);
   }
   // 客户要求只保留交易/安全类邮件：月度配额 80% 预警（month80）与预支提醒（borrow_N）已下线
   // 风险检测：流量耗尽 / 多设备时提醒客户（幂等，每类只发一次）
@@ -340,28 +391,35 @@ agentRoutes.post("/traffic", async (c) => {
 
   // 有授权相关变更（新耗尽/宽限结束过期/预支提前到期）时，结束后推送全节点立即刷新
   let authChanged = false;
+  // 本周期各 token 出现过的接入 IP（按 token.uuid 跨 uuid 聚合）与有 IP 变更的 token，
+  // 供循环结束后统一做「多地并发在线」邮件判定
+  const cycleIps = new Map<string, Set<string>>();
+  const ipChangePending = new Map<string, Token>();
 
-  // v2 结算制：settled 里是 agent 本地账本算好的增量，直接累加
-  for (const [uuid, bytes] of Object.entries(settled)) {
-    const delta = Math.max(0, Math.round(bytes));
-    if (delta <= 0) {
-      // 有连接但零增量：保留 ipConns 交给下方「只记连接数」的兜底循环，别丢 IP 统计
-      continue;
+  // v2 结算制：settled 里是 agent 本地账本算好的增量，直接累加。
+  // 有连接但零增量的 uuid 不在这里消费：保留 ipConns 交给下方「只记连接数」的兜底循环，别丢 IP 统计
+  await settleByToken(
+    c.env,
+    Object.entries(settled)
+      .map(([uuid, bytes]) => [uuid, Math.max(0, Math.round(bytes))] as [string, number])
+      .filter(([, delta]) => delta > 0),
+    async (uuid, found, delta) => {
+      addCycleIps(cycleIps, found.token.uuid, ipConns[uuid] ?? {});
+      if (
+        await applyTrafficDelta(
+          c.env, node, found, uuid, delta, billing, ipConns[uuid] ?? {}, plansById, now, ipChangePending
+        )
+      ) {
+        authChanged = true;
+      }
+      delete ipConns[uuid];
     }
-    const found = await getTokenByAnyUuid(c.env, uuid);
-    if (!found || found.token.status !== "active") continue;
-    authChanged =
-      (await applyTrafficDelta(
-        c.env, node, found, uuid, delta, billing, ipConns[uuid] ?? {}, plansById, now
-      )) || authChanged;
-    delete ipConns[uuid];
-  }
+  );
 
   // 旧版格式：stats 里是 xray 计数器累计值，中心按差值算增量（滚动升级兼容，全量切换后可删）
-  for (const [uuid, bytes] of Object.entries(stats)) {
-    const found = await getTokenByAnyUuid(c.env, uuid);
-    if (!found || found.token.status !== "active") continue;
+  await settleByToken(c.env, Object.entries(stats), async (uuid, found, bytes) => {
     const { token } = found;
+    addCycleIps(cycleIps, token.uuid, ipConns[uuid] ?? {});
 
     token.traffic_by_node = token.traffic_by_node ?? {};
     const nodeKey = found.device ? `${node.id}:${uuid}` : node.id;
@@ -370,17 +428,19 @@ agentRoutes.post("/traffic", async (c) => {
     const delta = bytes >= prev ? bytes - prev : bytes;
     token.traffic_by_node[nodeKey] = bytes;
 
-    authChanged =
-      (await applyTrafficDelta(
-        c.env, node, found, uuid, delta, billing, ipConns[uuid] ?? {}, plansById, now
-      )) || authChanged;
+    if (
+      await applyTrafficDelta(
+        c.env, node, found, uuid, delta, billing, ipConns[uuid] ?? {}, plansById, now, ipChangePending
+      )
+    ) {
+      authChanged = true;
+    }
     delete ipConns[uuid];
-  }
+  });
 
-  // 本周期有连接但无流量增量的 uuid（上面两个循环未覆盖）：只记连接数与最近接入时间（写 presence）
-  for (const [uuid, conns] of Object.entries(ipConns)) {
-    const found = await getTokenByAnyUuid(c.env, uuid);
-    if (!found || found.token.status !== "active") continue;
+  // 本周期有连接但无流量增量的 uuid（上面两个阶段未覆盖）：只记连接数与最近接入时间（写 presence）
+  await settleByToken(c.env, Object.entries(ipConns), async (uuid, found, conns) => {
+    addCycleIps(cycleIps, found.token.uuid, conns);
     const presence = await getTokenPresence(c.env, found.token);
     const presenceBase: Presence = JSON.parse(JSON.stringify(presence));
     attributeIpTraffic(presence, conns, 0, now);
@@ -388,16 +448,30 @@ agentRoutes.post("/traffic", async (c) => {
     const changedIps = detectIpChange(presence, ipKey, conns);
     await savePresenceIfChanged(c.env, found.token.uuid, presenceBase, presence);
     if (changedIps.length > 0) {
-      // 邮件 await 在 presence 写库之后；notify_log 变更按键级合并写回
-      const loc = await resolveIpLocationChange(presence, ipKey, changedIps);
+      // 同 applyTrafficDelta：只更新 active_geo 基线，邮件判定收敛到下方统一通知段
+      await resolveIpLocationChange(presence, ipKey, changedIps);
       await savePresenceIfChanged(c.env, found.token.uuid, presenceBase, presence);
-      if (loc.changed) {
-        const notifyBase = JSON.stringify(found.token.notify_log ?? {});
-        await notifyIpChange(c.env, found.token, changedIps, loc);
-        if (JSON.stringify(found.token.notify_log ?? {}) !== notifyBase) {
-          await mergeTokenSettlement(c.env, found.token.uuid, { notify_log: found.token.notify_log });
-        }
-      }
+      ipChangePending.set(found.token.uuid, found.token);
+    }
+  });
+
+  // 多地并发在线安全提醒：本周期该 token 出现 ≥2 个不同地点的接入源才发邮件（盗用特征）；
+  // 单链接换城市（出差/漫游）与同城多设备（本人新设备）只更新基线，不打扰客户。
+  // 并发集 = 本周期各 uuid 上报 IP ∪ 30 分钟窗口内最近活跃的 IP（兜住跨请求/跨节点场景）。
+  for (const token of ipChangePending.values()) {
+    const presence = await getTokenPresence(c.env, token);
+    const recentIps = Object.entries(presence.traffic_by_ip ?? {})
+      .filter(([, s]) => s.last_seen_at > now - CONCURRENT_IP_WINDOW_MS)
+      .map(([ip]) => ip);
+    const ips = new Set([...(cycleIps.get(token.uuid) ?? []), ...recentIps]);
+    if (ips.size < 2) continue;
+    const result = await resolveConcurrentGeoConflict([...ips]);
+    if (!result.conflict) continue;
+    // 邮件 await 在 presence 写库之后；notify_log 变更按键级合并写回
+    const notifyBase = JSON.stringify(token.notify_log ?? {});
+    await notifyIpChange(c.env, token, result);
+    if (JSON.stringify(token.notify_log ?? {}) !== notifyBase) {
+      await mergeTokenSettlement(c.env, token.uuid, { notify_log: token.notify_log });
     }
   }
 
@@ -407,9 +481,7 @@ agentRoutes.post("/traffic", async (c) => {
   // 多设备判定随之变为「40 分钟内在多个节点有过活跃」，比原来粗，属可接受的口径变化。
   // 在线状态写独立的 presence:{uuid} 键（有变化才写），不再整写 token JSON。
   const MULTI_DEVICE_WINDOW_MS = 40 * 60_000;
-  for (const [uuid, isOnline] of Object.entries(online)) {
-    const found = await getTokenByAnyUuid(c.env, uuid);
-    if (!found || found.token.status !== "active") continue;
+  await settleByToken(c.env, Object.entries(online), async (uuid, found, isOnline) => {
     const { token, device } = found;
     const presence = await getTokenPresence(c.env, token);
     const presenceBase: Presence = JSON.parse(JSON.stringify(presence));
@@ -448,7 +520,7 @@ agentRoutes.post("/traffic", async (c) => {
       }
     } else {
       // 离线：清除该节点的在线记录；窗口内无其他节点在线则判定下线
-      if (presence.online_by_node[node.id] === undefined && !presence.online) continue;
+      if (presence.online_by_node[node.id] === undefined && !presence.online) return;
       delete presence.online_by_node[node.id];
       const activeNodes = Object.entries(presence.online_by_node).filter(
         ([, ts]) => ts > now - MULTI_DEVICE_WINDOW_MS
@@ -460,7 +532,7 @@ agentRoutes.post("/traffic", async (c) => {
       presence.online_updated_at = now;
       await savePresenceIfChanged(c.env, token.uuid, presenceBase, presence);
     }
-  }
+  });
 
   // 更新节点级总流量与在线连接数（含月度账期记账与配额检查）
   // 动态状态写 nodestat:<id> 单键，避免多节点并发写整表互相覆盖。

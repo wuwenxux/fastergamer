@@ -55,7 +55,8 @@ app.get("/api/config", (c) =>
 );
 
 // 敏感接口限流：找回、下单、反馈、登录链接、magic 核销
-app.use("/api/tokens/recover", rateLimit(10, 60_000));
+// 找回/登录链接每次请求都全表扫 KV，在限流之后追加 Turnstile 人机校验挡脚本慢刷
+app.use("/api/tokens/recover", rateLimit(10, 60_000), turnstile);
 // 匿名表单接口在限流之后追加 Turnstile 人机校验（先限流后人机校验，
 // 未配置 TURNSTILE_SECRET_KEY 时 turnstile 中间件自动放行）
 app.use("/api/tokens/trial", rateLimit(3, 60_000), turnstile);

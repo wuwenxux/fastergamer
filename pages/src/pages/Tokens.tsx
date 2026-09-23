@@ -199,7 +199,9 @@ export default function Tokens() {
         (token.restricted ? (
           <RestrictedTokenCard token={token} />
         ) : (
-          <TokenStatus token={token} />
+          // key 强制重挂载：TokenStatus 内部用 useState(token) 持有当前 token，
+          // 切换历史 token 时靠 key 重建，避免展示上一个 token 的订阅链接
+          <TokenStatus key={token.id} token={token} />
         ))}
 
       <ReferralCard />

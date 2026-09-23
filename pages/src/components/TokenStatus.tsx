@@ -2,9 +2,11 @@ import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { QRCodeSVG } from "qrcode.react";
 import { isTrialPlan, type Order, type Plan, type Token } from "../../../shared/types";
+import { STATUS_COLOR, STATUS_LABEL } from "../lib/status";
 import { api, type TokenView } from "../services/api";
 import { copyText } from "../utils/clipboard";
-import { usePlatform } from "./ClashGuide";
+import { usePolling } from "../utils/polling";
+import { usePlatform } from "./platform";
 import DeviceManager from "./DeviceManager";
 import ManualPay from "./ManualPay";
 
@@ -12,27 +14,32 @@ type VerifyResult =
   | { valid: true; nodeCount: number }
   | { valid: false; error: string };
 
-const STATUS_LABEL: Record<Token["status"], string> = {
-  paid: "待激活",
-  active: "使用中",
-  expired: "已过期",
-  revoked: "已撤销",
-};
-
-const STATUS_COLOR: Record<Token["status"], string> = {
-  paid: "bg-amber-500/20 text-amber-300 border-amber-500/40",
-  active: "bg-emerald-500/20 text-emerald-300 border-emerald-500/40",
-  expired: "bg-rose-500/20 text-rose-300 border-rose-500/40",
-  revoked: "bg-slate-600/30 text-slate-400 border-slate-500/40",
-};
+/**
+ * 剩余有效期倒计时：自持 15s 低频 state，避免 1s 定时器带动整张卡片
+ * （二维码 / IP 统计 / 订阅记录排序）每秒重渲染。展示格式与在线判定口径不变。
+ */
+function ExpireCountdown({ expiresAt, status }: { expiresAt: number; status: Token["status"] }) {
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 15_000);
+    return () => clearInterval(t);
+  }, []);
+  const remainingMs = expiresAt - now;
+  const active = status === "active" && remainingMs > 0;
+  const days = Math.max(0, Math.floor(remainingMs / 86_400_000));
+  const hours = Math.max(0, Math.floor((remainingMs % 86_400_000) / 3_600_000));
+  return (
+    <div className={active ? "text-emerald-300 font-semibold" : "text-rose-300"}>
+      {active ? `${days} 天 ${hours} 小时` : "已到期"}
+    </div>
+  );
+}
 
 export default function TokenStatus({ token }: { token: TokenView }) {
   const [current, setCurrent] = useState<TokenView>(token);
   const [copied, setCopied] = useState(false);
+  // 在线判定（90s 窗口）与多设备检测（24h 窗口）都无需秒级精度，30s 刷新即可
   const [now, setNow] = useState(Date.now());
-  const [remainingMs, setRemainingMs] = useState<number>(() =>
-    current.expires_at ? current.expires_at - Date.now() : 0
-  );
   const [verify, setVerify] = useState<VerifyResult | null>(null);
   const [verifying, setVerifying] = useState(false);
   const [preview, setPreview] = useState("");
@@ -65,45 +72,34 @@ export default function TokenStatus({ token }: { token: TokenView }) {
 
   // 升级订单轮询支付状态，管理员确认（置 paid）升级完成后刷新 token；
   // 10 分钟后停止轮询（人工收款确认可能更久），卡片保留并展示订单查询入口
-  useEffect(() => {
-    if (!upgradeOrder) return;
-    setUpgradePollStopped(false);
-    const startedAt = Date.now();
-    const timer = setInterval(async () => {
-      if (Date.now() - startedAt > 10 * 60_000) {
-        clearInterval(timer);
-        setUpgradePollStopped(true);
-        return;
+  usePolling(
+    !!upgradeOrder,
+    async () => {
+      if (!upgradeOrder) return false;
+      const s = await api.orderStatus(upgradeOrder.id);
+      if (s.status === "paid") {
+        const updated = await api.getToken(current.id);
+        setCurrent(updated);
+        setUpgradeOrder(null);
+        return false;
       }
-      try {
-        const s = await api.orderStatus(upgradeOrder.id);
-        if (s.status === "paid") {
-          clearInterval(timer);
-          const updated = await api.getToken(current.id);
-          setCurrent(updated);
-          setUpgradeOrder(null);
-        }
-      } catch {
-        /* 网络抖动忽略，下一轮再试 */
-      }
-    }, 3000);
-    return () => clearInterval(timer);
-  }, [upgradeOrder, current.id]);
+    },
+    { intervalMs: 3000, timeoutMs: 10 * 60_000, onTimeout: () => setUpgradePollStopped(true) }
+  );
 
-  // 每秒刷新剩余时间和在线状态
+  // 低频刷新 now，供在线状态（90s 窗口）与多设备检测（24h 窗口）判定
   useEffect(() => {
-    const t = setInterval(() => {
-      setNow(Date.now());
-      if (current.expires_at) {
-        setRemainingMs(current.expires_at - Date.now());
-      }
-    }, 1000);
+    const t = setInterval(() => setNow(Date.now()), 30_000);
     return () => clearInterval(t);
-  }, [current.expires_at]);
+  }, []);
 
-  const remainingDays = Math.max(0, Math.floor(remainingMs / 86_400_000));
-  const remainingHours = Math.max(0, Math.floor((remainingMs % 86_400_000) / 3_600_000));
-  const active = current.status === "active" && remainingMs > 0;
+  // 倒计时归零即视为到期，与徽标口径一致（状态翻转由后端扫描完成，这里只做展示修正）
+  const active =
+    current.status === "active" && !!current.expires_at && current.expires_at > now;
+  const displayStatus: Token["status"] =
+    current.status === "active" && current.expires_at !== undefined && current.expires_at <= now
+      ? "expired"
+      : current.status;
 
   // 一键导入：按平台给出对应客户端的 deep link。订阅链接本身带 UA 自适应
   // （Clash UA 出 YAML、sing-box UA 出 JSON），deep link 直接传同一 URL 即可
@@ -329,6 +325,7 @@ export default function TokenStatus({ token }: { token: TokenView }) {
         // 差价 ≤ 0 免费升级：立即生效
         setCurrent(res.token);
       } else {
+        setUpgradePollStopped(false);
         setUpgradeOrder(res.order);
       }
     } catch (e) {
@@ -346,9 +343,9 @@ export default function TokenStatus({ token }: { token: TokenView }) {
           <div className="font-mono text-[15px] sm:text-sm">{current.id}</div>
         </div>
         <span
-          className={`rounded-full border px-3 py-1 text-xs font-medium ${STATUS_COLOR[current.status]}`}
+          className={`rounded-full border px-3 py-1 text-xs font-medium ${STATUS_COLOR[displayStatus]}`}
         >
-          {STATUS_LABEL[current.status]}
+          {STATUS_LABEL[displayStatus]}
         </span>
         {isOnline && (
           <span className="rounded-full bg-sky-500/20 text-sky-300 border border-sky-500/40 px-3 py-1 text-xs font-medium">
@@ -372,9 +369,7 @@ export default function TokenStatus({ token }: { token: TokenView }) {
         {current.expires_at && (
           <div className="rounded-lg bg-slate-800/60 p-3">
             <div className="text-slate-400 text-sm sm:text-xs mb-1">剩余有效期</div>
-            <div className={active ? "text-emerald-300 font-semibold" : "text-rose-300"}>
-              {active ? `${remainingDays} 天 ${remainingHours} 小时` : "已到期"}
-            </div>
+            <ExpireCountdown expiresAt={current.expires_at} status={current.status} />
           </div>
         )}
       </div>

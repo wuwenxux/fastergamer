@@ -24,6 +24,7 @@ const makeEnv = (tokens: KVNamespace, tickets: KVNamespace) =>
     TOKENS: tokens,
     TICKETS: tickets,
     NODES: mockNs().ns, // notify-scan 翻转过期后会 pushAuthRefresh，需要 NODES 命名空间
+    ORDERS: mockNs().ns, // notify-scan 顺带自动取消超 3 天 pending 订单，需要 ORDERS 命名空间
     ADMIN_KEY: "secret-key",
     ALIYUN_ACCESS_KEY_ID: "test-id",
     ALIYUN_ACCESS_KEY_SECRET: "test-secret",

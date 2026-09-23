@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import type { Order, Plan } from "../../../shared/types";
 import ManualPay from "../components/ManualPay";
 import { api } from "../services/api";
+import { usePolling } from "../utils/polling";
 
 type OrderView = {
   status: Order["status"];
@@ -24,11 +25,13 @@ export default function OrderStatus() {
   const [plan, setPlan] = useState<Plan | undefined>(undefined);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // 轮询超过 10 分钟停止后给用户明确提示（否则页面像卡死）
+  const [pollStopped, setPollStopped] = useState(false);
 
   const query = useCallback(async (orderId: string) => {
     setLoading(true);
     setError("");
+    setPollStopped(false);
     try {
       const o = await api.orderStatus(orderId.trim());
       setOrder(o);
@@ -50,25 +53,18 @@ export default function OrderStatus() {
   }, [id, query]);
 
   // 待支付订单轮询：客服确认收款后自动跳到已支付态，10 分钟后停止
-  useEffect(() => {
-    if (!id || order?.status !== "pending") return;
-    const startedAt = Date.now();
-    pollRef.current = setInterval(async () => {
-      if (Date.now() - startedAt > 10 * 60_000) {
-        if (pollRef.current) clearInterval(pollRef.current);
-        return;
+  usePolling(
+    !!id && order?.status === "pending",
+    async () => {
+      if (!id) return false;
+      const s = await api.orderStatus(id);
+      if (s.status !== "pending") {
+        setOrder((prev) => (prev ? { ...prev, ...s } : prev));
+        return false;
       }
-      try {
-        const s = await api.orderStatus(id);
-        if (s.status !== "pending") setOrder((prev) => (prev ? { ...prev, ...s } : prev));
-      } catch {
-        /* 网络抖动忽略，下一轮再试 */
-      }
-    }, 5000);
-    return () => {
-      if (pollRef.current) clearInterval(pollRef.current);
-    };
-  }, [id, order?.status]);
+    },
+    { intervalMs: 5000, timeoutMs: 10 * 60_000, onTimeout: () => setPollStopped(true) }
+  );
 
   const submit = () => {
     const v = input.trim();
@@ -118,6 +114,14 @@ export default function OrderStatus() {
           <p className="text-sm leading-relaxed sm:text-xs text-slate-500 text-center">
             客服确认收款后本页自动更新，token 同时发送到你的邮箱。
           </p>
+          {pollStopped && (
+            <p className="text-center text-[15px] leading-relaxed sm:text-sm text-amber-400">
+              等待时间较长，本页已停止自动刷新。客服确认收款后会自动开通并邮件通知你；
+              也可稍后刷新本页查看进度，或到
+              <Link to="/support" className="text-sky-400 hover:underline"> 帮助反馈 </Link>
+              联系站长。
+            </p>
+          )}
         </div>
       )}
 

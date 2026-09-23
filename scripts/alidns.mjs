@@ -6,7 +6,8 @@
  * 用法：
  *   node scripts/alidns.mjs list [rr关键字]           # 列出 A 记录
  *   node scripts/alidns.mjs add <RR> <IP> [备注]      # 新增 A 记录，如 add nx6 1.2.3.4 新加坡
- *   node scripts/alidns.mjs sync                      # 以节点 KV 为准校准备注，报告缺失记录
+ *   node scripts/alidns.mjs del <RR>                # 删除 A 记录
+ * （sync 子命令已弃用：其依赖的旧架构本地 KV 已冻结失效）
  */
 import crypto from "node:crypto";
 import fs from "node:fs";
@@ -136,32 +137,11 @@ if (cmd === "list") {
     console.log(`[alidns] 已删除 ${rr}.${DOMAIN} -> ${r.Value}`);
   }
 } else if (cmd === "sync") {
-  const NODES_KV = "/home/wafer/fastergamer/kv/NODES/nodes";
-  const nodes = JSON.parse(fs.readFileSync(NODES_KV, "utf8"));
-  const json = await call("DescribeDomainRecords", {
-    DomainName: DOMAIN,
-    RRKeyWord: "nx",
-    PageSize: "100",
-  });
-  const records = json.DomainRecords?.Record ?? [];
-  for (const n of nodes) {
-    const rr = n.host.split(".")[0];
-    const rec = records.find((r) => r.RR === rr && r.Type === "A");
-    if (!rec) {
-      // KV 只存域名不存 IP，缺失的记录无法自动补，需要手动 add
-      console.log(`✗ ${rr}（${n.name}）在阿里云缺失，请手动 add（KV 未存 IP）`);
-      continue;
-    }
-    if ((rec.Remark ?? "") === n.name) {
-      console.log(`✓ ${rr} ${rec.Value} 备注一致（${n.name}）`);
-      continue;
-    }
-    await call("UpdateDomainRecordRemark", {
-      RecordId: rec.RecordId,
-      Remark: n.name,
-    });
-    console.log(`✓ ${rr} ${rec.Value} 备注已更新 -> ${n.name}`);
-  }
+  // 已弃用：该子命令读旧架构的本地 KV 文件（/home/wafer/fastergamer/kv/NODES/nodes），
+  // 数据源早已冻结失效，继续跑只会按陈旧清单误报/误改备注。节点域名现由
+  // cf-dns.mjs（Cloudflare）管理，fastergamer.cn 记录请用 list/add/set/del 手工维护。
+  console.error("[alidns] sync 已弃用：节点清单数据源（旧架构本地 KV）已冻结失效，请用 list/add/set/del 手工维护 fastergamer.cn 记录");
+  process.exit(1);
 } else {
   console.error("用法: node scripts/alidns.mjs list [rr关键字] | add <RR> <IP> [备注] | set <RR> <IP> [备注] | del <RR> | sync");
   process.exit(1);

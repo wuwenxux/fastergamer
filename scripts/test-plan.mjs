@@ -236,9 +236,31 @@ async function main() {
     }
   }
 
-  // 5. 等待下一次 Agent 流量上报
-  log("等待 Agent 上报流量统计...");
-  await sleep(35_000);
+  // 5. 轮询等待 Agent 上报流量：断联结算要连续 3 个周期（≥90s）无增量且离线才触发，
+  //    固定 sleep 35s 大概率等不到 → 误报 ❌。最多等 ~3 分钟，每 15s 查一次直到
+  //    全部用户的 traffic_used_gb 与 last_active_at 都更新或超时。
+  //    （traffic_used_gb 中心侧是不经舍入的浮点 GB，几 KB 增量也可见，直接比较即可）
+  log("等待 Agent 上报流量统计（最多 3 分钟）...");
+  const deadline = Date.now() + 180_000;
+  const afterByToken = {};
+  while (true) {
+    await sleep(15_000);
+    await Promise.all(
+      tokens.map(async (t) => {
+        afterByToken[t.id] = await getToken(t.id);
+      })
+    );
+    const allUpdated = tokens.every((t) => {
+      const after = afterByToken[t.id];
+      const before = beforeByToken[t.id];
+      return (after.traffic_used_gb ?? 0) > before.traffic && (after.last_active_at ?? 0) > before.last_active;
+    });
+    if (allUpdated) break;
+    if (Date.now() >= deadline) {
+      log("等待超时（3 分钟），按当前状态判定");
+      break;
+    }
+  }
 
   // 6. 验证测试后状态
   log("验证结果...");
@@ -256,9 +278,9 @@ async function main() {
 
   let userTrafficIncreased = true;
   for (const token of tokens) {
-    const after = await getToken(token.id);
+    const after = afterByToken[token.id];
     const before = beforeByToken[token.id];
-    const trafficUp = after.traffic_used_gb > before.traffic;
+    const trafficUp = (after.traffic_used_gb ?? 0) > before.traffic;
     const activeUp = (after.last_active_at ?? 0) > before.last_active;
     if (!trafficUp || !activeUp) userTrafficIncreased = false;
     console.log(

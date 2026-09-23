@@ -2,7 +2,8 @@ import { useEffect, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { QRCodeSVG } from "qrcode.react";
 import { api, type MagicSession } from "../services/api";
-import { usePlatform } from "../components/ClashGuide";
+import { copyText } from "../utils/clipboard";
+import { usePlatform } from "../components/platform";
 
 /**
  * Magic link 落地页：核销邮件里的 ticket 换取长期会话，写入 localStorage。
@@ -98,13 +99,13 @@ export default function AuthMagic() {
       : [{ label: "一键导入到 Clash", href: `clash://install-config?url=${encSubUrl}&name=fastergamer` }];
 
   const copySub = async () => {
-    try {
-      // 裸链接不带名称片段：配置名由订阅响应头 profile-title 下发
-      await navigator.clipboard.writeText(subUrl);
+    // 裸链接不带名称片段：配置名由订阅响应头 profile-title 下发
+    if (await copyText(subUrl)) {
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
-    } catch {
-      /* ignore */
+    } else {
+      // 微信内置浏览器等场景剪贴板不可用，给用户手动复制的兜底
+      window.prompt("自动复制失败，请长按全选手动复制订阅链接：", subUrl);
     }
   };
 

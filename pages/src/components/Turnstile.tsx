@@ -7,6 +7,7 @@ import { api } from "../services/api";
  * 挂载时拉取 /api/config 判断是否启用：
  * - sitekey 为空或拉取失败 = 未启用：不渲染任何内容，回调 { enabled: false }，
  *   父表单照常可用，行为与接入前完全一致（本地开发无感）；
+ *   官方脚本加载超时（域名被墙等）同样按未启用放行，避免表单永久禁用；
  * - 启用后显式渲染 widget，token 就绪回调 { enabled: true, token }；
  *   token 一次性且 300s 过期，过期后回调 { enabled: true }（清空 token），
  *   提交失败后父组件必须调 ref.reset() 重新获取。
@@ -43,6 +44,18 @@ declare global {
   }
 }
 
+// 配置接口模块级缓存：同页可能挂多个 Turnstile 实例（首页试用 + Tokens 登录链接等），只拉一次
+let configPromise: Promise<{ turnstile_site_key: string | null }> | null = null;
+function loadConfig() {
+  if (!configPromise) {
+    configPromise = api.config().catch((e) => {
+      configPromise = null; // 失败不缓存，下次挂载重试
+      throw e;
+    });
+  }
+  return configPromise;
+}
+
 const Turnstile = forwardRef<
   TurnstileHandle,
   { onStateChange: (state: TurnstileState) => void }
@@ -57,11 +70,10 @@ const Turnstile = forwardRef<
   const onStateChangeRef = useRef(onStateChange);
   onStateChangeRef.current = onStateChange;
 
-  // 拉取运行时配置判断是否启用人机验证
+  // 拉取运行时配置判断是否启用人机验证（模块级缓存，同页多实例只拉一次）
   useEffect(() => {
     let cancelled = false;
-    api
-      .config()
+    loadConfig()
       .then((cfg) => {
         if (cancelled) return;
         if (cfg.turnstile_site_key) {
@@ -79,11 +91,21 @@ const Turnstile = forwardRef<
     };
   }, []);
 
-  // 启用后等官方脚本加载完成（async defer，时序不定，短轮询兜底）再显式渲染 widget
+  // 启用后等官方脚本加载完成（async defer，时序不定，短轮询兜底）再显式渲染 widget。
+  // 脚本域名被墙/加载失败时 8s 超时 fail-open 按未启用放行（与服务端未配 secret 自动放行
+  // 同策略），避免 widget 永不渲染、表单按钮永久禁用
   useEffect(() => {
     if (!sitekey) return;
+    const deadline = Date.now() + 8000;
     const timer = setInterval(() => {
       if (widgetIdRef.current !== null || !window.turnstile || !containerRef.current) return;
+      if (Date.now() > deadline) {
+        clearInterval(timer);
+        console.warn("[Turnstile] 官方脚本加载超时（可能被网络屏蔽），本次按未启用放行");
+        setSitekey(null);
+        onStateChangeRef.current({ enabled: false });
+        return;
+      }
       widgetIdRef.current = window.turnstile.render(containerRef.current, {
         sitekey,
         callback: (token) => onStateChangeRef.current({ enabled: true, token }),

@@ -7,7 +7,7 @@
  * 授权变更点（激活/撤销/设备/节点注册表等）会主动推送节点立即刷新（见 lib/authpush）。
  */
 import { KV, type Token } from "../../../../shared/types";
-import { listKeys } from "./kv";
+import { listKeys, mapBatched } from "./kv";
 import type { Env } from "../types";
 
 /**
@@ -63,8 +63,10 @@ export async function computeAuthSnapshot(env: Env) {
   const blockedIps = new Set<string>();
   const usage: AuthSnapshot["usage"] = {};
   const keys = await listKeys(env.TOKENS, KV.TOKEN);
-  for (const k of keys) {
-    const raw = await env.TOKENS.get(k.name);
+  // 逐键串行 get 是全量重建的主要延迟来源：分批并发读回（只读操作，任意并发安全），
+  // 解析与汇总仍在单线程内按原顺序进行，结果与串行完全一致
+  const raws = await mapBatched(keys, (k) => env.TOKENS.get(k.name));
+  for (const raw of raws) {
     if (!raw) continue;
     const token = JSON.parse(raw) as Token;
     for (const ip of token.blocked_ips ?? []) blockedIps.add(ip);

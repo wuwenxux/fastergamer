@@ -128,10 +128,9 @@ export default function Admin() {
     setKey(k);
   };
 
-  const now = Date.now();
-
-  // 概览统计
+  // 概览统计（now 在 useMemo 内部取：放外面每次 render 都变会导致 useMemo 永远失效）
   const overview = useMemo(() => {
+    const now = Date.now();
     const today = dayKey(now);
     return {
       total: tokens.length,
@@ -142,10 +141,11 @@ export default function Admin() {
       online: tokens.filter((t) => t.presence?.online ?? t.online).length,
       traffic: tokens.reduce((sum, t) => sum + (t.traffic_used_gb ?? 0), 0),
     };
-  }, [tokens, now]);
+  }, [tokens]);
 
   // 每日新增/激活聚合（最近 days 天，含今天）
   const dayRows = useMemo<DayRow[]>(() => {
+    const now = Date.now();
     const rows: DayRow[] = [];
     const byDate = new Map<string, DayRow>();
     for (let i = days - 1; i >= 0; i--) {
@@ -169,7 +169,7 @@ export default function Admin() {
       }
     }
     return rows;
-  }, [tokens, days, now]);
+  }, [tokens, days]);
 
   const maxAdded = Math.max(1, ...dayRows.map((r) => r.added));
 

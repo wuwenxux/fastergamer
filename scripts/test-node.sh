@@ -4,6 +4,7 @@ set -uo pipefail
 # 节点端到端连通性测试：在本机起一个临时 Xray socks 客户端，经被测节点
 # 真实代理（VLESS+WS+TLS）访问 Google/YouTube/ChatGPT/Claude，逐项打勾。
 # 用法: bash scripts/test-node.sh [过滤词]   # 过滤词匹配节点名或 host，如 "香港" 或 nx4
+# 拨测凭证：专用拨测 token（contact=settle-test@fastergamer.cn），FG_PROBE_TOKEN=<uuid> 可指定
 # 注意: 会产生极少量测试流量（每个目标一次 HTTPS 请求）。
 
 XRAY_BIN="/home/wafer/tools/xray"
@@ -17,13 +18,19 @@ if [ ! -x "$XRAY_BIN" ]; then
   exit 1
 fi
 
-# 任选一个 active token 的 uuid 作为测试凭证（从 CF 中心 API 取）
-UUID=$(curl -s --max-time 15 -H "x-admin-key: $ADMIN_KEY" "$API_BASE/api/admin/tokens" | node -e "
-  const ts = JSON.parse(require('fs').readFileSync(0, 'utf8')).data ?? [];
-  const t = ts.find((t) => t.status === 'active' && (t.expires_at ?? 0) > Date.now());
-  if (t) { process.stdout.write(t.uuid); process.exit(0); }
-  process.exit(1);
-") || { echo "✗ 没有可用的 active token"; exit 1; }
+# 拨测专用 token（contact=settle-test@fastergamer.cn）的 uuid 作为测试凭证，
+# FG_PROBE_TOKEN 可直接指定。不用真实用户凭证：拨测流量会计入用户配额、
+# 污染 presence 画像，且本机是机房 IP，选中体验 token 会误触发 abuse 限速。
+if [ -n "${FG_PROBE_TOKEN:-}" ]; then
+  UUID="$FG_PROBE_TOKEN"
+else
+  UUID=$(curl -s --max-time 15 -H "x-admin-key: $ADMIN_KEY" "$API_BASE/api/admin/tokens" | node -e "
+    const ts = JSON.parse(require('fs').readFileSync(0, 'utf8')).data ?? [];
+    const t = ts.find((t) => t.status === 'active' && (t.contact ?? '').toLowerCase() === 'settle-test@fastergamer.cn');
+    if (t) { process.stdout.write(t.uuid); process.exit(0); }
+    process.exit(1);
+  ") || { echo "✗ 没有找到拨测 token（contact=settle-test@fastergamer.cn）"; echo "  请先在中心创建专用拨测 token，或用 FG_PROBE_TOKEN=<uuid> 指定"; exit 1; }
+fi
 
 # 从中心注册表取 active 节点（可选过滤），输出 name|host|port|ws_path 行
 mapfile -t NODES < <(curl -s --max-time 15 -H "x-admin-key: $ADMIN_KEY" "$API_BASE/api/admin/nodes" | node -e "

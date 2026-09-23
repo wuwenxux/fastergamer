@@ -62,7 +62,7 @@ npm run dev:pages      # 前端，localhost:5173，/api 代理到 8787（vite.co
 node scripts/seed.mjs  # 默认打 http://localhost:8787
 
 # 测试
-cd workers/api && npm test                  # vitest run，29 个文件 231 例
+cd workers/api && npm test                  # vitest run，39 个文件 296 例
 cd infra/xray && python3 -m unittest test_agent   # agent 单元测试（标准库 unittest）
 cd pages && npm run typecheck               # 前端类型检查（tsc --noEmit）
 
@@ -104,7 +104,7 @@ bash scripts/deploy-cf.sh --build   # 前端有改动，先构建 pages/dist
 - API 响应统一包 `{ ok: boolean, data | error }`。
 - 鉴权约定：管理接口 `x-admin-key`，节点 agent 接口 `x-node-key`；敏感接口在 `index.ts` 集中挂 `rateLimit`。管理接口另可选 `ADMIN_IPS` 来源 IP 白名单（CIDR，wrangler.cf.toml 的 vars；fail-closed，取不到 `cf-connecting-ip` 即拒绝），改网段需重新 deploy。
 - KV 读写要省：中心是 CF 免费版 KV，设计上大量做事件驱动 + 缓存 + 幂等（如授权快照 5 分钟 TTL、状态翻转才写、邮件节流幂等键）。新增逻辑遵循同一思路，避免引入周期性 KV 写。
-- agent 是无三方依赖的单文件 Python 3（只用标准库），部署到节点以 `wafer` 用户运行；保持这一约束，不要引入 pip 依赖。
+- agent 是无三方依赖的单文件 Python 3（只用标准库），保持这一约束，不要引入 pip 依赖。部署上由 `deploy-agent.sh` 安装为 systemd 服务、**以 root 运行**（需写 Xray 配置、执行 systemctl/iptables，单元无 `User=`）；节点上的 `wafer` 用户仅用于 SSH 运维登录（Xray 本体以 wafer 运行，agent 以 root 运行）。
 - **git commit 规范**（`.kimi-code/skills/commit-style`，提交前必读）：中文标题一行概括根因/效果，不用 conventional commits 前缀与 emoji；正文 bullet 格式 `- 模块/文件：做了什么 + 为什么`；只写相对上次提交的新增/变更；提交前跑测试；推送目标 origin main 且须用户明确要求。
 
 ## 安全注意事项

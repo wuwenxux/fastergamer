@@ -81,9 +81,26 @@ export type AdminToken = Token & { presence?: Presence };
 /** 管理接口返回的节点：默认隐藏 key，额外带实时 online 判定 */
 export type AdminNode = Omit<Node, "key"> & { online?: boolean };
 
+/**
+ * 套餐列表模块级缓存：同页多个组件（TokenStatus/DeviceManager/OrderStatus/Purchase/Admin）
+ * 都会拉 plans，Promise 缓存 + 5 分钟 TTL 去重，避免重复请求与兜底值闪烁；失败不缓存，下次调用重试
+ */
+let plansCache: { at: number; promise: Promise<Plan[]> } | null = null;
+const PLANS_TTL_MS = 5 * 60_000;
+function cachedPlans(): Promise<Plan[]> {
+  if (!plansCache || Date.now() - plansCache.at > PLANS_TTL_MS) {
+    const promise = request<Plan[]>("/api/plans");
+    promise.catch(() => {
+      if (plansCache?.promise === promise) plansCache = null;
+    });
+    plansCache = { at: Date.now(), promise };
+  }
+  return plansCache.promise;
+}
+
 export const api = {
-  /** 套餐列表 */
-  plans: () => request<Plan[]>("/api/plans"),
+  /** 套餐列表（模块级缓存 5 分钟，同页多组件共享一次请求） */
+  plans: () => cachedPlans(),
 
   /** 公开运行时配置；turnstile_site_key 为 null 表示未启用人机验证 */
   config: () => request<{ turnstile_site_key: string | null }>("/api/config"),

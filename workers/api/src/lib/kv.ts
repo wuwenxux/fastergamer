@@ -24,6 +24,23 @@ export const listKeys = async (
   return keys;
 };
 
+/**
+ * 分批并发 map：全表扫（快照重建/notify-scan/流量结算）里逐键串行 await 是主要延迟来源，
+ * 而不同键的读互不依赖。按批 Promise.all（默认每批 10 个）摊平延迟，又不至于单时刻
+ * 打出过多并发请求。调用方必须保证元素间无共享可变状态（结果顺序与输入一致）。
+ */
+export async function mapBatched<T, R>(
+  items: T[],
+  fn: (item: T) => Promise<R>,
+  batchSize = 10
+): Promise<R[]> {
+  const out: R[] = [];
+  for (let i = 0; i < items.length; i += batchSize) {
+    out.push(...(await Promise.all(items.slice(i, i + batchSize).map(fn))));
+  }
+  return out;
+}
+
 // ---------- Plans ----------
 /** 套餐存为单键 JSON 数组 */
 export const getPlans = async (env: Env): Promise<Plan[]> => {

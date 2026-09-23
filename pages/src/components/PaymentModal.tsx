@@ -1,4 +1,4 @@
-import type { RefObject } from "react";
+import { useEffect, type RefObject } from "react";
 import type { Plan } from "../../../shared/types";
 import Turnstile, { type TurnstileHandle, type TurnstileState } from "./Turnstile";
 
@@ -29,8 +29,23 @@ export default function PaymentModal({
   turnstileState: TurnstileState;
   onTurnstileState: (state: TurnstileState) => void;
 }) {
+  // Esc 关闭弹窗
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+      // 点遮罩空白处关闭（点弹窗内容不冒泡关闭）
+      onClick={(e) => {
+        if (e.target === e.currentTarget) onClose();
+      }}
+    >
       <div className="w-full max-w-sm rounded-2xl border border-slate-700 bg-slate-900 p-6 space-y-5">
         <div className="flex items-center justify-between">
           <h3 className="font-semibold text-xl sm:text-lg">填写联系方式</h3>

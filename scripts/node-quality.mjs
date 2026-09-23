@@ -13,6 +13,8 @@
  * 与 scripts/.probe/quality-history.csv（趋势）。
  *
  * 用法: node scripts/node-quality.mjs [--samples N] [--download-mb N]
+ * 拨测凭证：专用拨测 token（contact=settle-test@fastergamer.cn），
+ * 可用环境变量 FG_PROBE_TOKEN=<uuid> 直接指定；不存在时报错退出（不回退真实用户）。
  * cron: 14 21 * * * node /home/wafer/cloudflare/scripts/node-quality.mjs >> /home/wafer/cloudflare/scripts/.probe/quality.log 2>&1
  */
 import { execFile } from "node:child_process";
@@ -47,7 +49,7 @@ if (!ADMIN_KEY) throw new Error("缺少 ADMIN_KEY（.dev.vars）");
 const XRAY_BIN = XRAY_CANDIDATES.find((p) => fs.existsSync(p));
 if (!XRAY_BIN) throw new Error(`找不到 xray 客户端（试过 ${XRAY_CANDIDATES.join(", ")}）`);
 
-// ---------- 中心 API：节点清单 + 测试凭证 ----------
+// ---------- 中心 API：节点清单 + 拨测凭证 ----------
 const apiGet = async (p) => {
   const res = await fetch(`${API_BASE}${p}`, {
     headers: { "x-admin-key": ADMIN_KEY },
@@ -58,12 +60,26 @@ const apiGet = async (p) => {
   return body.data;
 };
 
+// 拨测专用 token（contact=settle-test@fastergamer.cn）：不用真实用户凭证——
+// 拨测流量会计入用户配额、污染 presence 画像，且本机是机房 IP，
+// 选中体验 token 会误触发 abuse_machine 限速。FG_PROBE_TOKEN 可直接指定 uuid。
+const PROBE_CONTACT = "settle-test@fastergamer.cn";
 const nodes = (await apiGet("/api/admin/nodes")).filter((n) => n.active);
 if (!nodes.length) throw new Error("没有 active 节点");
-const tokens = await apiGet("/api/admin/tokens");
-const token = tokens.find((t) => t.status === "active" && (t.expires_at ?? 0) > Date.now());
-if (!token) throw new Error("没有可用的 active token 作为测试凭证");
-console.log(`节点 ${nodes.length} 个，测试凭证 ${token.id}`);
+let probeUuid = process.env.FG_PROBE_TOKEN;
+if (!probeUuid) {
+  const tokens = await apiGet("/api/admin/tokens");
+  const t = tokens.find(
+    (t) => t.status === "active" && (t.contact ?? "").toLowerCase() === PROBE_CONTACT
+  );
+  if (!t) {
+    throw new Error(
+      `没有找到拨测 token（contact=${PROBE_CONTACT}）：请先在中心创建专用拨测 token，或用 FG_PROBE_TOKEN=<uuid> 指定`
+    );
+  }
+  probeUuid = t.uuid;
+}
+console.log(`节点 ${nodes.length} 个，拨测凭证 ${probeUuid.slice(0, 8)}…（probe token）`);
 
 // ---------- curl 工具 ----------
 // 经 socks 隧道请求，返回 { ok, timeMs }；--socks5-hostname 让 DNS 在出口侧解析
@@ -136,7 +152,7 @@ for (const [idx, n] of nodes.entries()) {
     inbounds: [{ listen: "127.0.0.1", port: socksPort, protocol: "socks", settings: { udp: false } }],
     outbounds: [{
       protocol: "vless",
-      settings: { vnext: [{ address: n.host, port, users: [{ id: token.uuid, encryption: "none" }] }] },
+      settings: { vnext: [{ address: n.host, port, users: [{ id: probeUuid, encryption: "none" }] }] },
       streamSettings: {
         network: "ws",
         security: "tls",

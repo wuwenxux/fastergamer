@@ -9,7 +9,24 @@ import { getNodes } from "./nodes";
 import { AUTH_SNAPSHOT_KEY, computeAuthSnapshot } from "./authsnapshot";
 import type { Env } from "../types";
 
+/**
+ * 推送防抖标记键：结算高峰期授权事件密集触发，每次都全量重建快照 + 推送全部节点
+ * 会白白放大 KV list/reads 与出站请求。60s 窗口内只推第一次，后续事件直接跳过——
+ * 代价是最多 60s 的推送延迟，而快照本身有 TTL 缓存、节点每周期拉配置兜底，可接受。
+ */
+const AUTH_REFRESH_PENDING_KEY = "authrefresh:pending";
+const AUTH_REFRESH_DEBOUNCE_TTL_SEC = 60;
+
 export async function pushAuthRefresh(env: Env): Promise<void> {
+  // 防抖标记读写失败时 fail-open 照常推送：宁可多推一次也不能丢刷新
+  try {
+    if (await env.TOKENS.get(AUTH_REFRESH_PENDING_KEY)) return;
+    await env.TOKENS.put(AUTH_REFRESH_PENDING_KEY, "1", {
+      expirationTtl: AUTH_REFRESH_DEBOUNCE_TTL_SEC,
+    });
+  } catch (e) {
+    console.error(`[authpush] debounce marker failed, push anyway: ${(e as Error).message}`);
+  }
   try {
     const snap = await computeAuthSnapshot(env);
     await env.TOKENS.put(AUTH_SNAPSHOT_KEY, JSON.stringify(snap));

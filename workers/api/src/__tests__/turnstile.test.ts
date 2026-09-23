@@ -26,13 +26,17 @@ const stubSiteverify = (impl: () => Response | Promise<Response>) => {
 
 afterEach(() => vi.unstubAllGlobals());
 
-/** 假 KV：map 实现（put 忽略 TTL 等选项，测试只关心存在性） */
+/** 假 KV：map 实现（put 忽略 TTL 等选项，测试只关心存在性；list 支持前缀扫描，recover 全表查需要） */
 const fakeNs = () => {
   const store = new Map<string, string>();
   const ns = {
     get: async (k: string) => store.get(k) ?? null,
     put: async (k: string, v: string) => void store.set(k, v),
     delete: async (k: string) => void store.delete(k),
+    list: async ({ prefix }: { prefix?: string } = {}) => ({
+      keys: [...store.keys()].filter((k) => !prefix || k.startsWith(prefix)).map((name) => ({ name })),
+      list_complete: true,
+    }),
   } as unknown as KVNamespace;
   return { ns, store };
 };
@@ -118,6 +122,46 @@ describe("Turnstile 中间件（POST /api/tokens/trial 链路验证）", () => {
     const res = await postTrial(makeEnv({ TURNSTILE_SECRET_KEY: "secret" }), "tk-x");
     expect(res.status).toBe(400);
     expect(await res.json()).toEqual(rejectBody);
+  });
+});
+
+describe("Turnstile 覆盖 /api/tokens/recover（全表扫接口挡脚本慢刷）", () => {
+  const postRecover = (env: Env, turnstileToken?: string) => {
+    ipSeq += 1;
+    return worker.fetch(
+      new Request("https://api.test/api/tokens/recover", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "cf-connecting-ip": `10.3.0.${ipSeq}`,
+          ...(turnstileToken ? { "x-turnstile-token": turnstileToken } : {}),
+        },
+        body: JSON.stringify({ contact: `recover${ipSeq}@qq.com` }),
+      }),
+      env,
+      ctx
+    );
+  };
+
+  it("未配置 secret：无 token 也走正常业务流程", async () => {
+    const res = await postRecover(makeEnv());
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true });
+  });
+
+  it("配置了 secret：无 token → 400，不进入全表扫逻辑", async () => {
+    const spy = stubSiteverify(() => Response.json({ success: true }));
+    const res = await postRecover(makeEnv({ TURNSTILE_SECRET_KEY: "secret" }));
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual(rejectBody);
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it("配置了 secret：siteverify 通过 → 放行", async () => {
+    stubSiteverify(() => Response.json({ success: true }));
+    const res = await postRecover(makeEnv({ TURNSTILE_SECRET_KEY: "secret" }), "tk-ok");
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true });
   });
 });
 

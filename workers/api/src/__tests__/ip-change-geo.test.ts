@@ -10,8 +10,9 @@ import { sendMail } from "../lib/email-aliyun";
 import {
   geoLocationKey,
   notifyIpChange,
+  resolveConcurrentGeoConflict,
   resolveIpLocationChange,
-  type IpLocationChange,
+  type ConcurrentGeoConflict,
 } from "../lib/risk-notify";
 import type { Env } from "../types";
 
@@ -36,6 +37,29 @@ const stubGeo = (country: string, region: string, city: string, isp = "电信") 
     vi.fn(async () => ({
       json: async () => ({ success: true, country, region, city, connection: { isp } }),
     }))
+  );
+};
+
+/** 按 IP 分别 mock ipwho.is 应答；map 里缺失或为 null 的 IP 模拟查询失败 */
+const stubGeoByIp = (
+  map: Record<string, { country: string; region: string; city: string; isp?: string } | null>
+) => {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (input: unknown) => {
+      const ip = String(input).split("/").pop()!;
+      const g = map[ip];
+      if (!g) throw new Error("timeout");
+      return {
+        json: async () => ({
+          success: true,
+          country: g.country,
+          region: g.region,
+          city: g.city,
+          connection: { isp: g.isp ?? "电信" },
+        }),
+      };
+    })
   );
 };
 
@@ -111,53 +135,94 @@ describe("resolveIpLocationChange 接入地点变更判定", () => {
   });
 });
 
-describe("notifyIpChange 接入地点变更邮件", () => {
-  const loc: IpLocationChange = {
-    changed: true,
-    oldLocation: "中国 / 四川 / 成都",
-    newLocation: "中国 / 广东 / 广州",
-    display: "中国 / 广东 / 广州 / 电信",
+describe("resolveConcurrentGeoConflict 多地并发在线判定", () => {
+  it("少于 2 个不同 IP：不冲突，且不发 geo 请求", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        throw new Error("不应被调用");
+      })
+    );
+    const r = await resolveConcurrentGeoConflict(["1.2.3.4"]);
+    expect(r.conflict).toBe(false);
+    expect(r.sources).toEqual([]);
+    const r2 = await resolveConcurrentGeoConflict(["1.2.3.4", "1.2.3.4"]);
+    expect(r2.conflict).toBe(false);
+  });
+
+  it("2 个 IP 同一城市（本人新设备/同地多设备）：不冲突", async () => {
+    stubGeoByIp({
+      "1.2.3.4": { country: "中国", region: "四川", city: "成都", isp: "电信" },
+      "5.6.7.8": { country: "中国", region: "四川", city: "成都", isp: "移动" },
+    });
+    const r = await resolveConcurrentGeoConflict(["1.2.3.4", "5.6.7.8"]);
+    expect(r.conflict).toBe(false);
+    expect(r.sources).toHaveLength(2);
+  });
+
+  it("2 个 IP 不同城市：冲突，sources 带展示串", async () => {
+    stubGeoByIp({
+      "1.2.3.4": { country: "中国", region: "四川", city: "成都" },
+      "5.6.7.8": { country: "中国", region: "广东", city: "广州", isp: "移动" },
+    });
+    const r = await resolveConcurrentGeoConflict(["1.2.3.4", "5.6.7.8"]);
+    expect(r.conflict).toBe(true);
+    expect(r.sources.map((s) => s.display)).toEqual([
+      "中国 / 四川 / 成都 / 电信",
+      "中国 / 广东 / 广州 / 移动",
+    ]);
+  });
+
+  it("任一查询失败且 ≥2 个 IP：保守判冲突", async () => {
+    stubGeoByIp({
+      "1.2.3.4": { country: "中国", region: "四川", city: "成都" },
+      "5.6.7.8": null,
+    });
+    const r = await resolveConcurrentGeoConflict(["1.2.3.4", "5.6.7.8"]);
+    expect(r.conflict).toBe(true);
+    expect(r.sources[1].display).toBe("归属地查询失败");
+  });
+});
+
+describe("notifyIpChange 多地并发在线邮件", () => {
+  const conflict: ConcurrentGeoConflict = {
+    conflict: true,
+    sources: [
+      { ip: "1.2.3.4", locationKey: "中国 / 四川 / 成都", display: "中国 / 四川 / 成都 / 电信" },
+      { ip: "5.6.7.8", locationKey: "中国 / 广东 / 广州", display: "中国 / 广东 / 广州 / 移动" },
+    ],
   };
 
-  it("发送邮件：标题为接入地点变更，正文含新旧位置与新 IP，记入 notify_log", async () => {
+  it("发送邮件：标题为多地同时在线，正文列出各 IP 与归属地，记入 notify_log", async () => {
     const token = makeToken();
-    await notifyIpChange(env, token, ["9.9.9.9"], loc);
+    await notifyIpChange(env, token, conflict);
     expect(sendMail).toHaveBeenCalledTimes(1);
     const [, to, subject, html, text] = vi.mocked(sendMail).mock.calls[0];
     expect(to).toBe("user@example.com");
-    expect(subject).toContain("接入地点发生变更");
-    expect(html).toContain("中国 / 四川 / 成都");
-    expect(html).toContain("中国 / 广东 / 广州");
-    expect(html).toContain("9.9.9.9");
-    expect(text).toContain("中国 / 四川 / 成都 → 中国 / 广东 / 广州");
+    expect(subject).toContain("多个地点同时在线");
+    expect(html).toContain("1.2.3.4");
+    expect(html).toContain("中国 / 四川 / 成都 / 电信");
+    expect(html).toContain("5.6.7.8");
+    expect(html).toContain("中国 / 广东 / 广州 / 移动");
+    expect(text).toContain("1.2.3.4（中国 / 四川 / 成都 / 电信）");
     expect(token.notify_log?.["ip_change"]).toBeGreaterThan(0);
   });
 
-  it("geo 查询失败时新位置显示「归属地查询失败」", async () => {
+  it("conflict=false：不发", async () => {
     const token = makeToken();
-    await notifyIpChange(env, token, ["9.9.9.9"], {
-      changed: true,
-      oldLocation: "中国 / 四川 / 成都",
-    });
-    const [, , , html] = vi.mocked(sendMail).mock.calls[0];
-    expect(html).toContain("归属地查询失败");
+    await notifyIpChange(env, token, { conflict: false, sources: [] });
+    expect(sendMail).not.toHaveBeenCalled();
   });
 
   it("12 小时内已发过：限流不再发", async () => {
     const token = makeToken({ notify_log: { ip_change: Date.now() - 60_000 } });
-    await notifyIpChange(env, token, ["9.9.9.9"], loc);
+    await notifyIpChange(env, token, conflict);
     expect(sendMail).not.toHaveBeenCalled();
   });
 
   it("非邮箱联系方式不发", async () => {
     const token = makeToken({ contact: "qq:12345" });
-    await notifyIpChange(env, token, ["9.9.9.9"], loc);
-    expect(sendMail).not.toHaveBeenCalled();
-  });
-
-  it("空 IP 列表不发", async () => {
-    const token = makeToken();
-    await notifyIpChange(env, token, [], loc);
+    await notifyIpChange(env, token, conflict);
     expect(sendMail).not.toHaveBeenCalled();
   });
 });

@@ -9,7 +9,7 @@
  * 等预警类邮件已全部下线；保留的交易/安全类触达：
  *   - trial_convert（试用转化）——试用到期/流量耗尽时发一次性的同 token 充值引导；
  *   - expire_24h（付费 token 到期前 24h 续费提醒，带免登录续费按钮，notify-scan 触发）；
- *   - exhausted / multi_device / 接入地点变更等安全类提醒。
+ *   - exhausted / multi_device / 多地并发在线等安全类提醒。
  * 两条 trial_convert 触发路径共用幂等键，只发一次。
  */
 
@@ -312,43 +312,79 @@ export async function resolveIpLocationChange(
   };
 }
 
+/** 并发接入源归属地条目 */
+export interface GeoSource {
+  ip: string;
+  /** 位置键（country/region/city 拼接）；查询失败为空串 */
+  locationKey: string;
+  /** 邮件展示串（位置 + 运营商）；查询失败为「归属地查询失败」 */
+  display: string;
+}
+
+/** 多地并发在线判定结果 */
+export interface ConcurrentGeoConflict {
+  conflict: boolean;
+  sources: GeoSource[];
+}
+
 /**
- * 接入地点变更提醒：接入地理位置（城市级）发生变化时邮件通知本人。
- * 同城换 IP（家宽动态漂移、WiFi 切 4G）由 resolveIpLocationChange 拦下，不会走到这里。
- * 限流：每个 token 12 小时最多一封（差旅/跨省移动属常态，不能刷屏）。
- * 调用方负责把 notify_log 变更键级合并写回（mergeTokenSettlement）。
+ * 多地并发在线判定：给同一 token 本结算周期内并发出现过的接入 IP 逐个查归属地。
+ * - 少于 2 个不同 IP（单链接换城市/出差漫游）：无并发证据，不冲突，也不发 geo 请求；
+ * - 所有 IP 同一位置：判定为本人新设备/同地多设备，不冲突；
+ * - 出现 ≥2 个不同位置，或任一查询失败（保守，安全提醒宁可误发）：冲突。
+ */
+export async function resolveConcurrentGeoConflict(ips: string[]): Promise<ConcurrentGeoConflict> {
+  const uniq = [...new Set(ips)];
+  if (uniq.length < 2) return { conflict: false, sources: [] };
+  const sources: GeoSource[] = [];
+  for (const ip of uniq) {
+    const geo = await lookupIpGeo(ip);
+    sources.push({
+      ip,
+      locationKey: geo ? geoLocationKey(geo) : "",
+      display: geo ? geoDisplay(geo) : "归属地查询失败",
+    });
+  }
+  const anyFailed = sources.some((s) => !s.locationKey);
+  const conflict = anyFailed || new Set(sources.map((s) => s.locationKey)).size >= 2;
+  return { conflict, sources };
+}
+
+/**
+ * 多地并发在线安全提醒：同 token 出现 ≥2 个不同地点的接入源时邮件通知本人。
+ * 单链接换城市（出差/漫游）由 resolveIpLocationChange 静默更新基线，不会走到这里；
+ * 同城多设备（本人新设备）由 resolveConcurrentGeoConflict 拦下。
+ * 限流：每个 token 12 小时最多一封。调用方负责把 notify_log 变更键级合并写回（mergeTokenSettlement）。
  */
 export async function notifyIpChange(
   env: Env,
   token: Token,
-  ips: string[],
-  loc: IpLocationChange
+  result: ConcurrentGeoConflict
 ): Promise<void> {
-  if (ips.length === 0 || !shouldSendEmail(token.contact)) return;
+  if (!result.conflict || result.sources.length === 0 || !shouldSendEmail(token.contact)) return;
   token.notify_log = token.notify_log ?? {};
   const now = Date.now();
   if (now - (token.notify_log["ip_change"] ?? 0) < 12 * 3_600_000) return;
 
-  const ip = ips[0];
-  const oldText = loc.oldLocation ?? "未知";
-  const newText = loc.newLocation ?? "归属地查询失败";
-  const ipText = loc.display ? `${ip}（${loc.display}）` : ip;
+  const listHtml = result.sources.map((s) => `<li>${s.ip}（${s.display}）</li>`).join("\n       ");
+  const listText = result.sources.map((s) => `${s.ip}（${s.display}）`).join("；");
   const manageUrl = `${siteUrl(env)}/tokens?id=${token.id}`;
   const { subject, html, text } = shell(
     env,
-    "账号安全提醒：接入地点发生变更",
-    `<p>你好，你的 Token（<strong>${token.id}</strong>）的接入地点刚刚发生变更：</p>
-     <p style="font-size:16px;">${oldText} → <strong>${newText}</strong></p>
-     <p>新接入 IP：<strong>${ipText}</strong></p>
-     <p>如果是你本人换了城市/网络（如出差、跨省移动），可忽略本邮件；否则说明订阅链接可能已泄露，他人正在盗用你的流量。</p>
-     <p><strong>你可以自己处理：</strong>登录 <a href="${manageUrl}">Token 管理页</a>，在「接入 IP 统计」里点击该 IP 旁的「封禁」，该 IP 将在 30 秒内被所有节点拒绝连接；误封可随时解除。</p>`,
-    `你的 Token（${token.id}）接入地点发生变更：${oldText} → ${newText}，新 IP：${ipText}。\n如果是你本人换城市/网络可忽略；否则订阅可能泄露。\n处理：登录管理页 ${manageUrl} 在「接入 IP 统计」中封禁该 IP（30 秒内全节点生效，可随时解除）。`
+    "账号安全提醒：检测到多个地点同时在线",
+    `<p>你好，系统检测到你的 Token（<strong>${token.id}</strong>）正在<strong>多个不同地点同时在线</strong>：</p>
+     <ul style="margin:8px 0;padding-left:20px;color:#334155;">
+       ${listHtml}
+     </ul>
+     <p>如果是你本人在多地/多设备使用，可以忽略本邮件；否则说明订阅链接可能已泄露，他人正在盗用你的流量。</p>
+     <p><strong>你可以自己处理：</strong>登录 <a href="${manageUrl}">Token 管理页</a>，在「接入 IP 统计」里点击陌生 IP 旁的「封禁」，该 IP 将在 30 秒内被所有节点拒绝连接；误封可随时解除。</p>`,
+    `检测到你的 Token（${token.id}）正在多个不同地点同时在线：${listText}。\n如果是你本人多地/多设备使用可忽略；否则订阅可能泄露。\n处理：登录管理页 ${manageUrl} 在「接入 IP 统计」中封禁陌生 IP（30 秒内全节点生效，可随时解除）。`
   );
   const res = await sendMail(env, token.contact, subject, html, text);
   if (res.ok) {
     token.notify_log["ip_change"] = now;
     // 用户接入 IP 属敏感信息，日志只记条数不记具体 IP
-    console.log(`[risk] ip-change notified ${token.id} ip_count=${ips.length}`);
+    console.log(`[risk] ip-change notified ${token.id} ip_count=${result.sources.length}`);
   } else {
     console.error(`[risk] ip-change mail failed ${token.id}: ${res.error}`);
   }

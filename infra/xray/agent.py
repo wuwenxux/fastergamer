@@ -9,7 +9,8 @@ vpn-agent: 多节点 Xray 配置同步 + 流量结算上报 Agent
   （让中心及时记录 exhausted_at，走 48h 宽限流程）。连接活着 = 完全静默
 - 无心跳、无周期兜底：节点存活由中心侧 probe-nodes.sh 主动探测（每 5 分钟
   从国内 ping 节点，只在状态翻转时写 KV），比「节点→中心」心跳更能反映用户视角
-- 配置每 60s 拉一次（中心是 5 分钟 TTL 的共享快照，读配额充足）；
+- 配置每 30min 兜底拉取一次（中心是 5 分钟 TTL 的共享快照，读配额充足），
+  授权变更由中心 POST /api/agent/refresh 推送触发即时刷新；
   快照带每 uuid 的用量基数+限额，agent 用「基数+未结算增量」判断触线
 
 用户(uuid)增删通过 Xray HandlerService 在线生效（xray api adu/rmu），
@@ -299,11 +300,30 @@ def build_xray_config(uuids, listen_addr="127.0.0.1", api_addr="127.0.0.1", api_
     }
 
 
-def restart_xray():
+def restart_xray() -> bool:
     # xray 的 systemd 单元没有配置 reload，直接 restart 即可
     code = os.system("systemctl restart xray")
     if code != 0:
-        print("[warn] xray restart failed", file=sys.stderr)
+        print("[error] xray restart failed", file=sys.stderr)
+        return False
+    return True
+
+
+def apply_config_restart(config_path: str, new_text: str) -> bool:
+    """
+    写入新配置并整体重启 Xray。重启失败时删除刚写入的配置文件：
+    否则运行态与磁盘配置永久分叉，且下周期 new_text == old_text 走
+    「no config change」分支不再同步/重启（被移除的用户继续可用且无告警）。
+    删文件迫使下周期走 structural 分支重新同步并再次重启。返回重启是否成功。
+    """
+    Path(config_path).write_text(new_text, encoding="utf-8")
+    if restart_xray():
+        return True
+    try:
+        os.unlink(config_path)
+    except OSError:
+        pass
+    return False
 
 
 def parse_config_uuids(text: str):
@@ -316,7 +336,12 @@ def parse_config_uuids(text: str):
         return None
 
 
-UUID_RE = re.compile(r"[0-9a-fA-F-]{36}")
+# 严格 8-4-4-4-12 hex（大小写均可）：过宽的正则（如 [0-9a-fA-F-]{36}）会放过
+# 纯横线等结构错误的「uuid」，中心一旦下发垃圾值会导致 Xray 启动校验失败、
+# 整节点拒启且无法自愈
+UUID_RE = re.compile(
+    r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
+)
 
 
 def sanitize_uuids(uuids) -> list:
@@ -428,13 +453,12 @@ def api_remove_users(xray_bin: str, xray_api: str, uuids: set, tags=None) -> boo
         return False
 
 
-def collect_user_stats(xray_bin: str, xray_api: str) -> tuple[dict[str, int] | None, dict[str, bool]]:
+def query_stats_raw(xray_bin: str, xray_api: str) -> list | None:
     """
-    通过 xray api statsquery 抓取每个 email(uuid) 的下行流量（bytes）及在线状态。
-    只计下行（VPS 商家按出站计费，上行不计入配额）。
-    返回 (traffic_stats, online_map)；查询失败（超时/解析失败/子进程非零）时
-    traffic 为 None —— 与「真的没有计数器」的空 dict 必须可区分，
-    否则调用方会把失败当成用户消失而删基线，恢复后全量重计（双重计费）。
+    执行一次 xray api statsquery，返回解析后的 stat 列表；失败返回 None——
+    与「真的没有计数器」的空列表必须可区分，否则调用方会把失败当成用户消失
+    而删基线，恢复后全量重计（双重计费）。
+    用户级与节点级统计同源：每周期只调一次，两处解析复用（见 parse_*_stats）。
     """
     try:
         result = subprocess.run(
@@ -445,27 +469,10 @@ def collect_user_stats(xray_bin: str, xray_api: str) -> tuple[dict[str, int] | N
         )
         if result.returncode != 0:
             print(f"[warn] xray api statsquery failed: {result.stderr.strip()}", file=sys.stderr)
-            return None, {}
+            return None
         if not result.stdout.strip():
-            return {}, {}
-        data = json.loads(result.stdout)
-        stats: dict[str, int] = {}
-        online: dict[str, bool] = {}
-        traffic_pattern = re.compile(r"^user>>>([^>]+)>>>traffic>>>downlink$")
-        online_pattern = re.compile(r"^user>>>([^>]+)>>>online$")
-        for item in data.get("stat", []):
-            name = item.get("name", "")
-            traffic_match = traffic_pattern.match(name)
-            if traffic_match:
-                email = traffic_match.group(1)
-                value = int(item.get("value", "0"))
-                stats[email] = stats.get(email, 0) + value
-                continue
-            online_match = online_pattern.match(name)
-            if online_match:
-                email = online_match.group(1)
-                online[email] = int(item.get("value", "0")) > 0
-        return stats, online
+            return []
+        return json.loads(result.stdout).get("stat", [])
     except FileNotFoundError:
         print(f"[warn] xray binary not found: {xray_bin}", file=sys.stderr)
     except subprocess.TimeoutExpired:
@@ -473,8 +480,59 @@ def collect_user_stats(xray_bin: str, xray_api: str) -> tuple[dict[str, int] | N
     except json.JSONDecodeError as e:
         print(f"[warn] failed to parse xray api output: {e}", file=sys.stderr)
     except Exception as e:
-        print(f"[warn] collect user stats failed: {e}", file=sys.stderr)
-    return None, {}
+        print(f"[warn] query xray stats failed: {e}", file=sys.stderr)
+    return None
+
+
+TRAFFIC_STAT_RE = re.compile(r"^user>>>([^>]+)>>>traffic>>>downlink$")
+ONLINE_STAT_RE = re.compile(r"^user>>>([^>]+)>>>online$")
+
+
+def parse_user_stats(stat: list) -> tuple[dict[str, int], dict[str, bool]]:
+    """从 statsquery 结果解析每个 email(uuid) 的下行流量（bytes）及在线状态。
+    只计下行（VPS 商家按出站计费，上行不计入配额）。"""
+    traffic: dict[str, int] = {}
+    online: dict[str, bool] = {}
+    for item in stat:
+        name = item.get("name", "")
+        m = TRAFFIC_STAT_RE.match(name)
+        if m:
+            email = m.group(1)
+            traffic[email] = traffic.get(email, 0) + int(item.get("value", "0"))
+            continue
+        m = ONLINE_STAT_RE.match(name)
+        if m:
+            online[m.group(1)] = int(item.get("value", "0")) > 0
+    return traffic, online
+
+
+def parse_node_stats(stat: list) -> tuple[int, int]:
+    """
+    从 statsquery 结果解析节点级统计：(总流量 bytes, 在线用户数)。
+    总流量只计 inbound>>>vless-in 的 downlink（= VPS 出站，与商家计费口径一致）；
+    在线用户数来自 user>>>email>>>online 计数。
+    """
+    total_bytes = 0
+    online_count = 0
+    for item in stat:
+        name = item.get("name", "")
+        if name == "inbound>>>vless-in>>>traffic>>>downlink":
+            total_bytes += int(item.get("value", "0"))
+        elif ONLINE_STAT_RE.match(name) and int(item.get("value", "0")) > 0:
+            online_count += 1
+    return total_bytes, online_count
+
+
+def collect_user_stats(xray_bin: str, xray_api: str) -> tuple[dict[str, int] | None, dict[str, bool]]:
+    """
+    抓一次用户计数器（rmu/restart 前落账等单次场景用；每周期主循环请用
+    query_stats_raw + parse_user_stats，与用户级/节点级统计共用一次调用）。
+    查询失败时 traffic 为 None —— 与「真的没有计数器」的空 dict 必须可区分。
+    """
+    stat = query_stats_raw(xray_bin, xray_api)
+    if stat is None:
+        return None, {}
+    return parse_user_stats(stat)
 
 
 # ---------- Hysteria2（可选 UDP 入站）：用户同步 + 流量统计 ----------
@@ -611,40 +669,6 @@ def flush_counters_once(xray_bin: str, xray_api: str, ledger: Ledger,
         e["last_counter"] = counter
 
 
-def collect_node_stats(xray_bin: str, xray_api: str) -> tuple[int, int]:
-    """
-    抓取节点级统计：返回 (总流量 bytes, 在线用户数)。
-    总流量只计 inbound>>>vless-in 的 downlink（= VPS 出站，与商家计费口径一致）；
-    在线用户数来自 user>>>email>>>online 计数。
-    """
-    total_bytes = 0
-    online_count = 0
-    try:
-        result = subprocess.run(
-            [xray_bin, "api", "statsquery", f"--server={xray_api}"],
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-        if result.returncode != 0 or not result.stdout.strip():
-            return total_bytes, online_count
-        data = json.loads(result.stdout)
-        inbound_pattern = re.compile(r"^inbound>>>vless-in>>>traffic>>>downlink$")
-        online_pattern = re.compile(r"^user>>>([^>]+)>>>online$")
-        for item in data.get("stat", []):
-            name = item.get("name", "")
-            if inbound_pattern.match(name):
-                total_bytes += int(item.get("value", "0"))
-                continue
-            if online_pattern.match(name):
-                if int(item.get("value", "0")) > 0:
-                    online_count += 1
-    except Exception:
-        # 节点级统计失败不应影响流量上报，静默忽略
-        pass
-    return total_bytes, online_count
-
-
 class AccessLogTracker:
     """
     增量解析 Xray access log，统计每个上报周期内 (uuid → 来源IP → 连接次数)。
@@ -696,6 +720,41 @@ class AccessLogTracker:
         return counts
 
 
+# 上报失败暂存的结算批次（uuid -> 字节）与对应接入 IP 连接计数。
+# 中心 /api/agent/traffic 对 settled 直接累加、无幂等键，所以重试口径必须是
+# 「重报账本当前未确认 accum 全量」（见 merge_pending_report），绝不能把暂存量
+# 与 accum 叠加——那会让同一批账重复计数。accum 只在中心确认成功后按上报值扣减。
+pending_settled: dict[str, int] = {}
+pending_ip_conns: dict[str, dict] = {}
+
+
+def merge_pending_report(pending: dict, pending_conns: dict, settled: dict,
+                         settled_conns: dict, ledger_users: dict) -> tuple[dict, dict]:
+    """
+    合并失败暂存批次与本期新触发的结算，得到本次实际上报内容 (settled, ip_conns)。
+    去重逻辑：pending 里的 uuid 重报「账本当前 accum」（accum 在上报成功前只增不减，
+    必然 ≥ 暂存量，天然包含暂存量与其后新增量）；账本条目已不存在时才退回暂存量。
+    settled 与 pending 命中同一 uuid 时取账本当前 accum（本期 settled 即 accum 快照）。
+    """
+    merged: dict[str, int] = {}
+    merged_conns: dict[str, dict] = {}
+    for u, b in pending.items():
+        e = ledger_users.get(u)
+        merged[u] = e["accum"] if e else b
+        if e:
+            merged_conns[u] = dict(e["ip_conns"])  # 账本未清，是当前超集
+        elif u in pending_conns:
+            merged_conns[u] = dict(pending_conns[u])
+    for u, b in settled.items():
+        e = ledger_users.get(u)
+        merged[u] = e["accum"] if e else max(merged.get(u, 0), b)
+        if e:
+            merged_conns[u] = dict(e["ip_conns"])
+        elif u in settled_conns:
+            merged_conns[u] = dict(settled_conns[u])
+    return merged, merged_conns
+
+
 def report_settlement(
     api_url: str,
     node_key: str,
@@ -733,15 +792,22 @@ def report_settlement(
 BLOCK_CHAIN = "FG-BLOCK"
 
 
+def valid_ipv4(ip: str) -> bool:
+    """合法 IPv4 校验（每段 0-255，拒绝 999.999.999.999 这类形似值）。"""
+    m = re.fullmatch(r"(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})", ip)
+    return bool(m) and all(0 <= int(g) <= 255 for g in m.groups())
+
+
 def sync_blocked_ips(blocked_ips) -> None:
     """
     把中心下发的封禁 IP 列表同步到 iptables（FG-BLOCK 链，INPUT 跳转）。
-    幂等：每个周期 diff 增删；节点重启后规则丢失，agent 会在下个周期重建。
+    幂等：仅在拉取中心配置时 diff 增删（非每周期执行）；节点重启后规则丢失，
+    agent 会在下次拉取配置时重建。
     只处理 IPv4；防火墙按 IP 整节点阻断（无法按 uuid 区分），共享出口 IP 有误伤风险，
     由用户在管理页自行权衡。任何失败只告警不影响主循环。
     """
     try:
-        desired = {ip for ip in blocked_ips if re.fullmatch(r"\d{1,3}(\.\d{1,3}){3}", ip)}
+        desired = {ip for ip in blocked_ips if valid_ipv4(ip)}
         rules = subprocess.run(
             ["iptables", "-S", BLOCK_CHAIN], capture_output=True, text=True, timeout=10
         )
@@ -823,6 +889,7 @@ def main():
     quota_settled: set[str] = set()  # 已因触线结算过的 uuid（用量回落前不重复触发）
     allowed_list: list = []
     last_sync_ok = False  # 最近一次配置拉取是否成功（跨周期保持，供 /api/metrics 展示）
+    last_sync_at = 0  # 最近一次配置拉取成功的时间；只在成功时更新，中心失联时能如实反映
     ever_synced = False  # 是否已完成过一次成功的配置拉取（未完成前 allowed 兜底读磁盘配置）
 
     cycle = 0
@@ -844,6 +911,7 @@ def main():
                     else:
                         ever_synced = True
                         last_sync_ok = True
+                        last_sync_at = time.time()
                         allowed_list = sanitize_uuids(resp["data"]["uuids"])
                         usage_map = resp["data"].get("usage", {})
                         new_config = build_xray_config(allowed_list, listen_addr, access_log=access_log, reality=reality)
@@ -870,15 +938,16 @@ def main():
                                 # restart 会销毁全部流量计数器：先把差值落进账本再重启，
                                 # 避免漏算自上次轮询以来的流量
                                 flush_counters_once(xray_bin, xray_api, ledger, old_uuids, primed)
-                                Path(config_path).write_text(new_text, encoding="utf-8")
                                 print(
                                     f"[info] config structure changed, {len(allowed_list)} active uuids, "
                                     "restarting xray..."
                                 )
-                                restart_xray()
-                                # 计数器已销毁：last_counter 置 None，重建后按新基线全量计入
-                                for le in ledger.users.values():
-                                    le["last_counter"] = None
+                                if apply_config_restart(config_path, new_text):
+                                    # 计数器已销毁：last_counter 置 None，重建后按新基线全量计入。
+                                    # 重启失败时不重置：计数器还活着，置 None 会把累计值
+                                    # 全量当新增量（双重计费）；下周期 structural 分支会重试
+                                    for le in ledger.users.values():
+                                        le["last_counter"] = None
                             else:
                                 new_uuids = set(allowed_list)
                                 to_add = new_uuids - old_uuids
@@ -900,15 +969,19 @@ def main():
                                             le = ledger.users.get(u)
                                             if le:
                                                 le["last_counter"] = None
-                                Path(config_path).write_text(new_text, encoding="utf-8")
                                 if not ok:
-                                    # 在线增删失败时回退整重启，保证配置与运行态一致
+                                    # 在线增删失败时回退整重启，保证配置与运行态一致；
+                                    # 重启失败时 apply_config_restart 会删掉刚写入的配置，
+                                    # 迫使下周期走 structural 分支重新同步（不留在分叉状态）
                                     print("[warn] falling back to xray restart", file=sys.stderr)
                                     flush_counters_once(xray_bin, xray_api, ledger, old_uuids, primed)
-                                    restart_xray()
-                                    for le in ledger.users.values():
-                                        le["last_counter"] = None
+                                    if apply_config_restart(config_path, new_text):
+                                        # 同 structural 分支：只有重启真的成功（计数器已销毁）
+                                        # 才重置基线；失败保留下周期重试，不双重计费
+                                        for le in ledger.users.values():
+                                            le["last_counter"] = None
                                 else:
+                                    Path(config_path).write_text(new_text, encoding="utf-8")
                                     print(
                                         f"[info] users updated online: +{len(to_add)} -{len(to_remove)}, "
                                         f"total {len(allowed_list)}"
@@ -924,10 +997,16 @@ def main():
 
             # ---- 本地记账（每周期，纯本机操作） ----
             now = time.time()
-            traffic, user_online = collect_user_stats(xray_bin, xray_api)
+            # 用户级与节点级统计共用一次 statsquery（原来各调一次，每周期白跑一遍 gRPC）
+            raw_stats = query_stats_raw(xray_bin, xray_api)
+            if raw_stats is None:
+                traffic, user_online = None, {}
+                node_total_bytes, online_count = 0, 0
+            else:
+                traffic, user_online = parse_user_stats(raw_stats)
+                node_total_bytes, online_count = parse_node_stats(raw_stats)
             # Hy2 每周期计数器（未部署/端点异常时为 None，本轮跳过合并，不丢量）
             hy2_traffic = collect_hy2_stats(hy2_stats_url)
-            node_total_bytes, online_count = collect_node_stats(xray_bin, xray_api)
             new_conns = tracker.collect()
             # 只统计白名单内的 uuid：rmu 后 Xray 会残留旧计数器，不过滤的话
             # 中心会对过期 token 做无效更新（last_active_at 被反复刷新）
@@ -1045,33 +1124,54 @@ def main():
             # ---- 上报（纯事件驱动：只在有结算事件时联网，无周期兜底） ----
             # 节点存活探测由中心侧 probe-nodes.sh 每 5 分钟主动探测承担（只在状态翻转时写 KV），
             # 不靠 agent 周期上报；连接活着且未触线 = 完全静默。
-            if settled:
+            # pending_settled：历史失败批次每周期无条件重试直至成功清空——否则持续在线的
+            # 超量用户（idle_cycles 被重置、已进 quota_settled、距上次上报不足 24h，
+            # settled 为空）会对中心隐身最长 24h，exhausted_at 迟迟不记录。
+            if settled or pending_settled:
+                merged, merged_conns = merge_pending_report(
+                    pending_settled, pending_ip_conns, settled, settled_ip_conns, ledger.users
+                )
                 try:
                     report_resp = report_settlement(
-                        api_url, node_key, settled, user_online,
-                        node_total_bytes, online_count, settled_ip_conns,
+                        api_url, node_key, merged, user_online,
+                        node_total_bytes, online_count, merged_conns,
                     )
                     if report_resp.get("ok"):
-                        for u, b in settled.items():
+                        for u, b in merged.items():
                             le = ledger.users.get(u)
                             if le:
                                 le["accum"] = max(0, le["accum"] - b)
                                 le["ip_conns"] = {}
                                 le["last_report"] = now  # 长期在线兜底以此计时
+                        pending_settled.clear()
+                        pending_ip_conns.clear()
                         # 已结算且计数器不再存在（xray/hy2 都没有）的条目可以清掉了
                         for u in list(ledger.users):
                             if (ledger.users[u]["accum"] <= 0
                                     and not has_live_counters(u, ledger.users[u], traffic, hy2_traffic)):
                                 del ledger.users[u]
                         print(
-                            f"[info] settled {len(settled)} user(s), "
-                            f"bytes={sum(settled.values())}, online_count={online_count}"
+                            f"[info] settled {len(merged)} user(s), "
+                            f"bytes={sum(merged.values())}, online_count={online_count}"
                         )
                     else:
+                        # 中心拒收（ok:false）：与网络失败同样整批暂存，下周期重试
                         print(f"[warn] settlement rejected: {report_resp.get('error')}", file=sys.stderr)
-                except URLError as e:
-                    # 上报失败不丢账：accum 保留，下个触发点重试
+                        for u, b in merged.items():
+                            pending_settled[u] = b
+                        for u, conns in merged_conns.items():
+                            pending_ip_conns[u] = dict(conns)
+                except Exception as e:
+                    # 上报失败不丢账：accum 保留，整批暂存下周期重试。
+                    # 重试不会重复计数：重报值是「未确认 accum 全量」而非暂存量叠加，
+                    # 且只有中心确认成功后才按上报值扣减 accum（中心侧无幂等键，
+                    # 幂等由这里「全量重报 + 成功才扣减」的口径保证；仅当响应丢失
+                    # 的极端情况下中心已入账才会重复，与既有 accum 保留语义一致）
                     print(f"[warn] settlement failed: {e}", file=sys.stderr)
+                    for u, b in merged.items():
+                        pending_settled[u] = b
+                    for u, conns in merged_conns.items():
+                        pending_ip_conns[u] = dict(conns)
 
             ledger.save()
 
@@ -1082,7 +1182,7 @@ def main():
                 "online_count": online_count,
                 "whitelist_size": len(allowed),
                 "last_sync_ok": last_sync_ok,
-                "last_sync_at": int(now),
+                "last_sync_at": int(last_sync_at),
                 "users": {
                     u: {"downlink_bytes": b, "online": bool(user_online.get(u))}
                     for u, b in traffic.items()

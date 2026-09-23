@@ -10,7 +10,7 @@ import { createMagicTicket } from "./accounts";
 import { deleteTokenCascade, getPlans, getTokenById, getTrialMarker, hasPlanBonus, listTokensByContact, markPlanBonusGranted, markTrialConverted, saveOrder, saveToken } from "./kv";
 import { newTokenId } from "./ids";
 import { currentMonthKey } from "./nodes";
-import { rewardReferrerOnPayment } from "./referral";
+import { rewardReferrerOnPayment, consumeCredit } from "./referral";
 import { pushAuthRefresh } from "./authpush";
 import { siteUrl } from "./site-url";
 import type { Env } from "../types";
@@ -207,8 +207,9 @@ export interface FulfillResult {
 
 /**
  * 订单发货：确认收款后置 paid 并发放 token（幂等——已 paid 直接返回已有 token）。
- * 支付回调与人工确认入口已随支付通道断开删除，当前仅 0 元订单/免费升级在下单时调用；
- * plan 缺失时抛错，由调用方兜底。
+ * 触发路径：0 元订单/免费升级在下单瞬间直接调用；人工收款码过渡方案下站长经
+ * POST /api/admin/orders/:id/paid 确认收款也会走到这里。plan 缺失时抛错，由调用方兜底。
+ * 推广抵扣（order.discount_cny）在本函数发货成功后才扣减，失败不扣。
  *
  * 免费层 best-effort 幂等说明：
  * CF KV 跨 PoP 有最长约 60s 读延迟，「读 order.status === "paid"」只是快照判断，
@@ -268,6 +269,18 @@ export const fulfillOrder = async (
     await deleteTokenCascade(env, token, { devices: true, trialMarker: true });
     // 游离 token 从未进入 active 状态，不在节点授权名单内，无需 pushAuthRefresh
     return { token: winner, already: true };
+  }
+
+  // 推广抵扣在发货成功后才扣（下单时只试算不落账）：pending 期间不占用额度，
+  // 用户放弃支付/订单超时被取消都无需归还。扣减失败（并发下额度已被另一单用掉）
+  // 不阻断已完成的发货，只告警由站长对账
+  if (order.discount_cny && order.contact) {
+    const consumed = await consumeCredit(env, order.contact.trim().toLowerCase(), order.discount_cny);
+    if (!consumed) {
+      console.error(
+        `[orders] referral credit consume failed for order ${order.id}: insufficient credit (discount ${order.discount_cny})`
+      );
+    }
   }
 
   // 推广结算：被邀请人首次付费成功，给邀请人结算余额（可能触发自动续期）。

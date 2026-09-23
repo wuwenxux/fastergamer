@@ -11,6 +11,9 @@ set -uo pipefail
 
 EMAIL="${1:-}"
 [ -n "$EMAIL" ] || { echo "用法: bash scripts/purge-email-kv.sh <邮箱>"; exit 1; }
+# 与 scripts/fg purge 相同的邮箱格式校验：本脚本可独立执行（不经 fg），
+# 防止误传参数（空串/通配/命令替换残留等）造成扫描误删
+[[ "$EMAIL" =~ ^[^@[:space:]]+@[^@[:space:]]+\.[^@[:space:]]+$ ]] || { echo "邮箱格式非法: $EMAIL"; exit 1; }
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TOKEN=$(grep '^CLOUDFLARE_API_TOKEN=' "$ROOT/workers/api/.dev.vars" | cut -d= -f2)

@@ -1,8 +1,8 @@
 import { Hono } from "hono";
 import { isTrialPlan, KV, TRIAL_PLAN_ID } from "../../../../shared/types";
-import type { Plan, Presence, Registration, Token } from "../../../../shared/types";
+import type { Order, Plan, Presence, Registration, Token } from "../../../../shared/types";
 import { adminAuth } from "../middleware/admin";
-import { deleteDeviceIndex, deleteTokenCascade, getOrder, getPlans, getTicket, getTokenById, getTokenPresence, listKeys, listOrders, listTickets, listTokensByContact, mergeTokenSettlement, rotateTokenUuid, saveOrder, savePlans, savePresenceIfChanged, saveTicket, saveToken } from "../lib/kv";
+import { deleteDeviceIndex, deleteTokenCascade, getOrder, getPlans, getTicket, getTokenById, getTokenPresence, listKeys, listOrders, listTickets, listTokensByContact, mapBatched, mergeTokenSettlement, rotateTokenUuid, saveOrder, savePlans, savePresenceIfChanged, saveTicket, saveToken } from "../lib/kv";
 import { notifyAdmin, sendExpire24hEmail, sendServiceEmail, sendTrialConvertEmail } from "../lib/risk-notify";
 import { getNodes } from "../lib/nodes";
 import { sendMail, shouldSendEmail } from "../lib/email-aliyun";
@@ -10,7 +10,6 @@ import { getEpayConfig, refundEpayOrder } from "../lib/epay";
 import { fulfillOrder } from "../lib/issue-token";
 import { computeRefundQuote } from "../lib/refund";
 import { resetPenalty, sendPenaltyNoticeEmail } from "../lib/reset-penalty";
-import { restoreCredit } from "../lib/referral";
 import { pushAuthRefresh } from "../lib/authpush";
 import { escapeHtml } from "../lib/escape-html";
 import type { Env } from "../types";
@@ -434,10 +433,11 @@ adminRoutes.put("/tokens/:id", async (c) => {
 
 /**
  * POST /api/admin/notify-scan —— 定时风险扫描（cron 每 15 分钟调用）
- * 做四件事：清理过期 90 天的 token 与已结工单；
+ * 做五件事：清理过期 90 天的 token 与已结工单；
  * 清理超 3 天未激活的免费体验 token（白嫖/假邮箱垃圾）；
  * 试用 token 到期翻转 expired 时发一次性转化邮件（同 token 充值引导，存量不补发）；
- * 付费 token 进入到期前 24 小时窗口时发一次性续费提醒（免登录续费按钮，幂等键 expire_24h）。
+ * 付费 token 进入到期前 24 小时窗口时发一次性续费提醒（免登录续费按钮，幂等键 expire_24h）；
+ * 超 3 天仍 pending 的订单自动取消（用户放弃支付，抵扣在发货时才扣、取消无需归还）。
  * （节点失联告警由 probe-nodes.sh 主动探测承担，agent 事件驱动后 last_seen 不再可靠）
  */
 adminRoutes.post("/notify-scan", async (c) => {
@@ -446,12 +446,14 @@ adminRoutes.post("/notify-scan", async (c) => {
   const EXPIRE_REMIND_MS = 24 * 3_600_000;
 
   const keys = await listKeys(c.env.TOKENS, KV.TOKEN);
+  // 全表扫的瓶颈是 N 次串行 get：分批并发读回（只读，任意并发安全），
+  // 处理段（写库/邮件/presence 清扫）保持原有串行语义不变
+  const tokenRaws = await mapBatched(keys, (k) => c.env.TOKENS.get(k.name));
   let scanned = 0;
   let notified = 0;
   let purgedTokens = 0;
   let expiredNow = 0;
-  for (const key of keys) {
-    const raw = await c.env.TOKENS.get(key.name);
+  for (const raw of tokenRaws) {
     if (!raw) continue;
     const token = JSON.parse(raw) as Token;
 
@@ -542,6 +544,24 @@ adminRoutes.post("/notify-scan", async (c) => {
     }
   }
 
+  // 超 3 天仍 pending 的订单自动取消：收款码过渡方案下用户可能下单后放弃支付，
+  // 订单永久挂 pending 会拖累管理端列表与「我已支付」接口。推广抵扣在发货成功时才扣，
+  // 取消时本来就没占额度，无需归还。订单量小，读同样走并发批读
+  const PENDING_ORDER_TTL_MS = 3 * 86_400_000;
+  let cancelledOrders = 0;
+  const orderKeys = await listKeys(c.env.ORDERS, KV.ORDER);
+  const orderRaws = await mapBatched(orderKeys, (k) => c.env.ORDERS.get(k.name));
+  for (const raw of orderRaws) {
+    if (!raw) continue;
+    const order = JSON.parse(raw) as Order;
+    if (order.status !== "pending" || order.created_at >= now - PENDING_ORDER_TTL_MS) continue;
+    order.status = "failed";
+    // Order 类型定义在 shared/（本次改动范围仅限 workers/api），用交叉类型补取消原因字段
+    (order as Order & { cancel_reason?: string }).cancel_reason = "pending 超 3 天未支付，系统自动取消";
+    await saveOrder(c.env, order);
+    cancelledOrders++;
+  }
+
   // 有 token 过期转换：授权名单有变，推送节点立即刷新
   if (expiredNow > 0) c.executionCtx.waitUntil(pushAuthRefresh(c.env));
 
@@ -553,6 +573,7 @@ adminRoutes.post("/notify-scan", async (c) => {
       expired_tokens: expiredNow,
       purged_tokens: purgedTokens,
       purged_tickets: purgedTickets,
+      cancelled_orders: cancelledOrders,
     },
   });
 });
@@ -654,7 +675,10 @@ adminRoutes.post("/orders/:id/paid", async (c) => {
   }
 });
 
-/** POST /api/admin/orders/:id/cancel —— 取消未支付的订单（无效/刷单订单清理），已用的推广额度归还 */
+/**
+ * POST /api/admin/orders/:id/cancel —— 取消未支付的订单（无效/刷单订单清理）。
+ * 推广抵扣在发货成功时才扣减，pending 订单本来就没占额度，取消无需归还。
+ */
 adminRoutes.post("/orders/:id/cancel", async (c) => {
   const order = await getOrder(c.env, c.req.param("id"));
   if (!order) return c.json({ ok: false, error: "order not found" }, 404);
@@ -662,14 +686,10 @@ adminRoutes.post("/orders/:id/cancel", async (c) => {
     return c.json({ ok: false, error: "paid order cannot be cancelled" }, 409);
   }
   if (order.status !== "pending") {
-    // failed 订单已取消过：拦截重复 cancel，防止 restoreCredit 重复刷余额
     return c.json({ ok: false, error: "订单已取消过" }, 409);
   }
   order.status = "failed";
   await saveOrder(c.env, order);
-  if (order.discount_cny && order.contact) {
-    await restoreCredit(c.env, order.contact.trim().toLowerCase(), order.discount_cny);
-  }
   return c.json({ ok: true, data: order });
 });
 

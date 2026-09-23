@@ -51,32 +51,37 @@ ticketsRoutes.post("/feedback", async (c) => {
   };
   await saveTicket(c.env, ticket);
 
-  // 回执邮件（尽力发送，失败不影响提交）；按收件人节流（防邮件炸弹），超限静默不发
+  // 回执邮件（尽力发送，失败不影响提交）；按收件人节流（防邮件炸弹），超限静默不发。
+  // waitUntil 包裹：响应返回后 Worker 可能随时被杀，裸 async 会静默丢邮件
   const site = siteUrl(c.env);
-  (async () => {
-    if (!(await mailThrottleAllows(c.env, contact))) return;
-    await sendMail(
-      c.env,
-      contact,
-      "【GameBoost】我们已收到你的问题反馈",
-      `<p>你好，我们已收到你的问题反馈（工单号 <strong>${ticket.id}</strong>），客服会尽快通过本邮箱回复你。</p>
+  c.executionCtx.waitUntil(
+    (async () => {
+      if (!(await mailThrottleAllows(c.env, contact))) return;
+      await sendMail(
+        c.env,
+        contact,
+        "【GameBoost】我们已收到你的问题反馈",
+        `<p>你好，我们已收到你的问题反馈（工单号 <strong>${ticket.id}</strong>），客服会尽快通过本邮箱回复你。</p>
        <p style="color:#64748b;font-size:13px;">你的问题：${escapeHtml(message.slice(0, 500))}</p>`,
-      `我们已收到你的问题反馈（工单号 ${ticket.id}），客服会尽快通过本邮箱回复你。\n\n你的问题：${message.slice(0, 500)}`
-    );
-  })().catch(() => {});
+        `我们已收到你的问题反馈（工单号 ${ticket.id}），客服会尽快通过本邮箱回复你。\n\n你的问题：${message.slice(0, 500)}`
+      );
+    })().catch(() => {})
+  );
 
-  // 管理员通知（配置了 ADMIN_NOTIFY_EMAIL 才发）
+  // 管理员通知（配置了 ADMIN_NOTIFY_EMAIL 才发）；同样 waitUntil 兜底
   if (c.env.ADMIN_NOTIFY_EMAIL) {
-    sendMail(
-      c.env,
-      c.env.ADMIN_NOTIFY_EMAIL,
-      `【GameBoost】新反馈工单 ${ticket.id}（${category}）`,
-      `<p><strong>${escapeHtml(contact)}</strong> 提交了反馈（${ticket.id}，分类 ${category}）：</p>
+    c.executionCtx.waitUntil(
+      sendMail(
+        c.env,
+        c.env.ADMIN_NOTIFY_EMAIL,
+        `【GameBoost】新反馈工单 ${ticket.id}（${category}）`,
+        `<p><strong>${escapeHtml(contact)}</strong> 提交了反馈（${ticket.id}，分类 ${category}）：</p>
        <p>${escapeHtml(message)}</p>
        ${ticket.token_id ? `<p>Token：${ticket.token_id}</p>` : ""}
        <p style="color:#64748b;font-size:13px;">回复：POST ${site}/api/admin/tickets/${ticket.id}/reply</p>`,
-      `${contact} 提交了反馈（${ticket.id}，分类 ${category}）：\n${message}\n${ticket.token_id ? `Token：${ticket.token_id}\n` : ""}回复接口：POST ${site}/api/admin/tickets/${ticket.id}/reply`
-    ).catch(() => {});
+        `${contact} 提交了反馈（${ticket.id}，分类 ${category}）：\n${message}\n${ticket.token_id ? `Token：${ticket.token_id}\n` : ""}回复接口：POST ${site}/api/admin/tickets/${ticket.id}/reply`
+      ).catch(() => {})
+    );
   }
 
   console.log(`[feedback] new ticket ${ticket.id} from ${maskEmail(contact)} category=${category}`);

@@ -6,6 +6,7 @@ import PaymentModal from "../components/PaymentModal";
 import PlanCard from "../components/PlanCard";
 import type { TurnstileHandle, TurnstileState } from "../components/Turnstile";
 import { api } from "../services/api";
+import { usePolling } from "../utils/polling";
 
 type Step = "summary" | "paying" | "result";
 
@@ -31,7 +32,14 @@ export default function Purchase() {
   const [step, setStep] = useState<Step>("summary");
   const [processing, setProcessing] = useState(false);
   const [order, setOrder] = useState<Order | null>(null);
-  const [contact, setContact] = useState(() => localStorage.getItem("fg_contact") ?? "");
+  // Safari 隐私模式等场景 localStorage 读写会抛错，全部包 try/catch（与 Tokens/Register 对齐）
+  const [contact, setContact] = useState(() => {
+    try {
+      return localStorage.getItem("fg_contact") ?? "";
+    } catch {
+      return "";
+    }
+  });
   // 人机验证：未启用时不拦截；启用后需先过验证拿到一次性 token
   const [ts, setTs] = useState<TurnstileState>({ enabled: false });
   const tsRef = useRef<TurnstileHandle>(null);
@@ -64,9 +72,18 @@ export default function Purchase() {
     setProcessing(true);
     try {
       // 带上 localStorage 里的推广码（首页 ?ref= 捕获），未领试用直接下单也能归因
-      const ref = localStorage.getItem("fg_ref") ?? undefined;
+      let ref: string | undefined;
+      try {
+        ref = localStorage.getItem("fg_ref") ?? undefined;
+      } catch {
+        /* ignore */
+      }
       const res = await api.createOrder(plan.id, contact.trim(), ref, ts.token);
-      localStorage.setItem("fg_contact", contact.trim()); // 记住邮箱，下次下单免填
+      try {
+        localStorage.setItem("fg_contact", contact.trim()); // 记住邮箱，下次下单免填
+      } catch {
+        /* ignore */
+      }
       setOrder(res.order);
       setStep("result");
     } catch (e) {
@@ -164,28 +181,18 @@ function PaymentResult({ order, plan }: { order: Order; plan: Plan }) {
   const payable = order.payable_cny ?? plan.price_cny;
   const discount = order.discount_cny ?? 0;
 
-  // 轮询订单状态，管理员确认（置 paid）后自动跳转提示
-  useEffect(() => {
-    if (paid || pollStopped) return;
-    const startedAt = Date.now();
-    const timer = setInterval(async () => {
-      if (Date.now() - startedAt > 10 * 60_000) {
-        setPollStopped(true);
-        clearInterval(timer);
-        return;
+  // 轮询订单状态，管理员确认（置 paid）后自动跳转提示；10 分钟后停止（人工收款确认可能更久）
+  usePolling(
+    !paid && !pollStopped,
+    async () => {
+      const s = await api.orderStatus(order.id);
+      if (s.status === "paid") {
+        setPaid(true);
+        return false;
       }
-      try {
-        const s = await api.orderStatus(order.id);
-        if (s.status === "paid") {
-          setPaid(true);
-          clearInterval(timer);
-        }
-      } catch {
-        /* 网络抖动忽略，下一轮再试 */
-      }
-    }, 3000);
-    return () => clearInterval(timer);
-  }, [paid, pollStopped, order.id]);
+    },
+    { intervalMs: 3000, timeoutMs: 10 * 60_000, onTimeout: () => setPollStopped(true) }
+  );
 
   if (paid) {
     return (
