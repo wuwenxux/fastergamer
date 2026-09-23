@@ -193,4 +193,24 @@ describe("notify-scan 试用到期转化邮件", () => {
     expect(tokens.store.has(KV.TOKEN + "uuid-rev")).toBe(false);
     expect(tokens.store.has(KV.TOKEN + "uuid-old")).toBe(false);
   });
+
+  it("未激活体验 token 超 5 天清理；5 天内保留", async () => {
+    const tokens = mockNs();
+    const tickets = mockNs();
+    const keep = makeTrial({ id: "tk_keep", uuid: "uuid-keep", status: "paid", purchased_at: Date.now() - 4 * 86_400_000 });
+    delete keep.activated_at;
+    delete keep.expires_at;
+    seedToken(tokens.store, keep);
+    const purge = makeTrial({ id: "tk_purge", uuid: "uuid-purge", status: "paid", purchased_at: Date.now() - 6 * 86_400_000 });
+    delete purge.activated_at;
+    delete purge.expires_at;
+    seedToken(tokens.store, purge);
+    stubMailOk();
+
+    const res = await runScan(app, makeEnv(tokens.ns, tickets.ns));
+    const body = (await res.json()) as { data: { purged_tokens: number } };
+    expect(body.data.purged_tokens).toBe(1);
+    expect(tokens.store.has(KV.TOKEN + "uuid-keep")).toBe(true);
+    expect(tokens.store.has(KV.TOKEN + "uuid-purge")).toBe(false);
+  });
 });

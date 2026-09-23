@@ -222,7 +222,7 @@ export const deleteDeviceIndex = (env: Env, uuid: string): Promise<void> =>
 /**
  * token 级联删除：主键 + id 反查索引 + presence 固定清；设备索引与试用领取标记按需。
  * - devices：token 可能有设备槽位的场景（管理端删除 / 90 天到期清理 / 发货竞态清理）传 true；
- *   超 3 天未激活体验 token 的清理不传（体验套餐单设备，不可能有槽位）。
+ *   超 5 天未激活体验 token 的清理不传（体验套餐单设备，不可能有槽位）。
  * - trialMarker：删 trial:{email} 领取标记。未激活体验 token 清理时必须保留
  *   （该邮箱仍算已领过，防同址反复领取）；其余删除场景清掉，避免残留脏数据。
  */
@@ -306,7 +306,7 @@ export const listTokensByContact = async (env: Env, contact: string): Promise<To
 
 /**
  * 试用领取标记（trial:{email}）：试用转正激励的锚点。
- * token 本身可被正常清理（未激活 3 天 / 过期 90 天），但只要这个邮箱领过试用，
+ * token 本身可被正常清理（未激活 5 天 / 过期 90 天），但只要这个邮箱领过试用，
  * 首次付费都享受转正赠送（converted_at 消费标记，防重复领取赠送）。
  */
 export interface TrialMarker {

@@ -450,7 +450,7 @@ adminRoutes.put("/tokens/:id", async (c) => {
 /**
  * POST /api/admin/notify-scan —— 定时风险扫描（cron 每 15 分钟调用）
  * 做五件事：清理过期 90 天的 token 与已结工单；
- * 清理超 3 天未激活的免费体验 token（白嫖/假邮箱垃圾）；
+ * 清理超 5 天未激活的免费体验 token（白嫖/假邮箱垃圾）；
  * 试用 token 到期翻转 expired 时发一次性转化邮件（同 token 充值引导，存量不补发）；
  * 付费 token 进入到期前 24 小时窗口时发一次性续费提醒（免登录续费按钮，幂等键 expire_24h）；
  * 超 3 天仍 pending 的订单自动取消（用户放弃支付，抵扣在发货时才扣、取消无需归还）。
@@ -473,13 +473,13 @@ adminRoutes.post("/notify-scan", async (c) => {
     if (!raw) continue;
     const token = JSON.parse(raw) as Token;
 
-    // 未激活的免费体验 token 超 3 天：白嫖/假邮箱留下的垃圾（永远不会激活，90 天规则扫不到
+    // 未激活的免费体验 token 超 5 天：白嫖/假邮箱留下的垃圾（永远不会激活，90 天规则扫不到
     // paid 状态），直接清掉。trial 领取标记保留——该邮箱仍算已领过，防同址反复领取
     if (
       isTrialPlan(token.plan_id) &&
       token.status === "paid" &&
       (token.purchased_at ?? 0) > 0 &&
-      (token.purchased_at ?? 0) < now - 3 * 86_400_000
+      (token.purchased_at ?? 0) < now - 5 * 86_400_000
     ) {
       await deleteTokenCascade(c.env, token);
       purgedTokens++;
