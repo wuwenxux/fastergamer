@@ -406,6 +406,39 @@ describe("订阅拉取的客户端识别记录", () => {
     expect(presence.sub_fetches[devUuid].ip).toBe("5.6.7.8");
   });
 
+  it("UA/IP 未变的重复拉取不重复写 presence（24h 去重，省写配额）", async () => {
+    const { env, tokens } = await setup(makeToken());
+    const fetchOnce = async () => {
+      const c = collectCtx();
+      const res = await app.request(
+        `/api/sub?uuid=${UUID}`,
+        { headers: { "user-agent": "clash-verge/v2.0", "cf-connecting-ip": "1.2.3.4" } },
+        env,
+        c.ctx
+      );
+      expect(res.status).toBe(200);
+      await Promise.all(c.pending);
+    };
+
+    await fetchOnce();
+    const firstRaw = tokens.store.get(KV.PRESENCE + UUID)!;
+    // 同 UA/IP 24h 内再拉：presence 键原样不动（连 at 都不刷新）
+    await fetchOnce();
+    expect(tokens.store.get(KV.PRESENCE + UUID)).toBe(firstRaw);
+
+    // UA 变了（用户换了客户端）：必须重新写
+    const c = collectCtx();
+    await app.request(
+      `/api/sub?uuid=${UUID}`,
+      { headers: { "user-agent": "FlClash/v0.8", "cf-connecting-ip": "1.2.3.4" } },
+      env,
+      c.ctx
+    );
+    await Promise.all(c.pending);
+    const updated = JSON.parse(tokens.store.get(KV.PRESENCE + UUID)!);
+    expect(updated.sub_fetches[UUID].ua).toBe("FlClash/v0.8");
+  });
+
   it("过期 token 403，不产生拉取记录", async () => {
     const { env, tokens } = await setup(makeToken({ expires_at: Date.now() - 1000 }));
     const c = collectCtx();

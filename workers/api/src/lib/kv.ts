@@ -123,10 +123,14 @@ export const recordSubFetch = async (
   ip?: string
 ): Promise<void> => {
   const presence = (await getPresence(env, tokenUuid)) ?? {};
-  presence.sub_fetches = {
-    ...(presence.sub_fetches ?? {}),
-    [subUuid]: { ua: ua.slice(0, 120), ip, at: Date.now() },
-  };
+  const now = Date.now();
+  const entry = { ua: ua.slice(0, 120), ip, at: now };
+  // UA/IP 未变且 24h 内已写过：跳过 put。部分客户端刷新勤（手动刷新/重启），
+  // 每次拉取都写 presence 是纯粹的写配额浪费；at 精度降到 24h 粒度不影响
+  // 「订阅客户端」识别（管理端看的是 UA/IP 是什么，不是精确到分钟的拉取时间）
+  const prev = presence.sub_fetches?.[subUuid];
+  if (prev && prev.ua === entry.ua && prev.ip === entry.ip && now - prev.at < 86_400_000) return;
+  presence.sub_fetches = { ...(presence.sub_fetches ?? {}), [subUuid]: entry };
   await env.TOKENS.put(KV.PRESENCE + tokenUuid, JSON.stringify(presence));
 };
 

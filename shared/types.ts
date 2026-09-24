@@ -443,6 +443,7 @@ export const KV = {
   BONUS: "bonus:", // bonus:{email}:{planId} → { granted_at }（套餐赠送时长每邮箱每套餐限一次，存 TOKENS namespace）
   TRIAL_IP: "trialip:", // trialip:{ip} → 1（免费体验每 IP 每天限领一次，TTL 24h，存 TOKENS namespace）
   REFCODE: "refcode:", // refcode:{code} → { email }（推广码反查邀请人，存 TOKENS namespace）
+  REFOWNER: "refowner:", // refowner:{email} → { code }（邮箱→推广码反查键，免全表扫，存 TOKENS namespace）
   REFCREDIT: "refcredit:", // refcredit:{email} → { earned, used }（推广减免额度，单位：个 ×10元，存 TOKENS namespace）
   REFERRAL: "referral:", // referral:{被邀请人email} → { referrer_email, created_at }（存 TOKENS namespace）
   REG: "reg:", // reg:{账号email} → Registration JSON（防失联登记，存 TOKENS namespace）

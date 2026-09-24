@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { KV } from "../../../../shared/types";
-import { consumeCredit, getCredit, orderDiscount } from "../lib/referral";
+import { consumeCredit, getCredit, getOrCreateRefCode, orderDiscount } from "../lib/referral";
 import type { Env } from "../types";
 
 /** 内存版 TOKENS namespace（Map 实现 get/put） */
@@ -65,5 +65,48 @@ describe("consumeCredit（check-and-set 收在函数内，防并发双花）", (
     const { env, ns } = mockEnv();
     await expect(consumeCredit(env, "a@example.com", 0)).resolves.toBe(true);
     expect(ns.put).not.toHaveBeenCalled();
+  });
+});
+
+describe("getOrCreateRefCode（refowner 反查键免全表扫）", () => {
+  /** 带 list 的内存 ns（全表扫兜底路径要用） */
+  const mockEnvWithList = () => {
+    const store = new Map<string, string>();
+    const ns = {
+      get: vi.fn(async (key: string) => store.get(key) ?? null),
+      put: vi.fn(async (key: string, value: string) => void store.set(key, value)),
+      list: vi.fn(async (opts: { prefix?: string }) => ({
+        keys: [...store.keys()].filter((k) => k.startsWith(opts.prefix ?? "")).map((name) => ({ name })),
+        list_complete: true,
+        cursor: "",
+      })),
+    } as unknown as KVNamespace;
+    return { env: { TOKENS: ns } as unknown as Env, store, ns };
+  };
+
+  it("反查键命中：1 次读直接返回，不 list 全表", async () => {
+    const { env, ns } = mockEnvWithList();
+    await ns.put(KV.REFOWNER + "a@example.com", JSON.stringify({ code: "abcd1234" }));
+    await expect(getOrCreateRefCode(env, "a@example.com")).resolves.toBe("abcd1234");
+    expect(ns.list).not.toHaveBeenCalled();
+  });
+
+  it("历史数据（只有 refcode 键）：全表扫命中并回写反查键自愈", async () => {
+    const { env, store, ns } = mockEnvWithList();
+    store.set(KV.REFCODE + "beef5678", JSON.stringify({ email: "old@example.com" }));
+    await expect(getOrCreateRefCode(env, "old@example.com")).resolves.toBe("beef5678");
+    expect(JSON.parse(store.get(KV.REFOWNER + "old@example.com")!)).toEqual({ code: "beef5678" });
+    // 自愈后第二次走反查键，不再 list
+    (ns.list as ReturnType<typeof vi.fn>).mockClear();
+    await expect(getOrCreateRefCode(env, "old@example.com")).resolves.toBe("beef5678");
+    expect(ns.list).not.toHaveBeenCalled();
+  });
+
+  it("全新邮箱：创建推广码并同时写 refcode/refowner 双键", async () => {
+    const { env, store } = mockEnvWithList();
+    const code = await getOrCreateRefCode(env, "new@example.com");
+    expect(code).toMatch(/^[0-9a-f]{8}$/);
+    expect(JSON.parse(store.get(KV.REFCODE + code)!)).toEqual({ email: "new@example.com" });
+    expect(JSON.parse(store.get(KV.REFOWNER + "new@example.com")!)).toEqual({ code });
   });
 });

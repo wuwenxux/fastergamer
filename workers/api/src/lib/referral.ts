@@ -30,13 +30,26 @@ export interface RefCredit {
 
 /** 取（或懒创建）某邮箱的推广码 */
 export const getOrCreateRefCode = async (env: Env, email: string): Promise<string> => {
+  // 反查键命中：1 次读直接返回，不扫全表
+  const owner = await env.TOKENS.get(KV.REFOWNER + email);
+  if (owner) {
+    try {
+      const { code } = JSON.parse(owner) as { code: string };
+      if (code) return code;
+    } catch {
+      /* 脏数据走全表扫兜底 */
+    }
+  }
+  // 反查键缺失（上线前的历史数据）：全表扫一次，命中则回写反查键（自愈，下次 O(1)）
   const keys = await listKeys(env.TOKENS, KV.REFCODE);
   for (const k of keys) {
     const raw = await env.TOKENS.get(k.name);
     if (!raw) continue;
     try {
       if ((JSON.parse(raw) as { email: string }).email === email) {
-        return k.name.slice(KV.REFCODE.length);
+        const code = k.name.slice(KV.REFCODE.length);
+        await env.TOKENS.put(KV.REFOWNER + email, JSON.stringify({ code }));
+        return code;
       }
     } catch {
       /* 忽略脏数据 */
@@ -44,6 +57,7 @@ export const getOrCreateRefCode = async (env: Env, email: string): Promise<strin
   }
   const code = crypto.randomUUID().replace(/-/g, "").slice(0, 8);
   await env.TOKENS.put(KV.REFCODE + code, JSON.stringify({ email }));
+  await env.TOKENS.put(KV.REFOWNER + email, JSON.stringify({ code }));
   return code;
 };
 
