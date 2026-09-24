@@ -120,6 +120,10 @@ class Ledger:
             fd, tmp = tempfile.mkstemp(dir=str(Path(self.path).parent), suffix=".tmp")
             with os.fdopen(fd, "w", encoding="utf-8") as f:
                 json.dump(data, f)
+                # fsync 落盘后再 replace：断电/内核崩溃时 tmp+rename 不保证数据已写穿，
+                # 最后一周期（30s）的 accum 可能丢（少计用户流量）。写量极小（~10KB/30s），fsync 成本可忽略
+                f.flush()
+                os.fsync(f.fileno())
             os.replace(tmp, self.path)
         except Exception as e:
             print(f"[warn] ledger save failed: {e}", file=sys.stderr)
