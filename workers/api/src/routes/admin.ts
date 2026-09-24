@@ -545,6 +545,11 @@ adminRoutes.post("/notify-scan", async (c) => {
     // 在线状态清扫：Xray 只在用户在线时才有 online 计数器，离线即消失，
     // 所以离线靠这里的窗口过期来判定。窗口与 agent 结算节奏对齐（30 分钟兜底上报 + 富余）。
     // 在线状态存 presence:{uuid}（键缺失时回退 token 旧字段），有变化才写。
+    // 只扫 active token：paid/expired/revoked 不可能在线（不在授权名单），
+    // 省掉每轮 96 次/天 × 非活跃 token 数的 presence 读——这是读配额最大单一消耗。
+    // 代价：刚翻转 expired 的 token presence.online 标志可能残留 true（时间戳照样过期），
+    // 无消费者关心非活跃 token 的在线标志，可接受
+    if (token.status !== "active") continue;
     const ONLINE_WINDOW_MS = 40 * 60_000;
     const presence = await getTokenPresence(c.env, token);
     const presenceBase: Presence = JSON.parse(JSON.stringify(presence));

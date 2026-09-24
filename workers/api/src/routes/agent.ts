@@ -61,8 +61,9 @@ function detectIpChange(presence: Presence, key: string, conns: Record<string, n
   return curr.filter((ip) => !prev.includes(ip));
 }
 
-/** nodestat 动态状态的最小写入间隔：流量累计按计数器差值计算，跳过中间写不丢量 */
-export const NODE_STAT_WRITE_MIN_INTERVAL_MS = 30 * 60_000;
+/** nodestat 动态状态的最小写入间隔：流量累计按计数器差值计算，跳过中间写不丢量。
+ *  60min 足够——在线状态由 probe-nodes.sh 每 5 分钟独立探测，last_seen 只是兜底 */
+export const NODE_STAT_WRITE_MIN_INTERVAL_MS = 60 * 60_000;
 
 /** 并发接入源判定的时间窗口：断联结算约 90 秒内到达，窗口内最近活跃的 IP 视为仍可能在线 */
 const CONCURRENT_IP_WINDOW_MS = 30 * 60_000;
