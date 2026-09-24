@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 # 客户端安装包自动更新：跟进 GitHub 官方最新 release，同步到 R2 桶 fg-clients。
-# 另每日同步 sing-box CN 分流规则集（geosite-cn / geosite-gfw / geoip-cn 的 .srs，
-# 官方挂在 rule-set 分支而非 release）到 rules/ 前缀，供 sing-box 订阅引用。
+# 另每日同步分流规则集：
+# - sing-box 用 .srs（geosite-cn / geosite-gfw / geoip-cn，官方挂在 rule-set 分支
+#   而非 release）到 rules/ 前缀，供 sing-box 订阅引用；
+# - mihomo 系 Clash 用 .mrs（MetaCubeX/meta-rules-dat 的 meta 分支）到 rules/mrs/
+#   前缀，clash 订阅以 rule-providers 引用（RULE-SET,geosite-cn 等）。
 #
 # 协议约束（重要）：只从 clash-verge-rev、ClashMetaForAndroid 与 SagerNet/sing-box
 # 三个官方仓库取包——前两者为 mihomo / Clash Meta 内核，原生支持本站节点的
@@ -107,6 +110,24 @@ RULE_SETS = [
     ),
 ]
 
+# mihomo 系 Clash 规则库（.mrs）：clash 订阅以 rule-providers + RULE-SET 引用，
+# 客户端每日自更新。数据源是 MetaCubeX/meta-rules-dat 的 meta 分支（mihomo 官方
+# 推荐）。同样规避 "!" 文件名：geolocation-!cn.mrs → geosite-gfw.mrs
+MRS_RULE_SETS = [
+    (
+        "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geosite/cn.mrs",
+        "rules/mrs/geosite-cn.mrs",
+    ),
+    (
+        "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geosite/geolocation-%21cn.mrs",
+        "rules/mrs/geosite-gfw.mrs",
+    ),
+    (
+        "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geoip/cn.mrs",
+        "rules/mrs/geoip-cn.mrs",
+    ),
+]
+
 
 def log(msg):
     print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {msg}", flush=True)
@@ -188,18 +209,20 @@ def update_repo(repo, key, matchers, state, versions):
 
 
 def sync_rule_sets():
-    """规则集每日全量同步：raw.githubusercontent 国内不可达，经 hk02 中转下载后传 R2"""
+    """规则集每日全量同步：raw.githubusercontent 国内不可达，经 hk02 中转下载后传 R2。
+    .srs 供 sing-box 订阅，.mrs 供 mihomo 系 Clash 的 rule-providers"""
+    all_sets = RULE_SETS + MRS_RULE_SETS
     tmp = tempfile.mkdtemp(prefix="fg-rules-")
     try:
         run(SSH + [HK02, f"rm -rf {REMOTE_DIR} && mkdir -p {REMOTE_DIR}"])
-        for url, obj in RULE_SETS:
+        for url, obj in all_sets:
             name = obj.split("/")[-1]
             log(f"rules: hk02 下载 {name}")
             run(SSH + [HK02, f"curl -fSL --retry 3 -o {REMOTE_DIR}/{name} '{url}'"], timeout=600)
         run(["rsync", "-az", "-e", " ".join(SSH), f"{HK02}:{REMOTE_DIR}/", tmp + "/"], timeout=600)
-        for _, obj in RULE_SETS:
+        for _, obj in all_sets:
             path = os.path.join(tmp, obj.split("/")[-1])
-            if os.path.getsize(path) < 10_000:  # .srs 至少几百 KB，过小视为拉取异常
+            if os.path.getsize(path) < 10_000:  # .srs/.mrs 至少几十 KB，过小视为拉取异常
                 raise RuntimeError(f"{obj} 只有 {os.path.getsize(path)} B，疑似损坏，中止上传")
             log(f"rules: 上传 R2 {obj}（{os.path.getsize(path)} B）")
             r2_put(obj, path)

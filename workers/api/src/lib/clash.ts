@@ -63,6 +63,13 @@ export interface BuildConfigInput {
 export const supportsGeosite = (ua: string | undefined): boolean =>
   /mihomo|verge|meta|stash|flclash/i.test(ua ?? "");
 
+/** 支持 rule-providers（.mrs 在线规则库，每日更新）的内核：仅 mihomo 系。
+ *  比 supportsGeosite 少一个 Stash——它对 mrs/rule-providers 的兼容性不确定，
+ *  保守留在内置 GEOSITE 路径。mihomo 系走 RULE-SET 后规则库从 dl.fastergamer.click
+ *  每日同步（scripts/update-clients.py 推 R2），不再依赖客户端自带陈旧 geo 数据 */
+export const supportsRuleProviders = (ua: string | undefined): boolean =>
+  /mihomo|verge|meta|flclash/i.test(ua ?? "");
+
 /**
  * 支持 Reality / Hysteria2 条目的客户端：mihomo 系之外加 Shadowrocket——
  * 它官方兼容 Clash YAML 配置导入（含 reality-opts / hysteria2 代理类型），
@@ -289,8 +296,10 @@ export const buildClashConfig = ({ uuid, nodes, regions, userAgent, nodeIps, isp
       `    uuid: ${uuid}`,
       "    network: ws",
       `    tls: ${p.tls}`,
-      // UDP 中继（游戏/语音/QUIC 走代理依赖它）；VLESS 原生支持，UDP 包走 WS 隧道
-      "    udp: true",
+      // WS 隧道仅支持 TCP（节点 Xray 未开 UDP over WS）：标 true 会让客户端把
+      // 游戏语音/QUIC 的 UDP 包送进 WS 然后静默黑洞。需要 UDP 的用户由自动分组
+      // 选到 🚀Hy2 / ⚡Reality 条目（那两条保留 udp: true）
+      "    udp: false",
       // server 是 IP 时 TLS SNI 仍用域名，证书链校验不受影响
       ...(p.tls ? [`    servername: ${p.host}`] : []),
       "    ws-opts:",
@@ -393,6 +402,30 @@ export const buildClashConfig = ({ uuid, nodes, regions, userAgent, nodeIps, isp
     lines.push(`    url: ${SPEED_TEST_URL}`, "    interval: 300", "    tolerance: 50");
   }
 
+  // mihomo 系内核：规则库改为在线 rule-providers（.mrs，dl.fastergamer.click 每日同步），
+  // 客户端每 86400s 自更新，不再受内置 geo 数据陈旧影响；Stash/Premium 仍走下文的
+  // GEOSITE/GEOIP 老路径。RULE-SET 引用名与此处的 key 一一对应
+  const ruleProviders = supportsRuleProviders(userAgent);
+  if (ruleProviders) {
+    const MRS_BASE = "https://dl.fastergamer.click/rules/mrs";
+    lines.push("", "rule-providers:");
+    for (const [name, behavior] of [
+      ["geosite-cn", "domain"],
+      ["geosite-gfw", "domain"],
+      ["geoip-cn", "ipcidr"],
+    ] as const) {
+      lines.push(
+        `  ${name}:`,
+        "    type: http",
+        "    format: mrs",
+        `    behavior: ${behavior}`,
+        `    url: "${MRS_BASE}/${name}.mrs"`,
+        `    path: ./ruleset/${name}.mrs`,
+        "    interval: 86400"
+      );
+    }
+  }
+
   lines.push("", "rules:");
   // 订阅/官网域名强制直连：防止全局模式或 TUN 下访问订阅域名被送进代理节点，
   // 节点异常时订阅更新失败（GEOIP 规则在全局模式下不生效）。
@@ -431,16 +464,24 @@ export const buildClashConfig = ({ uuid, nodes, regions, userAgent, nodeIps, isp
     "  - DOMAIN-SUFFIX,xhslink.com,DIRECT"
   );
   // 国内站点直连：
-  // 1) GEOSITE,CN 按域名匹配（cn 域名列表），fake-ip / 域名先行场景也能命中——
-  //    仅 mihomo/Stash 等新内核支持，老内核（Premium）下发会整个配置加载失败，按 UA 降级
-  // 2) GEOSITE,geolocation-!cn 已知境外域名直接进代理：抢在 GEOIP 之前，避免为判
-  //    GEOIP 而对根本不需要本地真实 IP 的域名做一次解析（fake-ip 下代理解析在节点侧完成）
-  // 3) GEOIP,CN 按解析结果 IP 兜底（只剩未分类域名走到这，默认国内 DNS 判定可靠）
-  if (geosite) {
-    lines.push("  - GEOSITE,CN,DIRECT");
-    lines.push(`  - GEOSITE,geolocation-!cn,${MAIN_GROUP}`);
+  // 1) 域名分流：mihomo 系用 RULE-SET,geosite-cn（在线 .mrs，每日更新）；
+  //    Stash 用内置 GEOSITE,CN；老内核（Premium）两者都不支持，按 UA 降级省略——
+  //    fake-ip / 域名先行场景也能命中
+  // 2) 已知境外域名直接进代理：抢在 IP 判定之前，避免为判 GEOIP 而对根本不需要
+  //    本地真实 IP 的域名做一次解析（fake-ip 下代理解析在节点侧完成）
+  // 3) IP 兜底：mihomo 系用 RULE-SET,geoip-cn，其余内核用内置 GEOIP,CN
+  //    （只剩未分类域名走到这，默认国内 DNS 判定可靠）
+  if (ruleProviders) {
+    lines.push("  - RULE-SET,geosite-cn,DIRECT");
+    lines.push(`  - RULE-SET,geosite-gfw,${MAIN_GROUP}`);
+    lines.push("  - RULE-SET,geoip-cn,DIRECT");
+  } else {
+    if (geosite) {
+      lines.push("  - GEOSITE,CN,DIRECT");
+      lines.push(`  - GEOSITE,geolocation-!cn,${MAIN_GROUP}`);
+    }
+    lines.push("  - GEOIP,CN,DIRECT");
   }
-  lines.push("  - GEOIP,CN,DIRECT");
   lines.push(`  - MATCH,${MAIN_GROUP}`);
 
   return lines.join("\n");

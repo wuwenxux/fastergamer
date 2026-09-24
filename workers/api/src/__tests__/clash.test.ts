@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Node } from "../../../../shared/types";
-import { buildClashConfig, supportsGeosite, supportsModernProtocols } from "../lib/clash";
+import { buildClashConfig, supportsGeosite, supportsModernProtocols, supportsRuleProviders } from "../lib/clash";
 
 const NODES: Node[] = [
   { id: "n1", key: "k", name: "香港 CN2", region: "HK", host: "hk1.example.com", port: 443, tls: true, ws_path: "/ws", active: true },
@@ -55,10 +55,10 @@ describe("buildClashConfig 分组结构", () => {
     expect(config).not.toContain("us1.example.com");
   });
 
-  it("每个代理开启 UDP 中继", () => {
-    const udpCount = (config.match(/^\s+udp: true$/gm) ?? []).length;
+  it("WS 条目 udp: false——WS 隧道仅支持 TCP，虚标 true 会让 UDP 静默黑洞", () => {
     const activeCount = NODES.filter((n) => n.active).length;
-    expect(udpCount).toBe(activeCount);
+    expect((config.match(/^\s+udp: false$/gm) ?? []).length).toBe(activeCount);
+    expect(config).not.toMatch(/^\s+udp: true$/gm);
   });
 });
 
@@ -76,6 +76,16 @@ describe("supportsGeosite UA 判断", () => {
 
   it("undefined → false", () => {
     expect(supportsGeosite(undefined)).toBe(false);
+  });
+});
+
+describe("supportsRuleProviders UA 判断", () => {
+  it.each(["mihomo/v1.18", "clash-verge/v2.0", "Clash.Meta", "FlClash/v0.8"])("%s → true", (ua) => {
+    expect(supportsRuleProviders(ua)).toBe(true);
+  });
+
+  it.each(["Stash/2.5", "ClashforWindows/0.20.39", "Shadowrocket/2.2.50", ""])("%s → false", (ua) => {
+    expect(supportsRuleProviders(ua)).toBe(false);
   });
 });
 
@@ -105,37 +115,73 @@ describe("supportsModernProtocols（Reality/Hy2 条目门控）", () => {
 });
 
 describe("GEOSITE 规则按 UA 降级", () => {
-  it("老 UA：无 GEOSITE,CN 规则，dns 用 +.cn policy", () => {
+  it("老 UA：无 GEOSITE,CN / RULE-SET 规则，dns 用 +.cn policy", () => {
     const config = buildClashConfig({ uuid: UUID, nodes: NODES, userAgent: OLD_UA });
     expect(config).not.toContain("GEOSITE,CN");
+    expect(config).not.toContain("RULE-SET");
+    expect(config).not.toContain("rule-providers:");
     expect(config).toContain('"+.cn": 223.5.5.5');
     expect(config).not.toContain('"geosite:cn"');
   });
 
-  it("新 UA：GEOSITE,CN 规则与 geosite dns policy 都在", () => {
+  it("mihomo UA：走 RULE-SET（在线 .mrs 规则库）+ geosite dns policy", () => {
     const config = buildClashConfig({ uuid: UUID, nodes: NODES, userAgent: NEW_UA });
-    expect(config).toContain("GEOSITE,CN,DIRECT");
+    expect(config).toContain("RULE-SET,geosite-cn,DIRECT");
+    expect(config).toContain("RULE-SET,geoip-cn,DIRECT");
+    expect(config).not.toContain("GEOSITE,CN");
     expect(config).toContain('"geosite:cn": [https://dns.alidns.com/dns-query, 223.5.5.5]');
   });
 
-  it("新 UA：geolocation-!cn 直接代理抢在 GEOIP 前，且不再下发 1.1.1.1 DoH policy", () => {
+  it("mihomo UA：rule-providers 三项齐全，指向 dl 站每日同步的 .mrs", () => {
     const config = buildClashConfig({ uuid: UUID, nodes: NODES, userAgent: NEW_UA });
-    const gfwRule = config.indexOf("GEOSITE,geolocation-!cn,🚀 节点选择");
+    expect(config).toContain("rule-providers:");
+    for (const [name, behavior] of [
+      ["geosite-cn", "domain"],
+      ["geosite-gfw", "domain"],
+      ["geoip-cn", "ipcidr"],
+    ]) {
+      expect(config).toContain(`${name}:`);
+      expect(config).toContain(`url: "https://dl.fastergamer.click/rules/mrs/${name}.mrs"`);
+      expect(config).toContain(`behavior: ${behavior}`);
+    }
+    expect(config).toContain("format: mrs");
+  });
+
+  it("Stash UA：不支持 rule-providers，仍用内置 GEOSITE/GEOIP 路径", () => {
+    const config = buildClashConfig({ uuid: UUID, nodes: NODES, userAgent: "Stash/2.5" });
+    expect(config).toContain("GEOSITE,CN,DIRECT");
+    expect(config).toContain("GEOIP,CN,DIRECT");
+    expect(config).not.toContain("RULE-SET");
+    expect(config).not.toContain("rule-providers:");
+  });
+
+  it("mihomo UA：geosite-gfw 直接代理抢在 IP 判定前，且不再下发 1.1.1.1 DoH policy", () => {
+    const config = buildClashConfig({ uuid: UUID, nodes: NODES, userAgent: NEW_UA });
+    const gfwRule = config.indexOf("RULE-SET,geosite-gfw,🚀 节点选择");
     expect(gfwRule).toBeGreaterThan(-1);
-    // 必须在 GEOIP,CN 之前，否则境外域名仍会为判 GEOIP 触发一次本地解析
-    expect(gfwRule).toBeLessThan(config.indexOf("GEOIP,CN,DIRECT"));
+    // 必须在 geoip-cn 之前，否则境外域名仍会为判 IP 触发一次本地解析
+    expect(gfwRule).toBeLessThan(config.indexOf("RULE-SET,geoip-cn,DIRECT"));
     // 1.1.1.1 DoH 在国内实测不可达，且规则前置后该 policy 已是死代码
     expect(config).not.toContain("1.1.1.1");
+  });
+
+  it("Stash UA：geolocation-!cn 直接代理抢在 GEOIP 前", () => {
+    const config = buildClashConfig({ uuid: UUID, nodes: NODES, userAgent: "Stash/2.5" });
+    const gfwRule = config.indexOf("GEOSITE,geolocation-!cn,🚀 节点选择");
+    expect(gfwRule).toBeGreaterThan(-1);
+    expect(gfwRule).toBeLessThan(config.indexOf("GEOIP,CN,DIRECT"));
   });
 
   it("老 UA：不下发 geolocation-!cn 规则", () => {
     const config = buildClashConfig({ uuid: UUID, nodes: NODES, userAgent: OLD_UA });
     expect(config).not.toContain("geolocation-!cn");
+    expect(config).not.toContain("geosite-gfw");
   });
 
   it("缺省 UA 按老内核处理", () => {
     const config = buildClashConfig({ uuid: UUID, nodes: NODES });
     expect(config).not.toContain("GEOSITE,CN");
+    expect(config).not.toContain("RULE-SET");
     expect(config).toContain('"+.cn": 223.5.5.5');
   });
 });
@@ -149,14 +195,19 @@ describe("直连规则", () => {
     }
   });
 
-  it("小红书域名强制直连，且规则排在 GEOSITE/GEOIP 之前（不依赖解析结果）", () => {
+  it("小红书域名强制直连，且规则排在域名/IP 分流判定之前（不依赖解析结果）", () => {
     for (const ua of [NEW_UA, OLD_UA]) {
       const config = buildClashConfig({ uuid: UUID, nodes: NODES, userAgent: ua });
+      // mihomo 走 RULE-SET,geoip-cn，老内核走 GEOIP,CN——取实际存在的那条做锚点
+      const anchor = config.includes("RULE-SET,geoip-cn")
+        ? config.indexOf("RULE-SET,geoip-cn,DIRECT")
+        : config.indexOf("GEOIP,CN,DIRECT");
+      expect(anchor).toBeGreaterThan(-1);
       for (const d of ["xiaohongshu.com", "xhscdn.com", "xhslink.com"]) {
         const rule = config.indexOf(`DOMAIN-SUFFIX,${d},DIRECT`);
         expect(rule).toBeGreaterThan(-1);
-        // 其 CDN 有境外边缘 IP，必须抢在 GEOSITE/GEOIP 判定之前
-        expect(rule).toBeLessThan(config.indexOf("GEOIP,CN,DIRECT"));
+        // 其 CDN 有境外边缘 IP，必须抢在分流判定之前
+        expect(rule).toBeLessThan(anchor);
       }
     }
   });
@@ -230,6 +281,9 @@ describe("Reality 直连条目（⚡）", () => {
     expect(config).toContain("short-id: abcd1234");
     // Reality 的 SNI 是伪装站，不是节点域名
     expect(config).toContain("servername: gateway.icloud.com");
+    // ⚡/🚀 条目保留 UDP 中继（WS 条目已关闭，UDP 需求由这两条承接）
+    const realityBlock = config.slice(config.indexOf('"HK 香港 CN2 ⚡03"'));
+    expect(realityBlock).toContain("udp: true");
     // 无 reality 的节点不生成 ⚡
     expect(config).not.toContain("JP 日本 ⚡");
   });
