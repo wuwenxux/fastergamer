@@ -13,9 +13,13 @@ const KEY_STORAGE = "fg_admin_key";
 const PLAN_SHORT: Record<string, string> = {
   plan_trial: "试用",
   plan_3days: "试用", // 历史 id，存量 token/订单仍是它
+  plan_pack_1g: "流量包1G",
+  plan_pack_5g: "流量包5G",
+  plan_monthly_sub: "连月",
   plan_monthly: "月付",
   plan_quarterly: "季付",
   plan_yearly: "包年",
+  plan_yearly_std: "年付",
   plan_2years: "两年",
 };
 

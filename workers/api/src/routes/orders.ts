@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import { isTrialPlan, type CreateOrderRequest, type CreateOrderResponse, type Order } from "../../../../shared/types";
 import { getSessionAccount } from "../lib/accounts";
+import { checkContinuityEligibility, continuityContactError, continuityRuleFor } from "../lib/continuity";
 import { isDisposableEmail } from "../lib/disposable-email";
 import { isEmail } from "../lib/email-aliyun";
 import { escapeHtml } from "../lib/escape-html";
@@ -27,6 +28,11 @@ ordersRoutes.post("/", async (c) => {
   if (!body?.plan_id) {
     return c.json({ ok: false, error: "plan_id is required" }, 400);
   }
+  // 连续价套餐（连续包月/连续包年）资格按联系方式判定，先于通用 contact 校验给专属文案
+  const continuityRule = continuityRuleFor(body.plan_id);
+  if (continuityRule && !body.contact?.trim()) {
+    return c.json({ ok: false, error: continuityContactError(continuityRule) }, 400);
+  }
   if (!body.contact?.trim()) {
     return c.json({ ok: false, error: "contact is required for token recovery" }, 400);
   }
@@ -52,6 +58,15 @@ ordersRoutes.post("/", async (c) => {
   if (plan.id.startsWith("plan_biz")) {
     return c.json({ ok: false, error: "企业套餐请前往 fastergamer.cn 邮件洽谈" }, 400);
   }
+  // 连续价套餐（连续包月/连续包年）：校验续费连续性（首购放行；
+  // 断缴超宽限拒绝，文案引导回对应常价套餐）；非连续价套餐直接放行
+  const continuityDenied = await checkContinuityEligibility(
+    c.env,
+    plan.id,
+    body.contact.trim().toLowerCase(),
+    Date.now()
+  );
+  if (continuityDenied) return c.json({ ok: false, error: continuityDenied }, 400);
 
   const order: Order = {
     id: newOrderId(),
@@ -67,8 +82,8 @@ ordersRoutes.post("/", async (c) => {
     c.executionCtx.waitUntil(recordReferral(c.env, refCode, order.contact!.toLowerCase()));
   }
 
-  // 推广减免：登录 session 邮箱与下单邮箱一致时，用可用额度抵扣（每额度 10 元，可叠加）。
-  // 抵扣金额向下取整到 10 的倍数，与 consumeCredit 按个数记账对齐，避免零头漏损。
+  // 推广减免：登录 session 邮箱与下单邮箱一致时，用可用额度抵扣（每额度 5 元，可叠加）。
+  // 抵扣金额向下取整到 5 的倍数，与 consumeCredit 按个数记账对齐，避免零头漏损。
   // 这里只试算并记录在订单上，不扣额度——扣减挪到发货成功路径（fulfillOrder 内），
   // 避免用户放弃支付/发货失败时额度被白扣（无归还路径）。
   const account = await getSessionAccount(c.env, c.req.header("authorization"));

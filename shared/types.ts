@@ -12,6 +12,34 @@ export const TRIAL_PLAN_ID = "plan_trial";
 export const isTrialPlan = (planId: string): boolean =>
   planId === TRIAL_PLAN_ID || planId === "plan_3days";
 
+/** 流量包套餐 id 前缀：plan_pack_*（如 plan_pack_5g、plan_pack_1g） */
+export const DATA_PACK_PLAN_PREFIX = "plan_pack_";
+
+/** 首个流量包套餐 id（5 GB / 90 天，¥8 的轻量总量包） */
+export const DATA_PACK_PLAN_ID = "plan_pack_5g";
+
+/**
+ * 连续包月套餐 id（与 ¥12 月付同规格，¥10 连续续费专享价）。
+ * 资格规则：按订单 contact 判定——首购（无记录）放行；有记录要求上次连续包月订单
+ * 支付成功时间在 37 天内（30 天周期 + 7 天断缴宽限），否则拒绝并引导回 ¥12 月付。
+ * 记录键 KV.SUBMON（lib/continuity.ts）。
+ */
+export const MONTHLY_SUB_PLAN_ID = "plan_monthly_sub";
+
+/** 连续包年套餐 id（¥110，连续性资格规则同连续包月，窗口 365 天 + 30 天宽限；lib/continuity.ts） */
+export const YEARLY_PLAN_ID = "plan_yearly";
+
+/** 正常年付套餐 id（¥120，随时可买无门槛；连续续费从第二年起每年送 1 个月；lib/continuity.ts） */
+export const YEARLY_STD_PLAN_ID = "plan_yearly_std";
+
+/**
+ * 判定流量包套餐：纯总量包（无月度配额），单价太低，不参与推广返利结算
+ * （¥8 购买不该给邀请人记 ¥5 额度）且售出不退（退款折算入口直接拒绝）。
+ * 按 plan_pack_ 前缀判定，该系列新档（如 plan_pack_1g）自动适用同一规则。
+ */
+export const isDataPackPlan = (planId: string): boolean =>
+  planId.startsWith(DATA_PACK_PLAN_PREFIX);
+
 /** 套餐定义（购买项） */
 export interface Plan {
   id: string;
@@ -50,6 +78,25 @@ export interface Device {
   traffic_used_gb: number;
   created_at: number;
   last_active_at?: number;
+  /** 该槽位凭证的设备防护白名单（lib/device-guard.ts：机主确认「允许」的接入 IP，
+   *  不再参与并发阻断判定；上限 10，超出淘汰最旧） */
+  allowed_ips?: string[];
+  /** 迁移过渡名单（ip → 过渡截止时间 unix ms）：device-guard「允许」为新设备建独立槽位后，
+   *  被拦 IP 在 7 天过渡期内视同白名单（新设备还没导入专属链接，仍共用旧凭证）；
+   *  到期仍活跃则移出名单、按新 IP 重新走 pending→确认→阻断 */
+  transition_ips?: Record<string, number>;
+}
+
+/** 设备级防护自动阻断台账条目（lib/device-guard.ts）；手动封禁（blocked-ips 端点）不进台账 */
+export interface DeviceGuardEntry {
+  /** 涉事凭证 uuid（主 uuid 或设备槽位 uuid）：「允许」时决定白名单落到 token 还是对应槽位 */
+  uuid: string;
+  /** 阻断时间（unix 毫秒） */
+  at: number;
+  /** pending = 待机主决策 / denied = 机主确认拒绝（保持阻断、不再提醒） */
+  status: "pending" | "denied";
+  /** 阻断时的 IP 归属地展示串（邮件与管理页展示用；查询失败时缺省） */
+  geo?: string;
 }
 
 /** Token 状态机 */
@@ -111,6 +158,15 @@ export interface Token {
   active_ips?: Record<string, string[]>;
   /** 用户自助封禁的接入 IP 列表；agent 同步到各节点防火墙，被封 IP 无法连接任何节点 */
   blocked_ips?: string[];
+  /** 主 uuid 的设备防护白名单（lib/device-guard.ts：机主确认「允许」的接入 IP，
+   *  不再参与并发阻断判定；上限 10，超出淘汰最旧） */
+  allowed_ips?: string[];
+  /** 迁移过渡名单（ip → 过渡截止时间 unix ms），语义同 Device.transition_ips */
+  transition_ips?: Record<string, number>;
+  /** 设备级防护自动阻断台账（lib/device-guard.ts）：key = 被阻断 IP。
+   *  自动阻断与手动封禁共用 blocked_ips 链路（全局生效，同 NAT 出口有误伤面），
+   *  台账存在的意义就是区分二者并提供一键救济 */
+  device_guard?: Record<string, DeviceGuardEntry>;
   /** 已发送过的风险提醒（类型 → 发送时间戳），防止重复打扰 */
   notify_log?: Record<string, number>;
   /** 机房滥用标记：体验 token 被判定为机器（机房/代理 IP 流量为主）后置 true，转每日定额限速，不撤销 */
@@ -128,6 +184,14 @@ export interface Token {
   share_warned_at?: number;
   /** 连续超标记录：最近一次超标时间 + 连续次数。超过 30 分钟未再超标则重新计数 */
   share_conn_strikes?: { at: number; count: number };
+  /** 上次自助解除订阅绑定的时间（unix 毫秒）：解绑冷却 7 天判定用（lib/sub-lock.ts） */
+  sub_unbind_at?: number;
+  /** 并发观测记录（个人多设备套餐阶梯制：>3 且 ≤5 并发只记录不处置）：
+   *  最近一次观测时间 + 当时并发数。写节流 1h（省 KV 写），不参与警告/暂停状态机 */
+  conn_observe?: { at: number; conns: number };
+  /** 不可能旅行事件累积：最近一次命中时间 + 连续次数。超过 30 分钟未再犯重新计数
+   *  （仿 share_conn_strikes）；只累积 + 节流提醒，不接自动处置（lib/travel-guard.ts） */
+  travel_strikes?: { at: number; count: number };
   /** 流量速率窗口起点（unix 毫秒），用于暴增检测 */
   rate_window_start?: number;
   /** 当前速率窗口内新增流量（bytes） */
@@ -178,10 +242,18 @@ export interface Presence {
   traffic_by_ip?: Record<string, IpStat>;
   /** 上一上报周期的活跃接入 IP（key：node.id 或 node.id:设备uuid），用于接入地址变更检测 */
   active_ips?: Record<string, string[]>;
-  /** 各 key 最近一次确认的接入地理位置键（country / region / city 拼接，不含运营商），与 active_ips 同步更新；同城换 IP 只更新基线不提醒 */
-  active_geo?: Record<string, string>;
+  /** 各 key 最近一次确认的接入地理位置：{ g: 位置键（country / region / city 拼接，不含运营商），at: 确认时间（unix 毫秒） }，
+   *  与 active_ips 同步更新；同城换 IP 只更新基线不提醒。at 是不可能旅行检测的时间基线（lib/travel-guard.ts）。
+   *  存量数据为裸字符串（无 at，无法判定时间差）——读侧必须兼容，遇旧值只更新基线不判定 */
+  active_geo?: Record<string, string | { g: string; at: number }>;
   /** 各订阅 uuid（主 uuid 或设备槽位 uuid）最近一次拉取订阅的客户端 UA / 来源 IP / 时间 */
   sub_fetches?: Record<string, SubFetch>;
+  /** 订阅设备锁绑定表（lib/sub-lock.ts）：订阅 uuid → 客户端家族指纹 → 绑定信息。
+   *  每链接容量 1 个指纹，首个拉取者懒惰认领；条目 30 天未拉取自动过期。与 sub_fetches 并存不动旧结构 */
+  sub_fps?: Record<string, Record<string, SubFetch & { first_at: number }>>;
+  /** 设备级防护首周期可疑新 IP 暂存（lib/device-guard.ts，key = 凭证 uuid）：
+   *  下一周期并发仍 ≥2 且其中仍有在线者才执行阻断（吸收 WiFi↔5G 切换的瞬时双 IP） */
+  dg_pending?: Record<string, { at: number; ips: string[] }>;
 }
 
 /** IP 归属解析结果（geo:{ip} 缓存值，TTL 30 天；管理端地理分布与安全提醒邮件共用） */
@@ -253,7 +325,7 @@ export interface Order {
   epay_qr_code?: string;
   /** 支付平台交易号（历史订单回调时记录，用于对账/退款） */
   trade_no?: string;
-  /** 推广减免金额（元）：邀请新用户注册获得，每个额度减 10 元 */
+  /** 推广减免金额（元）：邀请新用户注册获得，每个额度减 5 元 */
   discount_cny?: number;
   /** 实付金额（元）= 套餐价 - 减免；无减免时等于套餐价 */
   payable_cny?: number;
@@ -450,4 +522,7 @@ export const KV = {
   MAILTHROTTLE: "mailthrottle:", // mailthrottle:{sha1(email)} → 计数（收件人邮件节流，1h TTL，存 TOKENS namespace）
   IPINFO: "ipinfo:", // ipinfo:{ip} → 机房/代理分类缓存（TTL 30 天，体验 token 滥用判定用，存 TOKENS namespace）
   GEO: "geo:", // geo:{ip} → IpGeo 归属缓存（TTL 30 天，管理端地理分布用，存 TOKENS namespace）
+  SUBMON: "submon:", // submon:{contact} → { last_paid_at }（连续包月资格：上次支付成功时间，存 TOKENS namespace）
+  SUBYEAR: "subyear:", // subyear:{contact} → { last_paid_at }（连续包年资格：上次支付成功时间，存 TOKENS namespace）
+  YRSTD: "yrstd:", // yrstd:{contact} → { last_paid_at }（年付套餐 ¥120 连续续费奖励判定，存 TOKENS namespace）
 } as const;

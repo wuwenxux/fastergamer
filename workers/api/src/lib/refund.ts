@@ -7,7 +7,7 @@
  * - 以上默认折算再扣除 1% 退款手续费（客户承担，按订单实付总额计，
  *   不是按折算余额计）；管理端 body.money 人工覆盖时为精确金额，不再扣手续费
  */
-import type { Plan } from "../../../../shared/types";
+import { isDataPackPlan, type Plan } from "../../../../shared/types";
 
 const DAY_MS = 86_400_000;
 /** 退款手续费率（客户承担） */
@@ -38,6 +38,10 @@ export const computeRefundQuote = (
   paidAt: number,
   now = Date.now()
 ): RefundQuote => {
+  // 流量包售出不退（低价虚拟商品，购买页已明示）：折算入口直接拒绝，
+  // 路由层另有同样的前置拦截（返回 400），这里兜底防未来新调用方漏判
+  if (plan && isDataPackPlan(plan.id)) throw new Error("流量包售出不退");
+
   const durationDays = plan?.duration_days ?? 30;
   const paidDays = durationDays - (plan?.bonus_days ?? 0);
 

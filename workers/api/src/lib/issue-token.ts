@@ -4,11 +4,12 @@
  * 发货锁（isOrderLocked）与对账（reconcileFulfillment/deleteTokenCascade）
  * 机制为并发触发（人工重复确认、将来新支付通道的回调重推）兜底。
  */
-import { isTrialPlan, KV, type Order, type Plan, type Token } from "../../../../shared/types";
+import { isTrialPlan, KV, YEARLY_STD_PLAN_ID, type Order, type Plan, type Token } from "../../../../shared/types";
 import { isEmail, sendMail, sendTokenEmail, shouldSendEmail } from "./email-aliyun";
 import { createMagicTicket } from "./accounts";
 import { deleteTokenCascade, getPlans, getTokenById, getTrialMarker, hasPlanBonus, listTokensByContact, markPlanBonusGranted, markTrialConverted, saveOrder, saveToken } from "./kv";
 import { newTokenId } from "./ids";
+import { recordContinuityPaid, settleYearlyStdRenewal } from "./continuity";
 import { currentMonthKey } from "./nodes";
 import { rewardReferrerOnPayment, consumeCredit } from "./referral";
 import { pushAuthRefresh } from "./authpush";
@@ -249,6 +250,14 @@ export const fulfillOrder = async (
     order.token_id = upgraded.id;
     order.paid_at = Date.now();
     await saveOrder(env, order);
+    // 连续价套餐（连续包月/连续包年）资格以支付成功时间计（不依赖激活时间），发货即刷新记录；
+    // 年付套餐（¥120）连续续费奖励直接加到已重算的有效期上（immediate 模式）
+    if (order.contact) {
+      await recordContinuityPaid(env, plan.id, order.contact, order.paid_at);
+      if (plan.id === YEARLY_STD_PLAN_ID) {
+        await settleYearlyStdRenewal(env, order.contact, upgraded, "immediate", order.paid_at);
+      }
+    }
     // 续费/升级自动解锁：同 contact 名下被共享检测暂停的 token 恢复服务
     await unlockShareSuspendedByContact(env, order.contact);
     ctx.waitUntil(pushAuthRefresh(env)); // 配额/状态变化立即同步各节点
@@ -260,6 +269,14 @@ export const fulfillOrder = async (
   order.token_id = token.id;
   order.paid_at = Date.now();
   await saveOrder(env, order);
+  // 连续价套餐资格以支付成功时间计（不依赖激活时间），发货即刷新记录；
+  // 年付套餐（¥120）连续续费奖励记 bonus_ms，激活计时才并入（deferred 模式）
+  if (order.contact) {
+    await recordContinuityPaid(env, plan.id, order.contact, order.paid_at);
+    if (plan.id === YEARLY_STD_PLAN_ID) {
+      await settleYearlyStdRenewal(env, order.contact, token, "deferred", order.paid_at);
+    }
+  }
   // 续费自动解锁：同 contact 名下被共享检测暂停的旧 token 恢复服务（新发货路径）
   const shareUnlocked = await unlockShareSuspendedByContact(env, order.contact);
   // 试用转正合并会吊销激活中的体验 token → 授权名单收缩，立即同步各节点
@@ -289,12 +306,13 @@ export const fulfillOrder = async (
   }
 
   // 推广结算：被邀请人首次付费成功，给邀请人结算余额（可能触发自动续期）。
-  // 0 元订单（全额抵扣）不算付费，不结算返佣。
+  // 0 元订单（全额抵扣）不算付费，不结算返佣；流量包单价太低，同样不结算
+  // （planId 传入后由 rewardReferrerOnPayment 内部拦截，归因标记保持待结算）。
   // 续期可能复活已过期 token → 授权名单有变，结算完成后补一次推送（不能与本路径其他推送
   // 并行，否则快照重建可能赶在续期写库之前，漏掉复活）
   if (order.contact && (order.payable_cny ?? plan.price_cny) > 0) {
     ctx.waitUntil(
-      rewardReferrerOnPayment(env, order.contact.trim().toLowerCase()).then((authChanged) =>
+      rewardReferrerOnPayment(env, order.contact.trim().toLowerCase(), plan.id).then((authChanged) =>
         authChanged ? pushAuthRefresh(env) : undefined
       )
     );

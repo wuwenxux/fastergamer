@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { Plan } from "../../../../shared/types";
+import { DATA_PACK_PLAN_ID, type Plan } from "../../../../shared/types";
 import { computeRefundQuote } from "../lib/refund";
 
 const DAY = 86_400_000;
@@ -69,6 +69,23 @@ describe("computeRefundQuote", () => {
     const q = computeRefundQuote(undefined, 12, NOW - DAY, NOW);
     expect(q.basis).toBe("days");
     expect(q.daysRemaining).toBe(29);
+  });
+
+  it("流量包售出不退：折算入口直接抛错拒绝", () => {
+    const pack: Plan = {
+      id: DATA_PACK_PLAN_ID,
+      name: "5G 流量包",
+      duration_days: 90,
+      price_cny: 8,
+      description: "",
+    };
+    expect(() => computeRefundQuote(pack, 8, NOW - 10 * DAY, NOW)).toThrow("流量包售出不退");
+    // 刚支付也不例外
+    expect(() => computeRefundQuote(pack, 8, NOW, NOW)).toThrow("流量包售出不退");
+    // 同系列其他档位（plan_pack_ 前缀）同样拒绝
+    expect(() =>
+      computeRefundQuote({ ...pack, id: "plan_pack_1g", price_cny: 3 }, 3, NOW, NOW),
+    ).toThrow("流量包售出不退");
   });
 
   it("试用转正并入的额度（token.bonus_ms / 膨胀的流量上限）不影响退款折算", () => {

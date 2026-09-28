@@ -1,6 +1,6 @@
 /**
  * 推广邀请：邀请人持有推广码，新用户通过推广链接领取试用或下单即记录归因（待结算），
- * 被邀请人首次付费成功（订单发货）时才计为「成功邀请」，邀请人余额 +10 元。
+ * 被邀请人首次付费成功（订单发货）时才计为「成功邀请」，邀请人余额 +5 元。
  * 余额三种用法：
  *   1. 已开通（有激活中的付费 token）：余额满 120 元（年付续费价）自动为其套餐续期一年；
  *   2. 未开通且余额满 120 元：直接发放一个年付 token（待激活，首次导入订阅开始计时）；
@@ -8,8 +8,10 @@
  *
  * 防刷设计：试用每邮箱限领一次（trial 标记），referral 记录以被邀请人邮箱去重且只结算一次，
  * 自己邀请自己被忽略。所有记录存 TOKENS namespace。
+ * 流量包（plan_pack_5g，¥8）不参与推广返利：单价太低，购买不给邀请人记额度，
+ * 持有流量包也不算「已开通付费套餐」（不触发自动续期/不拦截奖励 token 发放）。
  */
-import { KV, type Token } from "../../../../shared/types";
+import { isDataPackPlan, KV, type Token } from "../../../../shared/types";
 import { createMagicTicket } from "./accounts";
 import { sendMail, sendTokenEmail } from "./email-aliyun";
 import { maskEmail } from "./mask-email";
@@ -19,7 +21,7 @@ import { siteUrl } from "./site-url";
 import type { Env } from "../types";
 
 /** 每邀请 1 人余额增加的金额（元） */
-export const DISCOUNT_PER_CREDIT = 10;
+export const DISCOUNT_PER_CREDIT = 5;
 
 export interface RefCredit {
   /** 累计获得的额度 */
@@ -115,11 +117,14 @@ interface ReferralMarker {
 }
 
 /**
- * 被邀请人首次付费成功（订单发货）时给邀请人结算：余额 +10 元并邮件通知；
+ * 被邀请人首次付费成功（订单发货）时给邀请人结算：余额 +5 元并邮件通知；
  * 邀请人有激活中的付费套餐且余额满续费价时自动续期一年。幂等：每个被邀请人只结算一次。
- * 返回 true 表示授权名单有变化（自动续期复活了已过期 token），调用方应推送节点刷新。
+ * 流量包（planId 传 DATA_PACK_PLAN_ID）不结算：归因标记保持待结算，
+ * 之后购买正常付费套餐时仍会触发结算。返回 true 表示授权名单有变化
+ * （自动续期复活了已过期 token），调用方应推送节点刷新。
  */
-export const rewardReferrerOnPayment = async (env: Env, inviteeEmail: string): Promise<boolean> => {
+export const rewardReferrerOnPayment = async (env: Env, inviteeEmail: string, planId?: string): Promise<boolean> => {
+  if (planId && isDataPackPlan(planId)) return false; // 流量包单价太低，不参与返利
   const raw = await env.TOKENS.get(KV.REFERRAL + inviteeEmail);
   if (!raw) return false;
   let marker: ReferralMarker;
@@ -145,7 +150,7 @@ export const rewardReferrerOnPayment = async (env: Env, inviteeEmail: string): P
     "【GameBoost】你邀请的用户已完成付费",
     `<p>你好，你邀请的用户（${inviteeEmail}）已成功付费开通。</p>
      <p>你的推广余额 <strong>+${DISCOUNT_PER_CREDIT} 元</strong>，当前余额 <strong>${balance} 元</strong>。</p>
-     <p>余额满 <strong>120 元</strong>（累计 12 人付费）：已开通套餐的自动<strong>续期一年</strong>；未开通的直接<strong>送一年年付套餐</strong>，也可在下单时抵扣。</p>`,
+     <p>余额满 <strong>120 元</strong>（累计 24 人付费）：已开通套餐的自动<strong>续期一年</strong>；未开通的直接<strong>送一年年付套餐</strong>，也可在下单时抵扣。</p>`,
     `你邀请的用户（${inviteeEmail}）已成功付费开通，推广余额 +${DISCOUNT_PER_CREDIT} 元（当前 ${balance} 元）。余额满 120 元：已开通套餐的自动续期一年，未开通的直接送一年年付套餐，也可下单抵扣。`
   );
   if (!res.ok) console.error(`[referral] reward mail failed for ${maskEmail(referrer)}: ${res.error}`);
@@ -182,7 +187,7 @@ export const availableDiscount = async (env: Env, email: string): Promise<number
 };
 
 /**
- * 下单抵扣金额：额度按个数记账（1 个 = 10 元），抵扣向下取整到 10 的倍数，
+ * 下单抵扣金额：额度按个数记账（1 个 = 5 元），抵扣向下取整到 5 的倍数，
  * 保证 consumeCredit 折算回个数时不漏损；返回 0 表示不抵扣。
  */
 export const orderDiscount = (availableCny: number, priceCny: number): number =>
@@ -202,14 +207,6 @@ export const consumeCredit = async (env: Env, email: string, discountCny: number
   credit.used += need;
   await saveCredit(env, email, credit);
   return true;
-};
-
-/** 订单取消时归还额度 */
-export const restoreCredit = async (env: Env, email: string, discountCny: number): Promise<void> => {
-  if (discountCny <= 0) return;
-  const credit = await getCredit(env, email);
-  credit.used = Math.max(0, credit.used - Math.round(discountCny / DISCOUNT_PER_CREDIT));
-  await saveCredit(env, email, credit);
 };
 
 /** 自动续期结果：renewed 为 true 时表示已扣 120 元余额并给 token 续了一年 */
@@ -240,7 +237,8 @@ export const tryAutoRenewWithBalance = async (env: Env, email: string): Promise<
     .filter((t) => {
       if (t.status !== "active" || !t.expires_at) return false;
       const plan = plans.find((p) => p.id === t.plan_id);
-      return (plan?.price_cny ?? 0) > 0; // 免费体验套餐不参与自动续期
+      // 免费体验与流量包不参与自动续期（流量包单价太低，续它一年不划算也不该是奖励去向）
+      return (plan?.price_cny ?? 0) > 0 && !isDataPackPlan(t.plan_id);
     })
     .sort((a, b) => (b.expires_at ?? 0) - (a.expires_at ?? 0))[0];
   if (!target) return result;
@@ -286,7 +284,8 @@ export const tryIssueRewardToken = async (env: Env, email: string): Promise<Rewa
   const hasActivePaid = tokens.some((t) => {
     if (t.status !== "active" || !t.expires_at) return false;
     const plan = plans.find((p) => p.id === t.plan_id);
-    return (plan?.price_cny ?? 0) > 0; // 有激活中的付费套餐时走自动续期，不发奖励 token
+    // 有激活中的付费套餐时走自动续期，不发奖励 token；流量包不算（轻量备用，不挡奖励发放）
+    return (plan?.price_cny ?? 0) > 0 && !isDataPackPlan(t.plan_id);
   });
   if (hasActivePaid || credit.earned - credit.used < need) return { issued: false };
 
