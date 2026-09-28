@@ -3,15 +3,12 @@ import { KV } from "../../../../shared/types";
 import { MAIL_THROTTLE_LIMIT, mailThrottleAllows } from "../lib/mail-throttle";
 import { maskEmail } from "../lib/mask-email";
 import type { Env } from "../types";
+import { fakeNs as baseFakeNs } from "./helpers";
 
-/** 假 KV：map 实现 */
+/** 假 KV：map 实现（返回对象兼具 namespace 方法与 store 访问） */
 const fakeNs = () => {
-  const store = new Map<string, string>();
-  return {
-    store,
-    get: async (k: string) => store.get(k) ?? null,
-    put: async (k: string, v: string) => void store.set(k, v),
-  } as unknown as KVNamespace & { store: Map<string, string> };
+  const { ns, store } = baseFakeNs();
+  return Object.assign(ns, { store }) as KVNamespace & { store: Map<string, string> };
 };
 
 const makeEnv = (ns: KVNamespace) => ({ TOKENS: ns }) as unknown as Env;

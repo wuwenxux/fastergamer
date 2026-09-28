@@ -2,17 +2,8 @@ import { describe, expect, it, vi } from "vitest";
 import { KV, type Token } from "../../../../shared/types";
 import { rotateTokenUuid } from "../lib/kv";
 import type { Env } from "../types";
+import { mockNs as mockTokensNs } from "./helpers";
 
-/** 内存版 KV namespace（Map 实现 get/put/delete） */
-const mockTokensNs = () => {
-  const store = new Map<string, string>();
-  const ns = {
-    get: vi.fn(async (key: string) => store.get(key) ?? null),
-    put: vi.fn(async (key: string, value: string) => void store.set(key, value)),
-    delete: vi.fn(async (key: string) => void store.delete(key)),
-  } as unknown as KVNamespace;
-  return { store, ns };
-};
 
 const mockEnv = (ns: KVNamespace) => ({ TOKENS: ns }) as unknown as Env;
 

@@ -9,21 +9,12 @@ import {
   SESSION_TTL_MS,
 } from "../lib/accounts";
 import type { Env } from "../types";
+import { mockNs } from "./helpers";
 
 /**
  * session / magic ticket 写入必须带 KV TTL（永不被访问的过期键不残留）；
  * 读取时的手动过期判断保留作语义兜底（KV TTL 不保证精确准时）。
  */
-
-const mockNs = () => {
-  const store = new Map<string, string>();
-  const ns = {
-    get: vi.fn(async (key: string) => store.get(key) ?? null),
-    put: vi.fn(async (key: string, value: string) => void store.set(key, value)),
-    delete: vi.fn(async (key: string) => void store.delete(key)),
-  } as unknown as KVNamespace;
-  return { store, ns };
-};
 
 const mockEnv = () => {
   const tokens = mockNs();

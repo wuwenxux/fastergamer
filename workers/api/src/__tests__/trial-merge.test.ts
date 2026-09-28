@@ -3,21 +3,10 @@ import { KV, type Order, type Plan, type Token } from "../../../../shared/types"
 import { fulfillOrder, type WaitUntilCtx } from "../lib/issue-token";
 import { activatePaidToken } from "../lib/activate";
 import type { Env } from "../types";
+import { stubCtx, makeEnv as baseEnv } from "./helpers";
 
-/** 内存版 KV namespace（Map 实现 get/put/delete/list） */
-const mockNs = () => {
-  const store = new Map<string, string>();
-  const ns = {
-    get: vi.fn(async (key: string) => store.get(key) ?? null),
-    put: vi.fn(async (key: string, value: string) => void store.set(key, value)),
-    delete: vi.fn(async (key: string) => void store.delete(key)),
-    list: vi.fn(async ({ prefix, cursor }: { prefix?: string; cursor?: string }) => {
-      const keys = [...store.keys()].filter((k) => !prefix || k.startsWith(prefix)).map((name) => ({ name }));
-      return { keys, list_complete: true, cursor: cursor ?? "" };
-    }),
-  } as unknown as KVNamespace;
-  return { store, ns };
-};
+const mockCtx = (): WaitUntilCtx => stubCtx();
+
 
 const PLANS: Plan[] = [
   { id: "plan_trial", name: "3 天免费体验", duration_days: 3, price_cny: 0, description: "", traffic_limit_gb: 20, max_devices: 1 },
@@ -25,17 +14,7 @@ const PLANS: Plan[] = [
   { id: "plan_yearly", name: "年付套餐", duration_days: 395, bonus_days: 30, price_cny: 120, description: "", traffic_limit_gb: 260, max_devices: 3, monthly_quota_gb: 20 },
 ];
 
-const mockEnv = () => {
-  const tokens = mockNs();
-  const orders = mockNs();
-  const plans = mockNs();
-  const nodes = mockNs();
-  plans.store.set("plans", JSON.stringify(PLANS));
-  const env = { TOKENS: tokens.ns, ORDERS: orders.ns, PLANS: plans.ns, NODES: nodes.ns } as unknown as Env;
-  return { env, tokens, orders };
-};
-
-const mockCtx = (): WaitUntilCtx => ({ waitUntil: (p) => void Promise.resolve(p).catch(() => {}) });
+const mockEnv = () => baseEnv({ plans: PLANS, mock: true });
 
 const makeTrial = (overrides: Partial<Token> = {}): Token => ({
   id: "tk_trial",
@@ -61,7 +40,7 @@ const makeOrder = (overrides: Partial<Order> = {}): Order => ({
   ...overrides,
 } as Order);
 
-const seedToken = (tokens: ReturnType<typeof mockNs>, token: Token) => {
+const seedToken = (tokens: ReturnType<typeof baseEnv>["tokens"], token: Token) => {
   tokens.store.set(KV.TOKEN + token.uuid, JSON.stringify(token));
   tokens.store.set(KV.TOKEN_BY_ID + token.id, JSON.stringify({ uuid: token.uuid }));
 };
@@ -120,7 +99,7 @@ describe("试用转正合并（同邮箱下单并入体验剩余额度）", () =
 });
 
 describe("试用转正激励锚定邮箱标记（token 可失效，邮箱永是续用凭证）", () => {
-  const seedMarker = (tokens: ReturnType<typeof mockNs>, email: string, converted = false) => {
+  const seedMarker = (tokens: ReturnType<typeof baseEnv>["tokens"], email: string, converted = false) => {
     tokens.store.set(
       KV.TRIAL + email,
       JSON.stringify({ token_id: "tk_trial", created_at: 1, ...(converted ? { converted_at: 2 } : {}) })

@@ -26,25 +26,9 @@ const stubSiteverify = (impl: () => Response | Promise<Response>) => {
 
 afterEach(() => vi.unstubAllGlobals());
 
-/** 假 KV：map 实现（put 忽略 TTL 等选项，测试只关心存在性；list 支持前缀扫描，recover 全表查需要） */
-const fakeNs = () => {
-  const store = new Map<string, string>();
-  const ns = {
-    get: async (k: string) => store.get(k) ?? null,
-    put: async (k: string, v: string) => void store.set(k, v),
-    delete: async (k: string) => void store.delete(k),
-    list: async ({ prefix }: { prefix?: string } = {}) => ({
-      keys: [...store.keys()].filter((k) => !prefix || k.startsWith(prefix)).map((name) => ({ name })),
-      list_complete: true,
-    }),
-  } as unknown as KVNamespace;
-  return { ns, store };
-};
+import { fakeNs, makeEnv as baseEnv, stubCtx } from "./helpers";
 
-const ctx = {
-  waitUntil: (p: Promise<unknown>) => void Promise.resolve(p).catch(() => {}),
-  passThroughOnException: () => {},
-} as unknown as ExecutionContext;
+const ctx = stubCtx();
 
 const TRIAL_PLAN = {
   id: "plan_trial",
@@ -57,12 +41,9 @@ const TRIAL_PLAN = {
 
 const makeEnv = (over: Partial<Env> = {}) =>
   ({
-    TOKENS: fakeNs().ns,
-    PLANS: fakeNs().ns,
-    DEFAULT_PLANS: JSON.stringify([TRIAL_PLAN]),
-    SITE_URL: "https://fastergamer.click",
+    ...baseEnv({ defaultPlans: [TRIAL_PLAN], extra: { SITE_URL: "https://fastergamer.click" } }).env,
     ...over,
-  }) as unknown as Env;
+  }) as Env;
 
 /** 每个用例用独立 IP：rateLimit 桶是模块级共享的，避免跨用例误触 429 */
 let ipSeq = 0;

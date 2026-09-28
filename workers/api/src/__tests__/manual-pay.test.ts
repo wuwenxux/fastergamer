@@ -4,6 +4,9 @@ import { KV, type Order, type Plan, type Token } from "../../../../shared/types"
 import { ordersRoutes } from "../routes/orders";
 import { adminRoutes } from "../routes/admin";
 import type { Env } from "../types";
+import { stubCtx, makeEnv as baseEnv } from "./helpers";
+
+const ctx = stubCtx();
 
 /**
  * 人工收款码过渡支付：
@@ -14,20 +17,6 @@ import type { Env } from "../types";
  * 故通知断言落在节流字段 paid_notify_at 的写入上。
  */
 
-/** 内存版 KV namespace（Map 实现 get/put/delete/list，fulfillOrder 链路会用到 list） */
-const mockNs = () => {
-  const store = new Map<string, string>();
-  const ns = {
-    get: vi.fn(async (key: string) => store.get(key) ?? null),
-    put: vi.fn(async (key: string, value: string) => void store.set(key, value)),
-    delete: vi.fn(async (key: string) => void store.delete(key)),
-    list: vi.fn(async ({ prefix, cursor }: { prefix?: string; cursor?: string }) => {
-      const keys = [...store.keys()].filter((k) => !prefix || k.startsWith(prefix)).map((name) => ({ name }));
-      return { keys, list_complete: true, cursor: cursor ?? "" };
-    }),
-  } as unknown as KVNamespace;
-  return { store, ns };
-};
 
 const PLANS: Plan[] = [
   { id: "plan_monthly", name: "月付套餐", duration_days: 30, price_cny: 12, description: "", traffic_limit_gb: 20, max_devices: 2 },
@@ -35,30 +24,11 @@ const PLANS: Plan[] = [
 
 const ADMIN_KEY = "test-admin-key";
 
-const mockEnv = () => {
-  const tokens = mockNs();
-  const orders = mockNs();
-  const plans = mockNs();
-  plans.store.set("plans", JSON.stringify(PLANS));
-  const env = {
-    TOKENS: tokens.ns,
-    ORDERS: orders.ns,
-    PLANS: plans.ns,
-    NODES: mockNs().ns,
-    TICKETS: mockNs().ns,
-    ADMIN_KEY,
-  } as unknown as Env;
-  return { env, tokens, orders };
-};
+const mockEnv = () => baseEnv({ plans: PLANS, adminKey: ADMIN_KEY, mock: true });
 
 const app = new Hono<{ Bindings: Env }>();
 app.route("/api/orders", ordersRoutes);
 app.route("/api/admin", adminRoutes);
-
-const ctx = {
-  waitUntil: (p: Promise<unknown>) => void Promise.resolve(p).catch(() => {}),
-  passThroughOnException: () => {},
-} as unknown as ExecutionContext;
 
 const makeOrder = (overrides: Partial<Order> = {}): Order => ({
   id: "ord_manual",
@@ -69,11 +39,11 @@ const makeOrder = (overrides: Partial<Order> = {}): Order => ({
   ...overrides,
 });
 
-const seedOrder = (orders: ReturnType<typeof mockNs>, order: Order) => {
+const seedOrder = (orders: ReturnType<typeof baseEnv>["orders"], order: Order) => {
   orders.store.set(KV.ORDER + order.id, JSON.stringify(order));
 };
 
-const readOrder = (orders: ReturnType<typeof mockNs>, id: string): Order =>
+const readOrder = (orders: ReturnType<typeof baseEnv>["orders"], id: string): Order =>
   JSON.parse(orders.store.get(KV.ORDER + id)!) as Order;
 
 const notifyPaid = (env: Env, id: string) =>

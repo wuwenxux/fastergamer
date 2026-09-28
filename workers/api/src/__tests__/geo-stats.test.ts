@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { KV, type IpGeo } from "../../../../shared/types";
 import { aggregateGeoStats, buildGeoStats, resolveIpGeo, type GeoRow } from "../lib/geo-stats";
 import type { Env } from "../types";
+import { makeEnv as baseEnv } from "./helpers";
 
 /**
  * 管理端地理分布（lib/geo-stats.ts）：
@@ -11,26 +12,9 @@ import type { Env } from "../types";
  * fetch 全部 mock，不触网。
  */
 
-const fakeNs = () => {
-  const store = new Map<string, string>();
-  const ns = {
-    get: async (k: string) => store.get(k) ?? null,
-    put: async (k: string, v: string) => void store.set(k, v),
-    delete: async (k: string) => void store.delete(k),
-    list: async (opts?: { prefix?: string }) => ({
-      keys: [...store.keys()]
-        .filter((k) => !opts?.prefix || k.startsWith(opts.prefix))
-        .map((name) => ({ name })),
-      list_complete: true,
-      cursor: "",
-    }),
-  } as unknown as KVNamespace;
-  return { ns, store };
-};
-
 const makeEnv = () => {
-  const tokens = fakeNs();
-  return { env: { TOKENS: tokens.ns } as unknown as Env, store: tokens.store };
+  const { env, tokens } = baseEnv();
+  return { env, store: tokens.store };
 };
 
 const CD: IpGeo = { country: "China", countryCode: "CN", region: "Sichuan", city: "Chengdu", lat: 30.57, lon: 104.07 };

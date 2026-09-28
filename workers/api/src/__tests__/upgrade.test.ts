@@ -3,39 +3,18 @@ import { KV, type Order, type Plan, type Token } from "../../../../shared/types"
 import { fulfillOrder, type WaitUntilCtx } from "../lib/issue-token";
 import { resetPenalty } from "../lib/reset-penalty";
 import type { Env } from "../types";
+import { mockNs, stubCtx, makeEnv as baseEnv } from "./helpers";
 
-/** 内存版 KV namespace（Map 实现 get/put/delete/list，续费解锁链路 listTokensByContact 需要 list） */
-const mockNs = () => {
-  const store = new Map<string, string>();
-  const ns = {
-    get: vi.fn(async (key: string) => store.get(key) ?? null),
-    put: vi.fn(async (key: string, value: string) => void store.set(key, value)),
-    delete: vi.fn(async (key: string) => void store.delete(key)),
-    list: vi.fn(async ({ prefix, cursor }: { prefix?: string; cursor?: string }) => {
-      const keys = [...store.keys()].filter((k) => !prefix || k.startsWith(prefix)).map((name) => ({ name }));
-      return { keys, list_complete: true, cursor: cursor ?? "" };
-    }),
-  } as unknown as KVNamespace;
-  return { store, ns };
-};
+/** waitUntil 收集但不阻塞断言；吞掉副作用（邮件/推送）在测试环境里的预期失败 */
+const mockCtx = (): WaitUntilCtx => stubCtx();
+
 
 const PLANS: Plan[] = [
   { id: "plan_monthly", name: "月付套餐", duration_days: 30, price_cny: 12, description: "", traffic_limit_gb: 20, max_devices: 2 },
   { id: "plan_quarterly", name: "季付套餐", duration_days: 90, price_cny: 30, description: "", traffic_limit_gb: 60, max_devices: 3, monthly_quota_gb: 20 },
 ];
 
-const mockEnv = () => {
-  const tokens = mockNs();
-  const orders = mockNs();
-  const plans = mockNs();
-  const nodes = mockNs();
-  plans.store.set("plans", JSON.stringify(PLANS));
-  const env = { TOKENS: tokens.ns, ORDERS: orders.ns, PLANS: plans.ns, NODES: nodes.ns } as unknown as Env;
-  return { env, tokens, orders };
-};
-
-/** waitUntil 收集但不阻塞断言；吞掉副作用（邮件/推送）在测试环境里的预期失败 */
-const mockCtx = (): WaitUntilCtx => ({ waitUntil: (p) => void Promise.resolve(p).catch(() => {}) });
+const mockEnv = () => baseEnv({ plans: PLANS, mock: true });
 
 const makeToken = (overrides: Partial<Token> = {}): Token => ({
   id: "tk_upg",
@@ -51,7 +30,7 @@ const makeToken = (overrides: Partial<Token> = {}): Token => ({
   ...overrides,
 });
 
-const seedToken = (tokens: ReturnType<typeof mockNs>, token: Token) => {
+const seedToken = (tokens: ReturnType<typeof baseEnv>["tokens"], token: Token) => {
   tokens.store.set(KV.TOKEN + token.uuid, JSON.stringify(token));
   tokens.store.set(KV.TOKEN_BY_ID + token.id, JSON.stringify({ uuid: token.uuid }));
 };

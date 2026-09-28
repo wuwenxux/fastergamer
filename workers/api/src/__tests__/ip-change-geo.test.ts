@@ -15,22 +15,13 @@ import {
   type ConcurrentGeoConflict,
 } from "../lib/risk-notify";
 import type { Env } from "../types";
+import { fakeNs } from "./helpers";
 
 /**
  * 归属地查询走 geo-stats 共享通道：geo:{ip} KV 缓存优先，miss 调 ip-api.com 批量接口并回写缓存。
  * 这里 mock ip-api 的批量 fetch（POST，body 为 IP 数组），KV 用内存假实现。
  */
 
-const fakeNs = () => {
-  const store = new Map<string, string>();
-  const ns = {
-    get: async (k: string) => store.get(k) ?? null,
-    put: async (k: string, v: string) => void store.set(k, v),
-    delete: async (k: string) => void store.delete(k),
-    list: async () => ({ keys: [], list_complete: true, cursor: "" }),
-  } as unknown as KVNamespace;
-  return { ns, store };
-};
 
 const tokens = fakeNs();
 const env = { TOKENS: tokens.ns } as unknown as Env;
@@ -129,25 +120,40 @@ describe("resolveIpLocationChange 接入地点变更判定", () => {
     const presence: Presence = {};
     const r = await resolveIpLocationChange(env, presence, "node-hk", ["1.2.3.4"]);
     expect(r.changed).toBe(false);
-    expect(presence.active_geo).toEqual({ "node-hk": "中国 / 四川 / 成都" });
+    // 基线带位置键 + 确认时间（旅行检测的时间基线）
+    expect(presence.active_geo).toMatchObject({ "node-hk": { g: "中国 / 四川 / 成都" } });
   });
 
-  it("同城换 IP（家宽漂移/切运营商）：不发，基线原值不变", async () => {
+  it("同城换 IP（家宽漂移/切运营商）：不发，基线位置不变、确认时间刷新", async () => {
     stubGeo("中国", "四川", "成都", "移动"); // 运营商标签抖动
-    const presence: Presence = { active_geo: { "node-hk": "中国 / 四川 / 成都" } };
+    const presence: Presence = { active_geo: { "node-hk": { g: "中国 / 四川 / 成都", at: 1_000 } } };
     const r = await resolveIpLocationChange(env, presence, "node-hk", ["5.6.7.8"]);
     expect(r.changed).toBe(false);
-    expect(presence.active_geo!["node-hk"]).toBe("中国 / 四川 / 成都");
+    const entry = presence.active_geo!["node-hk"];
+    expect(entry).toMatchObject({ g: "中国 / 四川 / 成都" });
+    expect(typeof entry === "object" && entry.at > 1_000).toBe(true);
   });
 
-  it("跨城市变更：发，基线更新为新位置", async () => {
+  it("跨城市变更：发，基线更新为新位置，返回带 oldAt/newGeo", async () => {
+    stubGeo("中国", "广东", "广州");
+    const presence: Presence = { active_geo: { "node-hk": { g: "中国 / 四川 / 成都", at: 1_000 } } };
+    const r = await resolveIpLocationChange(env, presence, "node-hk", ["9.9.9.9"]);
+    expect(r.changed).toBe(true);
+    expect(r.oldLocation).toBe("中国 / 四川 / 成都");
+    expect(r.oldAt).toBe(1_000);
+    expect(r.newLocation).toBe("中国 / 广东 / 广州");
+    expect(r.newGeo?.city).toBe("广州");
+    expect(presence.active_geo!["node-hk"]).toMatchObject({ g: "中国 / 广东 / 广州" });
+  });
+
+  it("存量裸字符串基线：兼容读取，无 oldAt（本次只更新基线不判定旅行）", async () => {
     stubGeo("中国", "广东", "广州");
     const presence: Presence = { active_geo: { "node-hk": "中国 / 四川 / 成都" } };
     const r = await resolveIpLocationChange(env, presence, "node-hk", ["9.9.9.9"]);
     expect(r.changed).toBe(true);
     expect(r.oldLocation).toBe("中国 / 四川 / 成都");
-    expect(r.newLocation).toBe("中国 / 广东 / 广州");
-    expect(presence.active_geo!["node-hk"]).toBe("中国 / 广东 / 广州");
+    expect(r.oldAt).toBeUndefined();
+    expect(presence.active_geo!["node-hk"]).toMatchObject({ g: "中国 / 广东 / 广州" });
   });
 
   it("geo 查询失败（有基线）：保守按变更处理，基线不动", async () => {

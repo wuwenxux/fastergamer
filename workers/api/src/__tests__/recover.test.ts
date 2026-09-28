@@ -4,22 +4,12 @@ import { KV, type Token } from "../../../../shared/types";
 import { tokensRoutes } from "../routes/tokens";
 import { MAIL_THROTTLE_LIMIT } from "../lib/mail-throttle";
 import type { Env } from "../types";
+import { mockNs } from "./helpers";
 
-/** 假 KV：map 实现，支持 list 前缀扫描（listTokensByContact 依赖） */
+/** 假 KV：map 实现，list 用 vi.fn 包装（节流用例断言「未触发全量 list」） */
 const fakeNs = () => {
-  const store = new Map<string, string>();
-  const list = vi.fn(async ({ prefix }: { prefix?: string }) => ({
-    keys: [...store.keys()]
-      .filter((k) => !prefix || k.startsWith(prefix))
-      .map((name) => ({ name })),
-    list_complete: true,
-  }));
-  const ns = {
-    get: async (k: string) => store.get(k) ?? null,
-    put: async (k: string, v: string) => void store.set(k, v),
-    list,
-  } as unknown as KVNamespace;
-  return { ns, store, list };
+  const { ns, store } = mockNs();
+  return { ns, store, list: vi.mocked(ns.list) };
 };
 
 const makeEnv = (ns: KVNamespace) =>

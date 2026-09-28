@@ -14,23 +14,7 @@ vi.mock("../lib/email-aliyun", async (importOriginal) => {
   return { ...orig, sendMail: vi.fn(async () => ({ ok: true })) };
 });
 
-/** 假 KV：map 实现（put 忽略 TTL；list 支持前缀过滤，授权快照重建需要） */
-const fakeNs = () => {
-  const store = new Map<string, string>();
-  const ns = {
-    get: async (k: string) => store.get(k) ?? null,
-    put: async (k: string, v: string) => void store.set(k, v),
-    delete: async (k: string) => void store.delete(k),
-    list: async (opts?: { prefix?: string }) => ({
-      keys: [...store.keys()]
-        .filter((k) => !opts?.prefix || k.startsWith(opts.prefix))
-        .map((name) => ({ name })),
-      list_complete: true,
-      cursor: "",
-    }),
-  } as unknown as KVNamespace;
-  return { ns, store };
-};
+import { makeEnv as baseEnv } from "./helpers";
 
 const NODE = {
   id: "node-hk-01",
@@ -48,21 +32,12 @@ const PLANS = [
   { id: "plan_monthly", name: "月付", duration_days: 30, price_cny: 25, traffic_limit_gb: 200 },
 ];
 
-const makeEnv = () => {
-  const tokens = fakeNs();
-  const nodes = fakeNs();
-  nodes.store.set(KV.NODES, JSON.stringify([NODE]));
-  const env = {
-    TOKENS: tokens.ns,
-    PLANS: fakeNs().ns,
-    ORDERS: fakeNs().ns,
-    NODES: nodes.ns,
-    TICKETS: fakeNs().ns,
-    DEFAULT_PLANS: JSON.stringify(PLANS),
-    SITE_URL: "https://fastergamer.click",
-  } as unknown as Env;
-  return { env, tokens };
-};
+const makeEnv = () =>
+  baseEnv({
+    nodes: [NODE],
+    defaultPlans: PLANS,
+    extra: { SITE_URL: "https://fastergamer.click" },
+  });
 
 const ctx = {
   waitUntil: (p: Promise<unknown>) => void Promise.resolve(p).catch(() => {}),

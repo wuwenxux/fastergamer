@@ -30,7 +30,7 @@ Token 制 VPN 服务（对外品牌 GameBoost / FasterGamer）：用户无需注
 ### Worker 代码组织（`workers/api/src`）
 
 - `index.ts`：Hono 入口。CORS 中间件、敏感接口限流、路由挂载；`fetch` 导出里检测 `env.ASSETS` 绑定，非 `/api` 请求转给 Static Assets（404 回退 `index.html` 实现 SPA）。
-- `routes/`：按资源分文件（`plans / orders / tokens / sub / register / referral / tickets / admin / nodes / agent`）。
+- `routes/`：按资源分文件（`plans / orders / tokens / sub / register / referral / tickets / admin / nodes / agent`）；`admin.ts` 鉴权与挂载入口，端点按域拆到 `routes/admin/`（`plans.ts` 套餐与 DEFAULT_PLANS、`tokens.ts` token 运维、`refund.ts` 退款、`notify-scan.ts` cron 巡检）。
 - `lib/`：业务逻辑库（激活、签发、订阅生成——`clash.ts` Clash YAML / `sub-links.ts` vless 链接 / `singbox.ts` sing-box JSON 三格式，`sub.ts` 按 `?format=` 或 UA 路由；授权快照/推送、邮件 `email-aliyun.ts`、风控通知、推荐返利、地理分布聚合 `geo-stats.ts` 等）。
 - `middleware/`：`admin.ts`（x-admin-key 鉴权）、`rateLimit.ts`、`turnstile.ts`（人机验证）。
 - `__tests__/`：vitest 测试，与被测模块的 lib 一一对应。
@@ -58,7 +58,7 @@ npm install --legacy-peer-deps
 npm run dev:api        # Worker，localhost:8787（占位 KV 本地模拟）
 npm run dev:pages      # 前端，localhost:5173，/api 代理到 8787（vite.config.ts）
 
-# 初始化套餐数据（本地起服后；线上数据以 scripts/seed.mjs 为准）
+# 初始化套餐数据（本地起服后；套餐唯一数据源是 workers/api/src/routes/admin/plans.ts 的 DEFAULT_PLANS）
 node scripts/seed.mjs  # 默认打 http://localhost:8787
 
 # 测试
@@ -110,6 +110,9 @@ bash scripts/deploy-cf.sh --build   # 前端有改动，先构建 pages/dist
 ## 安全注意事项
 
 - 防白嫖：试用/下单拒绝一次性临时邮箱（`lib/disposable-email.ts` 域名黑名单）；试用叠加每 IP 每天限领一次（`trialip:{ip}` TTL 24h）；`notify-scan` 顺带清理超 5 天未激活的体验 token。
+- 订阅设备锁与不可能旅行检测（`lib/sub-lock.ts` / `lib/travel-guard.ts`）：设备锁整体**仅单设备套餐**（流量包/试用，有效 max_devices=1）生效——每条订阅链接绑定首个拉取它的客户端家族指纹（存 `presence:{uuid}.sub_fps`，30 天未拉取自动过期），其他家族/（有绑定时）未知 UA 拉取一律 403 并邮件通知机主（节流 24h）；多设备套餐一律放行任何家族（同一人多台设备是正常用法），指纹仍照常记录供管理页展示。机主可自助解绑（`POST /api/tokens/:id/sub-unbind`，7 天冷却，管理端 `clear_sub_bindings` 为售后救济）。旅行检测在结算 IP 变更管线上比对相邻周期地理跳变（>1000 km/h 或缺经纬度时 <2h 兜底），命中累积 `travel_strikes` + 节流邮件（7 天），只提醒不处置；只对「整体迁移」（旧 IP 全部离线）判定，旧 IP 仍在线的并发场景由多地并发在线提醒覆盖。
+- 并发共享检测（`lib/share-guard.ts`，哲学：不介意同一用户多设备，只介意多人分享）：按有效设备数分三轨——单设备套餐（试用/流量包）limit = max_devices + 2 走老状态机；企业套餐（plan_biz_*）同样 max_devices + 2；个人多设备套餐（3/5 台）走阶梯：并发 >3 且 ≤5 只写 `conn_observe` 观测记录（1h 写节流，不发邮件不动状态机），>5 才按分享处置（strikes→警告邮件→7 天内再犯置 `share_suspended_at` 暂停，授权快照剔除，续费自动解锁）。
+- 设备级防护（`lib/device-guard.ts`，仅付费个人 token——`!isTrialPlan && !plan_biz*`，流量包也算；企业套餐团队共享是设计用途不参与）：结算路径上单凭证（主 uuid/槽位 uuid 各自）在单节点内并发 ≥2 来源 IP，先记 `presence.dg_pending` 等下一周期确认（吸收 WiFi↔5G 瞬时双 IP），持续确认后只阻断新出现的 IP（老 IP 不动），邮件机主决策（12h 节流，行动后 12h 内抑制 notifyIpChange 的 ip_change 邮件）。**阻断复用 `blocked_ips` 全局链路（该 IP 对所有节点所有用户失效，同 NAT 出口有误伤面），所以必须配台账 `token.device_guard`（key=被阻断 IP，pending/denied）区分自动/手动阻断并提供一键救济**——手动封禁不进台账。**机主「允许」= 迁移流程**（规则：共用链接只能是过渡，长期必须一台设备一条凭证，防止共用绕过槽位计量）：有效设备数有余量才自动建新槽位（名字「新设备 · {城市}」，先建槽成功再解封，建槽失败不动阻断不残留半状态；满则 409），被拦 IP 不进永久白名单而是记入涉事凭证的 `transition_ips`（7 天过渡名单，evaluate 每次判定前核查到期项：仍活跃→移出名单按新 IP 重新走 pending→确认→阻断，不活跃→静默移除）；「拒绝」= 置 denied 保持阻断。写库纪律：结算路径走 `mergeDeviceGuardFields` 重读-合并补丁（blocked_ips 并集、台账/transition_ips 按键合并，满 50 整批放弃只记日志），用户决策端点（`/api/tokens/:id/device-guard/allow|deny`）走整 JSON 写先例；notify_log 原地改由 applyTrafficDelta 通知段末尾集中比对收走。作用域仅限单节点内 per-uuid 并发，跨节点并发仍归 share-guard/多地提醒管。
 - 机房 IP 滥用识别与限速（`lib/abuse.ts`，仅体验 token `plan_trial`（历史 id `plan_3days` 经 `isTrialPlan()` 兼容），付费 token 误伤成本高不参与）：结算后按 `presence.traffic_by_ip` 判定——机房/代理 IP 估算流量 >0.5GB 且占接入总流量 >50%（ip-api.com 批量分类 + `HOSTING_RE` 关键词兜底，与 `scripts/user-audit.mjs` 同口径；分类缓存 `ipinfo:{ip}` TTL 30 天，只对新 IP 查询）。处置是**限速不撤销**：打 `abuse_machine` 标记 + 邮件通知站长一次（幂等键 `notify_log.abuse_machine`），被标记 token 每日定额 500MB（`ABUSE_DAILY_BYTES`，24h 滚动窗口复用 rate_window 模式），窗口内超限写 `abuse_suspended_until` 暂停到窗口终点并推送授权刷新（`getAuthSnapshot` 生成侧排除暂停中的 uuid，快照 TTL 内自然恢复，反复暂停只记日志不发邮件）。IP 分类查询失败 fail-open：本次跳过判定，绝不因分类失败误标；误伤解除=管理端清除 token 的 `abuse_machine` 字段。另：付费 token 经流量暴增路径（1h >3GB）也会被打 `abuse_machine` 进入同一限速（机房 IP 判定仍只管体验 token；体验 token 暴增则直接吊销）。节点侧配套 ufw 出站封 25/465（SMTP），防垃圾邮件滥用把出口 IP 送进黑名单。
 - `.dev.vars`、SSH 私钥等绝不提交、不读取外传；`.gitignore` 已覆盖。
 - CORS 只允许同源与 fastergamer.cn；localhost 仅 `ENVIRONMENT=dev` 放行——改 CORS 逻辑时必须保持这条不变（有 `cors.test.ts` 回归测试）。

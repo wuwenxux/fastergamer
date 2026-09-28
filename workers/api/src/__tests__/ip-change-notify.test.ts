@@ -18,28 +18,9 @@ vi.mock("../lib/email-aliyun", async (importOriginal) => {
 });
 import { sendMail } from "../lib/email-aliyun";
 
-/** 假 KV：map 实现（put 忽略 TTL；list 支持前缀过滤，授权快照重建需要） */
-const fakeNs = () => {
-  const store = new Map<string, string>();
-  const ns = {
-    get: async (k: string) => store.get(k) ?? null,
-    put: async (k: string, v: string) => void store.set(k, v),
-    delete: async (k: string) => void store.delete(k),
-    list: async (opts?: { prefix?: string }) => ({
-      keys: [...store.keys()]
-        .filter((k) => !opts?.prefix || k.startsWith(opts.prefix))
-        .map((name) => ({ name })),
-      list_complete: true,
-      cursor: "",
-    }),
-  } as unknown as KVNamespace;
-  return { ns, store };
-};
+import { stubCtx, makeEnv as baseEnv } from "./helpers";
 
-const ctx = {
-  waitUntil: (p: Promise<unknown>) => void Promise.resolve(p).catch(() => {}),
-  passThroughOnException: () => {},
-} as unknown as ExecutionContext;
+const ctx = stubCtx();
 
 const MONTHLY_PLAN = {
   id: "plan_monthly",
@@ -62,22 +43,12 @@ const NODE = {
 };
 
 // 付费套餐：机房 IP 滥用检查（checkTrialAbuse）只盯体验 token，不会发起 ip-api 请求
-const makeEnv = () => {
-  const tokens = fakeNs();
-  const nodes = fakeNs();
-  nodes.store.set(KV.NODES, JSON.stringify([NODE]));
-  const env = {
-    TOKENS: tokens.ns,
-    PLANS: fakeNs().ns,
-    ORDERS: fakeNs().ns,
-    NODES: nodes.ns,
-    TICKETS: fakeNs().ns,
-    DEFAULT_PLANS: JSON.stringify([MONTHLY_PLAN]),
-    SITE_URL: "https://fastergamer.click",
-    ADMIN_NOTIFY_EMAIL: "admin@test.com",
-  } as unknown as Env;
-  return { env, tokens };
-};
+const makeEnv = () =>
+  baseEnv({
+    nodes: [NODE],
+    defaultPlans: [MONTHLY_PLAN],
+    extra: { SITE_URL: "https://fastergamer.click", ADMIN_NOTIFY_EMAIL: "admin@test.com" },
+  });
 
 const IP_API_BATCH = "http://ip-api.com/batch";
 
@@ -203,10 +174,11 @@ describe("多地并发在线安全提醒（/api/agent/traffic 链路）", () => 
     );
 
     // 本周期只有广州单 IP：无并发证据，不打扰，基线漂移到广州
+    // （存量裸字符串基线无时间基线：本次只更新基线，旅行检测不判定、不发旅行邮件）
     await report(env, t.uuid, 1e6, { [GZ]: 2 });
     expect(sendMail).not.toHaveBeenCalled();
     const presence = readPresence(tokens.store, t.uuid);
-    expect(presence.active_geo?.["node-hk-01"]).toBe("中国 / 广东 / 广州");
+    expect(presence.active_geo?.["node-hk-01"]).toMatchObject({ g: "中国 / 广东 / 广州" });
   });
 
   it("30 分钟窗口内最近活跃的其他城市 IP 也算并发源：跨请求兜住盗用", async () => {

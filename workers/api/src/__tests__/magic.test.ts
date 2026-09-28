@@ -4,33 +4,15 @@ import { KV, type Token } from "../../../../shared/types";
 import { tokensRoutes } from "../routes/tokens";
 import { MAGIC_TTL_MS } from "../lib/accounts";
 import type { Env } from "../types";
+import { mockNs, noopCtx } from "./helpers";
 
-/** 内存版 KV namespace（Map 实现 get/put/delete/list） */
-const mockNs = () => {
-  const store = new Map<string, string>();
-  const ns = {
-    get: vi.fn(async (key: string) => store.get(key) ?? null),
-    put: vi.fn(async (key: string, value: string) => void store.set(key, value)),
-    delete: vi.fn(async (key: string) => void store.delete(key)),
-    list: vi.fn(async ({ prefix }: { prefix?: string } = {}) => ({
-      keys: [...store.keys()].filter((k) => !prefix || k.startsWith(prefix)).map((name) => ({ name })),
-      list_complete: true,
-      cursor: "",
-    })),
-  } as unknown as KVNamespace;
-  return { store, ns };
-};
+const ctx = noopCtx();
 
 const makeEnv = (tokens: KVNamespace) =>
   ({
     TOKENS: tokens,
     SITE_URL: "https://fastergamer.click",
   }) as unknown as Env;
-
-const ctx = {
-  waitUntil: () => {},
-  passThroughOnException: () => {},
-} as unknown as ExecutionContext;
 
 const makeApp = () => {
   const app = new Hono<{ Bindings: Env }>();

@@ -1,14 +1,14 @@
 import { useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { QRCodeSVG } from "qrcode.react";
-import { isTrialPlan, type Order, type Plan, type Token } from "../../../shared/types";
+import type { Token } from "../../../shared/types";
 import { SHARE_SUSPENDED_COLOR, SHARE_SUSPENDED_LABEL, STATUS_COLOR, STATUS_LABEL } from "../lib/status";
 import { api, type TokenView } from "../services/api";
 import { copyText } from "../utils/clipboard";
-import { usePolling } from "../utils/polling";
-import { usePlatform } from "./platform";
 import DeviceManager from "./DeviceManager";
-import ManualPay from "./ManualPay";
+import IpManager from "./IpManager";
+import SubLinkManager, { SubImportButtons } from "./SubLinkManager";
+import UpgradeFlow from "./UpgradeFlow";
 
 type VerifyResult =
   | { valid: true; nodeCount: number }
@@ -35,6 +35,11 @@ function ExpireCountdown({ expiresAt, status }: { expiresAt: number; status: Tok
   );
 }
 
+/**
+ * Token 状态卡：状态总览、流量/到期展示、风险提醒、订阅链接与 uuid 轮换。
+ * 升级续费（UpgradeFlow）、接入 IP 封禁（IpManager）、订阅导入与设备锁
+ * （SubLinkManager / SubImportButtons）已拆为独立子组件。
+ */
 export default function TokenStatus({ token }: { token: TokenView }) {
   const [current, setCurrent] = useState<TokenView>(token);
   const [copied, setCopied] = useState(false);
@@ -46,46 +51,21 @@ export default function TokenStatus({ token }: { token: TokenView }) {
   const [showPreview, setShowPreview] = useState(false);
   const [previewLoading, setPreviewLoading] = useState(false);
   const [monthlyQuotaGb, setMonthlyQuotaGb] = useState<number | null>(null);
-  const [plans, setPlans] = useState<Plan[]>([]);
   // 非本人激活时后端只返回概要（无 uuid），置此标记展示登录引导
   const [activatedRestricted, setActivatedRestricted] = useState(false);
   const [rotating, setRotating] = useState(false);
   const [resetting, setResetting] = useState(false);
-  // 升级套餐：已下单待确认的升级订单（轮询订单状态中）；showUpgrade 控制套餐列表展开
-  const [upgradeOrder, setUpgradeOrder] = useState<Order | null>(null);
-  const [upgrading, setUpgrading] = useState<string | null>(null);
-  const [showUpgrade, setShowUpgrade] = useState(false);
-  // 升级轮询超过 10 分钟停止（人工收款确认没那么快），卡片保留并给订单查询指引
-  const [upgradePollStopped, setUpgradePollStopped] = useState(false);
 
   // 套餐带月度配额时拉取配额值用于展示
   useEffect(() => {
     api
       .plans()
       .then((plans) => {
-        setPlans(plans);
         const plan = plans.find((p) => p.id === current.plan_id);
         setMonthlyQuotaGb(plan?.monthly_quota_gb ?? null);
       })
       .catch(() => {});
   }, [current.plan_id]);
-
-  // 升级订单轮询支付状态，管理员确认（置 paid）升级完成后刷新 token；
-  // 10 分钟后停止轮询（人工收款确认可能更久），卡片保留并展示订单查询入口
-  usePolling(
-    !!upgradeOrder,
-    async () => {
-      if (!upgradeOrder) return false;
-      const s = await api.orderStatus(upgradeOrder.id);
-      if (s.status === "paid") {
-        const updated = await api.getToken(current.id);
-        setCurrent(updated);
-        setUpgradeOrder(null);
-        return false;
-      }
-    },
-    { intervalMs: 3000, timeoutMs: 10 * 60_000, onTimeout: () => setUpgradePollStopped(true) }
-  );
 
   // 低频刷新 now，供在线状态（90s 窗口）与多设备检测（24h 窗口）判定
   useEffect(() => {
@@ -104,26 +84,7 @@ export default function TokenStatus({ token }: { token: TokenView }) {
   const shareSuspended = !!current.share_suspended_at;
   const navigate = useNavigate();
 
-  // 一键导入：按平台给出对应客户端的 deep link。订阅链接本身带 UA 自适应
-  // （Clash UA 出 YAML、sing-box UA 出 JSON），deep link 直接传同一 URL 即可
-  const platform = usePlatform();
-  const platformOs = platform.split("-")[0];
   const subUrl = api.subUrl(current.uuid);
-  const encSubUrl = encodeURIComponent(subUrl);
-  const importLinks: { label: string; href: string }[] =
-    platformOs === "iOS"
-      ? [
-          { label: "导入到 Stash", href: `stash://install-config?url=${encSubUrl}` },
-          { label: "导入到 sing-box", href: `sing-box://import-remote-profile?url=${encSubUrl}#fastergamer` },
-        ]
-      : platformOs === "Android"
-      ? [
-          { label: "导入到 Clash", href: `clash://install-config?url=${encSubUrl}&name=fastergamer` },
-          { label: "导入到 sing-box", href: `sing-box://import-remote-profile?url=${encSubUrl}#fastergamer` },
-        ]
-      : platformOs
-      ? [{ label: "一键导入到 Clash", href: `clash://install-config?url=${encSubUrl}&name=fastergamer` }]
-      : [];
 
   const limitGb = current.traffic_limit_gb ?? 0;
   const usedGb = current.traffic_used_gb ?? 0;
@@ -134,62 +95,6 @@ export default function TokenStatus({ token }: { token: TokenView }) {
   const isOnline =
     current.online === true &&
     (current.online_updated_at ?? 0) > now - 90_000;
-
-  // 接入 IP 统计（按估算流量降序，最多展示 10 条）
-  const ipStats = Object.entries(current.traffic_by_ip ?? {})
-    .sort((a, b) => b[1].bytes - a[1].bytes)
-    .slice(0, 10);
-
-  const formatBytes = (bytes: number) =>
-    bytes >= 1024 ** 3
-      ? `${(bytes / 1024 ** 3).toFixed(2)} GB`
-      : `${(bytes / 1024 ** 2).toFixed(1)} MB`;
-
-  const blockedIpSet = new Set(current.blocked_ips ?? []);
-  const [ipActionLoading, setIpActionLoading] = useState<string | null>(null);
-
-  // 订阅客户端识别：UA 原文解析成熟客户端名（只覆盖我们客户端教程推荐的常见款）
-  const clientLabel = (ua: string): string => {
-    if (/Shadowrocket/i.test(ua)) return "Shadowrocket · iOS";
-    if (/Stash/i.test(ua)) return "Stash · iOS";
-    if (/SFA|SFI|sing-box/.test(ua)) return "sing-box";
-    if (/v2rayNG/i.test(ua)) return "v2rayNG · Android";
-    if (/NekoBox/i.test(ua)) return "NekoBox · Android";
-    if (/Clash/i.test(ua)) return "Clash 系";
-    return ua.slice(0, 32) || "未知客户端";
-  };
-
-  // 各订阅（主设备 + 设备槽位）最近一次拉取记录，按时间倒序
-  const deviceNameByUuid = new Map<string, string>([
-    [current.uuid, "主设备"],
-    ...(current.devices ?? []).map((d) => [d.uuid, d.name] as [string, string]),
-  ]);
-  const subFetchRows = Object.entries(current.sub_fetches ?? {})
-    .map(([subUuid, f]) => ({
-      subUuid,
-      deviceName: deviceNameByUuid.get(subUuid) ?? "旧凭证/未知设备",
-      client: clientLabel(f.ua),
-      ip: f.ip,
-      at: f.at,
-    }))
-    .sort((a, b) => b.at - a.at);
-
-  const toggleBlockIp = async (ip: string, blocked: boolean) => {
-    if (!blocked && !window.confirm(`确认封禁 ${ip}？\n该 IP 将在 30 秒内被所有节点拒绝连接（若它是多人共享的出口网络，同网络的其他设备也会无法使用）。`)) {
-      return;
-    }
-    setIpActionLoading(ip);
-    try {
-      const res = blocked
-        ? await api.unblockIp(current.id, ip)
-        : await api.blockIp(current.id, ip);
-      setCurrent({ ...current, blocked_ips: res.blocked_ips });
-    } catch (e) {
-      alert((e as Error).message);
-    } finally {
-      setIpActionLoading(null);
-    }
-  };
 
   const onActivate = async () => {
     try {
@@ -289,52 +194,6 @@ export default function TokenStatus({ token }: { token: TokenView }) {
       alert((e as Error).message);
     } finally {
       setResetting(false);
-    }
-  };
-
-  // 可升级的目标套餐：价格高于当前套餐（排除免费体验）
-  const currentPlan = plans.find((p) => p.id === current.plan_id);
-  const upgradeTargets =
-    current.status === "revoked" || !currentPlan
-      ? []
-      : plans.filter((p) => !isTrialPlan(p.id) && p.price_cny > currentPlan.price_cny);
-
-  // 试用 token（含已过期）随时可充值转正：入口常驻，不受「不够用」门槛限制
-  const isTrial = isTrialPlan(current.plan_id);
-  // 升级入口只在「不够用」时出现：流量剩余 ≤10%，或设备槽（主设备+子设备）已满
-  const trafficLow =
-    current.traffic_limit_gb > 0 &&
-    (current.traffic_limit_gb - current.traffic_used_gb) / current.traffic_limit_gb <= 0.1;
-  const maxDevices = current.max_devices ?? currentPlan?.max_devices ?? 2;
-  const deviceFull = 1 + (current.devices?.length ?? 0) >= maxDevices;
-  const needUpgrade = upgradeTargets.length > 0 && (trafficLow || deviceFull || isTrial);
-
-  // 预估补差价（与后端同公式：旧套餐价 × 剩余有效期比例折抵；未激活按全额剩余）
-  const estimatePayable = (target: Plan): number => {
-    if (!currentPlan) return target.price_cny;
-    const durationMs = currentPlan.duration_days * 86_400_000;
-    const remaining = current.expires_at
-      ? Math.max(current.expires_at - now, 0)
-      : durationMs;
-    const credit = currentPlan.price_cny * Math.min(remaining / durationMs, 1);
-    return Math.max(0, Math.round((target.price_cny - credit) * 100) / 100);
-  };
-
-  const startUpgrade = async (targetId: string) => {
-    setUpgrading(targetId);
-    try {
-      const res = await api.upgradeToken(current.id, targetId);
-      if (res.paid && res.token) {
-        // 差价 ≤ 0 免费升级：立即生效
-        setCurrent(res.token);
-      } else {
-        setUpgradePollStopped(false);
-        setUpgradeOrder(res.order);
-      }
-    } catch (e) {
-      alert((e as Error).message);
-    } finally {
-      setUpgrading(null);
     }
   };
 
@@ -535,33 +394,7 @@ export default function TokenStatus({ token }: { token: TokenView }) {
             </button>
           </div>
 
-          {/* 一键导入：deep link 必须放在 onClick（用户手势）里跳转，否则浏览器会拦截自定义协议 */}
-          {importLinks.length > 0 && (
-            <div className="space-y-2">
-              <p className="text-sm sm:text-xs text-slate-400">
-                手机点一下直接唤起客户端完成导入，不用复制粘贴：
-              </p>
-              <div className={`grid gap-3 ${importLinks.length > 1 ? "grid-cols-2" : "grid-cols-1"}`}>
-                {importLinks.map((l) => (
-                  <button
-                    key={l.label}
-                    onClick={() => {
-                      window.location.href = l.href;
-                    }}
-                    className="rounded-lg border border-sky-500/50 bg-sky-500/10 py-3 sm:py-2.5 font-medium text-sky-300 hover:bg-sky-500/20 transition-colors"
-                  >
-                    {l.label}
-                  </button>
-                ))}
-              </div>
-              {/* 深链依赖已装客户端，未安装时点了没反应，给出路 */}
-              <p className="text-center text-sm sm:text-xs text-slate-500">
-                点了没反应？说明还没安装客户端，先去
-                <Link to="/guide" className="text-sky-400 hover:underline"> 使用教程 </Link>
-                下载安装。
-              </p>
-            </div>
-          )}
+          <SubImportButtons subUrl={subUrl} />
 
           {/* 下载配置文件：sub 接口已带 content-disposition，直接下载 .yaml/.json，
               客户端里选「导入本地文件」即可——适合 deep link 被拦截或想手动管理的场景 */}
@@ -662,155 +495,13 @@ export default function TokenStatus({ token }: { token: TokenView }) {
         </div>
       )}
 
-      {ipStats.length > 0 && (
-        <div className="rounded-lg bg-slate-800/60 p-3 space-y-2">
-          <div className="flex justify-between text-sm sm:text-xs">
-            <span className="text-slate-400">接入 IP 统计</span>
-            <span className="text-slate-500">按连接数比例估算，仅供参考</span>
-          </div>
-          <div className="space-y-1 text-sm sm:text-xs">
-            {ipStats.map(([ip, stat]) => {
-              const blocked = blockedIpSet.has(ip);
-              return (
-                <div key={ip} className="flex items-center justify-between gap-2">
-                  <span className={`font-mono ${blocked ? "text-rose-400 line-through" : "text-slate-300"}`}>
-                    {ip}
-                  </span>
-                  <span className="text-slate-500 shrink-0">
-                    {formatBytes(stat.bytes)} · {stat.conns} 次连接 ·{" "}
-                    {new Date(stat.last_seen_at).toLocaleString("zh-CN", {
-                      month: "numeric",
-                      day: "numeric",
-                      hour: "2-digit",
-                      minute: "2-digit",
-                    })}
-                  </span>
-                  <button
-                    onClick={() => toggleBlockIp(ip, blocked)}
-                    disabled={ipActionLoading === ip}
-                    className={`shrink-0 rounded px-2 py-0.5 border text-xs transition-colors disabled:opacity-50 ${
-                      blocked
-                        ? "border-emerald-500/50 text-emerald-400 hover:bg-emerald-500/10"
-                        : "border-rose-500/50 text-rose-400 hover:bg-rose-500/10"
-                    }`}
-                  >
-                    {ipActionLoading === ip ? "…" : blocked ? "解封" : "封禁"}
-                  </button>
-                </div>
-              );
-            })}
-          </div>
-          <p className="text-sm leading-relaxed sm:text-xs text-slate-500">
-            出现陌生 IP 说明订阅可能泄露：点「封禁」后该 IP 30 秒内无法连接任何节点，误封可随时解封。
-            如需彻底重置凭证请联系售后。
-          </p>
-        </div>
-      )}
+      <IpManager token={current} onChange={setCurrent} />
 
       <DeviceManager token={current} onChange={setCurrent} />
 
-      {subFetchRows.length > 0 && (
-        <div className="rounded-lg bg-slate-800/60 p-3 space-y-2">
-          <div className="flex justify-between text-sm sm:text-xs">
-            <span className="text-slate-400">订阅客户端</span>
-            <span className="text-slate-500">各设备最近一次更新订阅</span>
-          </div>
-          <div className="space-y-1 text-sm sm:text-xs">
-            {subFetchRows.map((row) => (
-              <div key={row.subUuid} className="flex items-center justify-between gap-2">
-                <span className="text-slate-300">
-                  {row.deviceName}
-                  <span className="text-sky-300/90 ml-2">{row.client}</span>
-                </span>
-                <span className="text-slate-500 shrink-0">
-                  {row.ip ? `${row.ip} · ` : ""}
-                  {new Date(row.at).toLocaleString("zh-CN", {
-                    month: "numeric",
-                    day: "numeric",
-                    hour: "2-digit",
-                    minute: "2-digit",
-                  })}
-                </span>
-              </div>
-            ))}
-          </div>
-          <p className="text-sm leading-relaxed sm:text-xs text-slate-500">
-            客户端类型变了（比如从 Clash 变成 Shadowrocket）通常说明在新设备上导入了订阅；
-            建议给每台设备绑定独立槽位，用量与在线状态才能分开审计。
-          </p>
-        </div>
-      )}
+      <SubLinkManager token={current} now={now} onChange={setCurrent} />
 
-      {upgradeOrder && (
-        <div className="rounded-xl border border-sky-500/50 bg-sky-500/10 p-4 space-y-3">
-          <p className="text-[15px] sm:text-sm font-medium text-sky-300 text-center">
-            升级订单已创建，扫码补差价后点「我已支付」
-          </p>
-          <ManualPay orderId={upgradeOrder.id} payableCny={upgradeOrder.payable_cny ?? 0} />
-          {upgradePollStopped && (
-            <p className="text-center text-[15px] leading-relaxed sm:text-sm text-slate-400">
-              客服确认收款后自动生效。页面关闭了也没关系，随时可到
-              <Link to={`/orders/${upgradeOrder.id}`} className="text-sky-400 hover:underline"> 订单查询 </Link>
-              页看进度。
-            </p>
-          )}
-          <button
-            onClick={() => setUpgradeOrder(null)}
-            className="block mx-auto text-xs text-slate-500 hover:text-slate-300"
-          >
-            收起
-          </button>
-        </div>
-      )}
-
-      {needUpgrade && !upgradeOrder && !showUpgrade && (
-        <button
-          onClick={() => setShowUpgrade(true)}
-          className="w-full rounded-xl border border-amber-500/40 bg-amber-500/10 p-3 text-base sm:text-sm text-amber-300 hover:bg-amber-500/20 transition-colors"
-        >
-          {isTrial
-            ? "续费开通专享：送 30 天，剩余天数并入首月，订阅链接不变 →"
-            : `${trafficLow ? "流量快用完了" : "设备槽已满"}，点这里升级套餐 →`}
-        </button>
-      )}
-
-      {needUpgrade && !upgradeOrder && showUpgrade && (
-        <div className="rounded-xl border border-slate-700 bg-slate-950 p-4 space-y-3">
-          <div className="flex items-center justify-between">
-            <div className="text-[15px] sm:text-sm font-medium text-slate-300">
-              {isTrial ? "续费开通" : "升级套餐"}
-            </div>
-            <button
-              onClick={() => setShowUpgrade(false)}
-              className="text-xs text-slate-500 hover:text-slate-300"
-            >
-              收起
-            </button>
-          </div>
-          {isTrial && (
-            <p className="text-sm leading-relaxed sm:text-xs text-amber-300/90 bg-amber-500/10 border border-amber-500/30 rounded-lg px-3 py-2">
-              续费开通专享：额外赠送 30 天，试用期内剩余天数自动并入开通后第一个月；uuid、订阅链接与设备配置保持不变。
-            </p>
-          )}
-          <div className="space-y-2">
-            {upgradeTargets.map((p) => (
-              <div key={p.id} className="flex items-center justify-between gap-3 text-[15px] sm:text-sm">
-                <span>
-                  {p.name}
-                  <span className="text-sm sm:text-xs text-slate-500 ml-2">¥{p.price_cny} / {p.duration_days} 天</span>
-                </span>
-                <button
-                  onClick={() => startUpgrade(p.id)}
-                  disabled={upgrading !== null}
-                  className="shrink-0 rounded-lg bg-sky-500 px-3 py-2 sm:py-1.5 text-sm sm:text-xs font-medium hover:bg-sky-400 transition-colors disabled:opacity-60"
-                >
-                  {upgrading === p.id ? "下单中…" : isTrial ? `¥${estimatePayable(p)} 续费` : `≈¥${estimatePayable(p)} 升级`}
-                </button>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
+      <UpgradeFlow token={current} now={now} onChange={setCurrent} />
     </div>
   );
 }

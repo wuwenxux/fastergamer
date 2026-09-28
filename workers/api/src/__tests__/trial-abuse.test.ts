@@ -5,22 +5,9 @@ import { ordersRoutes } from "../routes/orders";
 import { tokensRoutes } from "../routes/tokens";
 import { isDisposableEmail } from "../lib/disposable-email";
 import type { Env } from "../types";
+import { fakeNs, noopCtx } from "./helpers";
 
-/** 假 KV：map 实现（put 忽略 TTL 等选项，测试只关心存在性） */
-const fakeNs = () => {
-  const store = new Map<string, string>();
-  const ns = {
-    get: async (k: string) => store.get(k) ?? null,
-    put: async (k: string, v: string) => void store.set(k, v),
-    delete: async (k: string) => void store.delete(k),
-  } as unknown as KVNamespace;
-  return { ns, store };
-};
-
-const ctx = {
-  waitUntil: () => {},
-  passThroughOnException: () => {},
-} as unknown as ExecutionContext;
+const ctx = noopCtx();
 
 const TRIAL_PLAN = {
   id: "plan_trial",

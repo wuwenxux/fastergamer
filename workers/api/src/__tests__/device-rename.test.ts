@@ -2,19 +2,9 @@ import { describe, expect, it, vi } from "vitest";
 import worker from "../index";
 import { KV, type Device, type Token } from "../../../../shared/types";
 import type { Env } from "../types";
+import { mockNs, noopCtx } from "./helpers";
 
-/** 内存版 KV namespace（Map 实现 get/put/delete） */
-const mockNs = () => {
-  const store = new Map<string, string>();
-  const ns = {
-    get: vi.fn(async (key: string) => store.get(key) ?? null),
-    put: vi.fn(async (key: string, value: string) => void store.set(key, value)),
-    delete: vi.fn(async (key: string) => void store.delete(key)),
-  } as unknown as KVNamespace;
-  return { store, ns };
-};
-
-const ctx = { waitUntil: () => {}, passThroughOnException: () => {} } as unknown as ExecutionContext;
+const ctx = noopCtx();
 
 const DEVICE: Device = {
   id: "dv_1",

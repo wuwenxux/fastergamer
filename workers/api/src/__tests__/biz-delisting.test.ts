@@ -5,6 +5,7 @@ import { plansRoutes } from "../routes/plans";
 import { ordersRoutes } from "../routes/orders";
 import { tokensRoutes } from "../routes/tokens";
 import type { Env } from "../types";
+import { makeEnv as baseEnv, noopCtx } from "./helpers";
 
 /**
  * 企业套餐（plan_biz_*）在 click 站已下架：公开套餐列表不返回、
@@ -12,45 +13,20 @@ import type { Env } from "../types";
  * KV 里的企业套餐数据保留（dormant），仅公开 API 层拦截。
  */
 
-const fakeNs = () => {
-  const store = new Map<string, string>();
-  const ns = {
-    get: async (k: string) => store.get(k) ?? null,
-    put: async (k: string, v: string) => void store.set(k, v),
-    delete: async (k: string) => void store.delete(k),
-  } as unknown as KVNamespace;
-  return { ns, store };
-};
-
 const PLANS: Plan[] = [
   { id: "plan_trial", name: "3 天免费体验", duration_days: 3, price_cny: 0, description: "", traffic_limit_gb: 20, max_devices: 1 },
   { id: "plan_monthly", name: "月付套餐", duration_days: 30, price_cny: 12, description: "", traffic_limit_gb: 20, max_devices: 2 },
   { id: "plan_biz_yearly", name: "企业年付", duration_days: 365, price_cny: 999, description: "", traffic_limit_gb: 500, max_devices: 20 },
 ];
 
-const makeEnv = () => {
-  const tokens = fakeNs();
-  const plans = fakeNs();
-  plans.store.set("plans", JSON.stringify(PLANS));
-  const env = {
-    TOKENS: tokens.ns,
-    PLANS: plans.ns,
-    ORDERS: fakeNs().ns,
-    NODES: fakeNs().ns,
-    TICKETS: fakeNs().ns,
-  } as unknown as Env;
-  return { env, tokens };
-};
+const makeEnv = () => baseEnv({ plans: PLANS });
 
 const app = new Hono<{ Bindings: Env }>();
 app.route("/api/plans", plansRoutes);
 app.route("/api/orders", ordersRoutes);
 app.route("/api/tokens", tokensRoutes);
 
-const ctx = {
-  waitUntil: () => {},
-  passThroughOnException: () => {},
-} as unknown as ExecutionContext;
+const ctx = noopCtx();
 
 describe("企业套餐下架（click 站）", () => {
   it("GET /api/plans 不返回企业套餐", async () => {

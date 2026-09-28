@@ -4,22 +4,9 @@ import { KV, type Node, type Token } from "../../../../shared/types";
 import { subRoutes } from "../routes/sub";
 import { invalidateNodesCache } from "../lib/nodes";
 import type { Env } from "../types";
+import { collectCtx, fakeNs, noopCtx } from "./helpers";
 
-/** 假 KV：map 实现（put 忽略 TTL 等选项，测试只关心存在性） */
-const fakeNs = () => {
-  const store = new Map<string, string>();
-  const ns = {
-    get: async (k: string) => store.get(k) ?? null,
-    put: async (k: string, v: string) => void store.set(k, v),
-    delete: async (k: string) => void store.delete(k),
-  } as unknown as KVNamespace;
-  return { ns, store };
-};
-
-const ctx = {
-  waitUntil: () => {},
-  passThroughOnException: () => {},
-} as unknown as ExecutionContext;
+const ctx = noopCtx();
 
 const NODES: Node[] = [
   {
@@ -135,12 +122,16 @@ describe("订阅格式路由（UA 识别）", () => {
 
 describe("订阅格式路由（format 参数）", () => {
   it("format 参数优先于 UA", async () => {
-    const { env } = await setup(makeToken());
-    const res1 = await getSub(env, UUID, { ua: "clash-verge/v2.0", format: "vless" });
+    // 每个用例独立 setup：订阅绑定按家族记录（单设备套餐换家族会被 403 拦截；
+    // 本文件 plan_monthly 无 max_devices → 兜底 2 属多设备，锁不生效，仅隔离变量）
+    const { env: env1 } = await setup(makeToken());
+    const res1 = await getSub(env1, UUID, { ua: "clash-verge/v2.0", format: "vless" });
     expect(res1.headers.get("content-type")).toContain("text/plain");
-    const res2 = await getSub(env, UUID, { ua: "v2rayNG/1.8.19", format: "clash" });
+    const { env: env2 } = await setup(makeToken());
+    const res2 = await getSub(env2, UUID, { ua: "v2rayNG/1.8.19", format: "clash" });
     expect(res2.headers.get("content-type")).toContain("text/yaml");
-    const res3 = await getSub(env, UUID, { format: "singbox" });
+    const { env: env3 } = await setup(makeToken());
+    const res3 = await getSub(env3, UUID, { format: "singbox" });
     expect(res3.headers.get("content-type")).toContain("application/json");
   });
 
@@ -356,20 +347,6 @@ describe("激活/过期/撤销语义（与格式无关）", () => {
 });
 
 describe("订阅拉取的客户端识别记录", () => {
-  /** 收集 waitUntil 承诺的 ctx，便于测试等到副作用落库 */
-  const collectCtx = () => {
-    const pending: Promise<unknown>[] = [];
-    return {
-      pending,
-      ctx: {
-        waitUntil: (p: Promise<unknown>) => {
-          pending.push(Promise.resolve(p).catch(() => {}));
-        },
-        passThroughOnException: () => {},
-      } as unknown as ExecutionContext,
-    };
-  };
-
   it("记录 UA/来源 IP/时间到 presence（主 uuid 与设备槽位按键分开）", async () => {
     const devUuid = "aaaaaaaa-0000-0000-0000-000000000001";
     const { env, tokens } = await setup(

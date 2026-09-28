@@ -7,27 +7,17 @@ import { createSession } from "../lib/accounts";
 import { getCredit } from "../lib/referral";
 import { fulfillOrder, type WaitUntilCtx } from "../lib/issue-token";
 import type { Env } from "../types";
+import { stubCtx, makeEnv as baseEnv } from "./helpers";
+
+const mockCtx = (): WaitUntilCtx => stubCtx();
+
+const ctx = stubCtx();
 
 /**
  * 推广抵扣的扣减时机：下单（pending）只试算不扣额度，发货成功（fulfillOrder）才扣；
  * 订单取消/超时被自动取消时本来就没扣，无需归还。
  * 0 元抵扣单发货失败（fulfillOrder 抛错）不得扣额度。
  */
-
-/** 内存版 KV namespace（Map 实现 get/put/delete/list） */
-const mockNs = () => {
-  const store = new Map<string, string>();
-  const ns = {
-    get: vi.fn(async (key: string) => store.get(key) ?? null),
-    put: vi.fn(async (key: string, value: string) => void store.set(key, value)),
-    delete: vi.fn(async (key: string) => void store.delete(key)),
-    list: vi.fn(async ({ prefix, cursor }: { prefix?: string; cursor?: string }) => {
-      const keys = [...store.keys()].filter((k) => !prefix || k.startsWith(prefix)).map((name) => ({ name }));
-      return { keys, list_complete: true, cursor: cursor ?? "" };
-    }),
-  } as unknown as KVNamespace;
-  return { store, ns };
-};
 
 const PLANS: Plan[] = [
   { id: "plan_monthly", name: "月付套餐", duration_days: 30, price_cny: 12, description: "", traffic_limit_gb: 20, max_devices: 2 },
@@ -37,24 +27,10 @@ const PLANS: Plan[] = [
 const ADMIN_KEY = "test-admin-key";
 const BUYER = "buyer@example.com";
 
-const mockEnv = () => {
-  const tokens = mockNs();
-  const orders = mockNs();
-  const plans = mockNs();
-  plans.store.set("plans", JSON.stringify(PLANS));
-  const env = {
-    TOKENS: tokens.ns,
-    ORDERS: orders.ns,
-    PLANS: plans.ns,
-    NODES: mockNs().ns,
-    TICKETS: mockNs().ns,
-    ADMIN_KEY,
-  } as unknown as Env;
-  return { env, tokens, orders };
-};
+const mockEnv = () => baseEnv({ plans: PLANS, adminKey: ADMIN_KEY, mock: true });
 
-/** 给买家预置推广额度（earned 个 ×10 元） */
-const seedCredit = (tokens: ReturnType<typeof mockNs>, earned: number, used = 0) => {
+/** 给买家预置推广额度（earned 个 ×5 元） */
+const seedCredit = (tokens: ReturnType<typeof baseEnv>["tokens"], earned: number, used = 0) => {
   tokens.store.set(KV.REFCREDIT + BUYER, JSON.stringify({ earned, used }));
 };
 
@@ -62,12 +38,6 @@ const app = new Hono<{ Bindings: Env }>();
 app.route("/api/orders", ordersRoutes);
 app.route("/api/admin", adminRoutes);
 
-const ctx = {
-  waitUntil: (p: Promise<unknown>) => void Promise.resolve(p).catch(() => {}),
-  passThroughOnException: () => {},
-} as unknown as ExecutionContext;
-
-const mockCtx = (): WaitUntilCtx => ({ waitUntil: (p) => void Promise.resolve(p).catch(() => {}) });
 
 /** 带买家登录 session 下单（session 邮箱与下单邮箱一致才享抵扣） */
 const createOrder = async (env: Env, planId: string) => {
@@ -96,7 +66,7 @@ const readOrder = (orders: ReturnType<typeof mockNs>, id: string): Order =>
 describe("推广抵扣扣减时机（发货成功才扣）", () => {
   it("pending 订单：下单只试算抵扣，不扣额度；站长确认收款发货后才扣", async () => {
     const { env, tokens, orders } = mockEnv();
-    seedCredit(tokens, 3); // 30 元可用，月付 12 元抵 10
+    seedCredit(tokens, 3); // 15 元可用，月付 12 元抵 10
 
     const res = await createOrder(env, "plan_monthly");
     expect(res.status).toBe(201);
@@ -111,15 +81,15 @@ describe("推广抵扣扣减时机（发货成功才扣）", () => {
     const paid = await adminPaid(env, body.data.order.id);
     expect(paid.status).toBe(200);
     expect(readOrder(orders, body.data.order.id).status).toBe("paid");
-    // 发货成功才扣（10 元 = 1 个额度）
+    // 发货成功才扣（10 元 = 2 个额度）
     const credit = await getCredit(env, BUYER);
-    expect(credit.used).toBe(1);
+    expect(credit.used).toBe(2);
     expect(credit.earned).toBe(3);
   });
 
   it("0 元抵扣单：发货成功即扣额度", async () => {
     const { env, tokens } = mockEnv();
-    seedCredit(tokens, 1); // 10 元可用，10 元套餐全额抵
+    seedCredit(tokens, 2); // 10 元可用，10 元套餐全额抵
 
     const res = await createOrder(env, "plan_ten");
     expect(res.status).toBe(201);
@@ -127,7 +97,7 @@ describe("推广抵扣扣减时机（发货成功才扣）", () => {
     expect(body.data.paid).toBe(true);
     expect(body.data.order.status).toBe("paid");
     expect(body.data.order.discount_cny).toBe(10);
-    expect((await getCredit(env, BUYER)).used).toBe(1);
+    expect((await getCredit(env, BUYER)).used).toBe(2);
   });
 
   it("fulfillOrder 失败（plan 缺失抛错）：额度不扣", async () => {

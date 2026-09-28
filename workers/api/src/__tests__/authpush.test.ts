@@ -3,6 +3,7 @@ import { KV, type Token } from "../../../../shared/types";
 import { pushAuthRefresh } from "../lib/authpush";
 import { computeAuthSnapshot } from "../lib/authsnapshot";
 import type { Env } from "../types";
+import { mockNs as baseMockNs } from "./helpers";
 
 /**
  * pushAuthRefresh 防抖：60s 窗口内只推第一次（结算高峰期授权事件密集触发，
@@ -23,24 +24,10 @@ const NODE = {
   active: true,
 };
 
-/** 内存版 KV namespace（put 捕获 options 供 TTL 断言） */
+/** 内存版 KV namespace（put 的调用参数经 vi.fn 捕获，供 TTL 断言） */
 const mockNs = () => {
-  const store = new Map<string, string>();
-  const put = vi.fn(async (key: string, value: string, opts?: { expirationTtl?: number }) => {
-    void opts;
-    store.set(key, value);
-  });
-  const ns = {
-    get: vi.fn(async (key: string) => store.get(key) ?? null),
-    put,
-    delete: vi.fn(async (key: string) => void store.delete(key)),
-    list: vi.fn(async ({ prefix }: { prefix?: string } = {}) => ({
-      keys: [...store.keys()].filter((k) => !prefix || k.startsWith(prefix)).map((name) => ({ name })),
-      list_complete: true,
-      cursor: "",
-    })),
-  } as unknown as KVNamespace;
-  return { store, ns, put };
+  const { ns, store } = baseMockNs();
+  return { store, ns, put: vi.mocked(ns.put) };
 };
 
 const seedToken = (store: Map<string, string>, seq: number, over: Partial<Token> = {}): Token => {
