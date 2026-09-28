@@ -1,7 +1,9 @@
 import { Hono } from "hono";
 import { isTrialPlan, KV, TRIAL_PLAN_ID } from "../../../../shared/types";
 import type { Device, Order, Token } from "../../../../shared/types";
-import { deleteDeviceIndex, getPlans, getTokenById, getTokenPresence, listTokensByContact, rotateTokenUuid, saveDeviceIndex, saveOrder, saveToken } from "../lib/kv";
+import { deleteDeviceIndex, getPlans, getTokenById, getTokenPresence, listTokensByContact, mergeTokenSettlement, rotateTokenUuid, saveDeviceIndex, saveOrder, saveToken } from "../lib/kv";
+import { clearSubBindings, SUB_UNBIND_COOLDOWN_MS } from "../lib/sub-lock";
+import { checkContinuityEligibility, continuityContactError, continuityRuleFor } from "../lib/continuity";
 import { isDisposableEmail } from "../lib/disposable-email";
 import { isEmail, sendMail, sendTokenEmail, shouldSendEmail } from "../lib/email-aliyun";
 import { mailThrottleAllows } from "../lib/mail-throttle";
@@ -12,6 +14,7 @@ import { newOrderId, newTokenId } from "../lib/ids";
 import { activatePaidToken } from "../lib/activate";
 import { fulfillOrder } from "../lib/issue-token";
 import { resetPenalty, sendPenaltyNoticeEmail } from "../lib/reset-penalty";
+import { allowGuardedIp, denyGuardedIp } from "../lib/device-guard";
 import { pushAuthRefresh } from "../lib/authpush";
 import { siteUrl } from "../lib/site-url";
 import type { Env } from "../types";
@@ -389,6 +392,32 @@ tokensRoutes.post("/:id/rotate-uuid", async (c) => {
   return c.json({ ok: true, data: { id: token.id, uuid: token.uuid } });
 });
 
+/**
+ * POST /api/tokens/:id/sub-unbind —— 自助解除全部订阅设备锁绑定（换手机/换客户端场景）
+ * 仅本人可操作。解绑后任意客户端可重新拉取认领绑定，原设备将无法更新订阅。
+ * 冷却 7 天（token.sub_unbind_at）：无冷却会被分享者当成「随时挤掉机主」的工具。
+ * 绑定写 presence:{uuid}.sub_fps，冷却时间戳走 token 主键重读-合并补丁。
+ */
+tokensRoutes.post("/:id/sub-unbind", async (c) => {
+  const token = await getTokenById(c.env, c.req.param("id"));
+  if (!token) return c.json({ ok: false, error: "token not found" }, 404);
+  if (!(await isOwner(c.env, c.req.header("authorization"), token))) {
+    return c.json({ ok: false, error: "请先通过邮箱登录链接进入后再操作" }, 401);
+  }
+
+  const now = Date.now();
+  const remainMs = SUB_UNBIND_COOLDOWN_MS - (now - (token.sub_unbind_at ?? 0));
+  if (remainMs > 0) {
+    const days = Math.ceil(remainMs / 86_400_000);
+    return c.json({ ok: false, error: `解绑冷却中，${days} 天后可再次解绑` }, 429);
+  }
+
+  await clearSubBindings(c.env, token.uuid);
+  // 冷却时间戳重读-合并写，不覆盖结算路径并发更新的字段
+  await mergeTokenSettlement(c.env, token.uuid, { sub_unbind_at: now });
+  return c.json({ ok: true, data: { sub_unbind_at: now } });
+});
+
 const IPV4_RE = /^((25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)$/;
 const IPV6_RE = /^(?=.*:)[0-9a-fA-F:]+$/;
 
@@ -430,6 +459,70 @@ tokensRoutes.post("/:id/blocked-ips", async (c) => {
     c.executionCtx.waitUntil(pushAuthRefresh(c.env)); // 封禁 IP 立即下发各节点防火墙
   }
   return c.json({ ok: true, data: { blocked_ips: token.blocked_ips } });
+});
+
+/**
+ * POST /api/tokens/:id/device-guard/allow —— 设备级防护：机主确认「允许」= 迁移流程
+ * 自动为新设备创建独立槽位（共用链接只能是过渡），被拦 IP 解封并记入涉事凭证的
+ * 迁移过渡名单（7 天），台账删除；响应带新槽位（前端展示引导导入专属订阅链接）。
+ * 槽位已满返回 409，阻断与台账保持。仅本人可操作。
+ * body: { ip: "1.2.3.4" }
+ */
+tokensRoutes.post("/:id/device-guard/allow", async (c) => {
+  const token = await getTokenById(c.env, c.req.param("id"));
+  if (!token) return c.json({ ok: false, error: "token not found" }, 404);
+  if (!(await isOwner(c.env, c.req.header("authorization"), token))) {
+    return c.json({ ok: false, error: "请先通过邮箱登录链接进入后再操作" }, 401);
+  }
+
+  const body = (await c.req.json().catch(() => null)) as { ip?: string } | null;
+  const ip = body?.ip?.trim() ?? "";
+  if (!isValidIp(ip)) {
+    return c.json({ ok: false, error: "IP 格式不正确" }, 400);
+  }
+  const result = await allowGuardedIp(c.env, token, ip);
+  if (result.reason === "not_found") {
+    return c.json({ ok: false, error: "该 IP 不在待授权列表" }, 404);
+  }
+  if (result.reason === "slots_full") {
+    return c.json(
+      { ok: false, error: "设备数已达上限：请先解绑一台旧设备，或升级套餐后再允许新设备" },
+      409
+    );
+  }
+  c.executionCtx.waitUntil(pushAuthRefresh(c.env)); // 解封 + 新槽位 uuid 立即下发各节点
+  return c.json({
+    ok: true,
+    data: {
+      blocked_ips: token.blocked_ips ?? [],
+      device_guard: token.device_guard ?? {},
+      devices: token.devices ?? [],
+      device: result.device,
+      transition_until: result.transition_until,
+    },
+  });
+});
+
+/**
+ * POST /api/tokens/:id/device-guard/deny —— 设备级防护：机主确认「保持拒绝」
+ * 阻断保持（blocked_ips 不动），台账置 denied 停止重复提醒。仅本人可操作。
+ */
+tokensRoutes.post("/:id/device-guard/deny", async (c) => {
+  const token = await getTokenById(c.env, c.req.param("id"));
+  if (!token) return c.json({ ok: false, error: "token not found" }, 404);
+  if (!(await isOwner(c.env, c.req.header("authorization"), token))) {
+    return c.json({ ok: false, error: "请先通过邮箱登录链接进入后再操作" }, 401);
+  }
+
+  const body = (await c.req.json().catch(() => null)) as { ip?: string } | null;
+  const ip = body?.ip?.trim() ?? "";
+  if (!isValidIp(ip)) {
+    return c.json({ ok: false, error: "IP 格式不正确" }, 400);
+  }
+  if (!(await denyGuardedIp(c.env, token, ip))) {
+    return c.json({ ok: false, error: "该 IP 不在待授权列表" }, 404);
+  }
+  return c.json({ ok: true, data: { device_guard: token.device_guard ?? {} } });
 });
 
 /** DELETE /api/tokens/:id/blocked-ips/:ip —— 解除封禁，仅本人可操作 */
@@ -503,6 +596,16 @@ tokensRoutes.post("/:id/upgrade", async (c) => {
   }
   if (target.price_cny <= oldPlan.price_cny) {
     return c.json({ ok: false, error: "只能升级到价格更高的套餐" }, 400);
+  }
+  // 连续价套餐（连续包月/连续包年；试用转正可直达）：资格按 token.contact 判定，与下单入口同一规则
+  const continuityRule = continuityRuleFor(target.id);
+  if (continuityRule) {
+    const contact = token.contact?.trim().toLowerCase();
+    if (!contact) {
+      return c.json({ ok: false, error: continuityContactError(continuityRule) }, 400);
+    }
+    const denied = await checkContinuityEligibility(c.env, target.id, contact, Date.now());
+    if (denied) return c.json({ ok: false, error: denied }, 400);
   }
 
   const now = Date.now();

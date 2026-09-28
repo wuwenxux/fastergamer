@@ -26,7 +26,8 @@ import type { Env } from "../types";
 const paidPlans = (plans: Plan[]): Plan[] =>
   plans.filter((p) => p.price_cny > 0 && !isTrialPlan(p.id) && !p.id.startsWith("plan_biz"));
 
-function shell(env: Env, title: string, bodyHtml: string, bodyText: string, cta?: { url: string; label: string }) {
+/** 通用交易/安全类邮件模板（sub-lock / travel-guard 等新提醒也复用，故导出） */
+export function shell(env: Env, title: string, bodyHtml: string, bodyText: string, cta?: { url: string; label: string }) {
   const ctaUrl = cta?.url ?? `${siteUrl(env)}/tokens`;
   const ctaLabel = cta?.label ?? "查看我的 Token";
   const subject = `【GameBoost】${title}`;
@@ -250,8 +251,13 @@ export interface IpLocationChange {
   changed: boolean;
   /** 上次确认的接入位置键（首次建基线时无） */
   oldLocation?: string;
+  /** 旧基线的确认时间（unix 毫秒）：不可能旅行检测的时间基线；
+   *  存量裸字符串基线无时间戳 → undefined，本次只更新基线不判定 */
+  oldAt?: number;
   /** 本次接入位置键（geo 查询失败时无） */
   newLocation?: string;
+  /** 新 IP 归属地（含经纬度，旅行检测算距离用；geo 查询失败时无） */
+  newGeo?: IpGeo;
   /** 新 IP 归属地展示串（含运营商，查询失败时无） */
   display?: string;
 }
@@ -259,10 +265,12 @@ export interface IpLocationChange {
 /**
  * 接入地点变更判定：查新接入 IP 的地理位置，与 presence.active_geo[key] 基线比较。
  * - 首次建基线（无基线）：不提醒，只记录；
- * - 位置相同（同城动态 IP 漂移）：不提醒，基线原值不变；
+ * - 位置相同（同城动态 IP 漂移）：不提醒，基线位置不变、确认时间刷新
+ *   （at 是旅行检测的时间基线：同城持续在线要推进它，否则换城市时按陈旧时间算速度会漏判）；
  * - 位置不同：提醒并更新基线；
  * - geo 查询失败：保守按「位置不同」处理（安全提醒宁可误发），但基线不动，
  *   等下次查询成功再校准，避免把失败当新位置固化下来。
+ * 基线值结构为 { g: 位置键, at: 确认时间 }；存量裸字符串按位置键读取、无 at。
  * 会原地更新 presence.active_geo；调用方负责随后 savePresenceIfChanged 落库。
  */
 export async function resolveIpLocationChange(
@@ -271,20 +279,25 @@ export async function resolveIpLocationChange(
   key: string,
   ips: string[]
 ): Promise<IpLocationChange> {
-  const prev = presence.active_geo?.[key];
+  const prevEntry = presence.active_geo?.[key];
+  // 读侧兼容存量裸字符串基线（无 at）：本次只更新基线，不参与旅行判定
+  const prev = typeof prevEntry === "string" ? prevEntry : prevEntry?.g;
+  const prevAt = typeof prevEntry === "object" && prevEntry ? prevEntry.at : undefined;
   const geo = await lookupIpGeo(env, ips[0]);
   const cur = geo ? geoLocationKey(geo) : "";
   if (!geo || !cur) {
     // 查询失败：有基线才提醒（无基线 = 首次使用，没有任何变更证据）
-    return { changed: prev !== undefined, oldLocation: prev };
+    return { changed: prev !== undefined, oldLocation: prev, oldAt: prevAt };
   }
   presence.active_geo = presence.active_geo ?? {};
-  presence.active_geo[key] = cur;
-  if (prev === undefined) return { changed: false, newLocation: cur, display: geoDisplay(geo) };
+  presence.active_geo[key] = { g: cur, at: Date.now() };
+  if (prev === undefined) return { changed: false, newLocation: cur, newGeo: geo, display: geoDisplay(geo) };
   return {
     changed: prev !== cur,
     oldLocation: prev,
+    oldAt: prevAt,
     newLocation: cur,
+    newGeo: geo,
     display: geoDisplay(geo),
   };
 }

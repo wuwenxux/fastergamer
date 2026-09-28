@@ -8,6 +8,7 @@ import { getNodes, isBudgetExhausted } from "../lib/nodes";
 import { ispFromAsn, orderNodesForIsp } from "../lib/isp";
 import { pushAuthRefresh } from "../lib/authpush";
 import { qrPng } from "../lib/qr-png";
+import { checkSubBinding, notifyBindConflict, recordBinding } from "../lib/sub-lock";
 import type { Env } from "../types";
 
 export const subRoutes = new Hono<{ Bindings: Env }>();
@@ -110,6 +111,9 @@ subRoutes.get("/qr", async (c) => {
  * GET /api/sub?uuid={uuid}[&format=clash|vless|singbox] —— 订阅下发
  * uuid 可以是 token 主 uuid 或某个设备槽位的 uuid（每台设备独立订阅）
  * 待激活（paid）的 token 首次拉取时自动激活并开始计时；过期/撤销返回 403。
+ * 设备锁（lib/sub-lock.ts）：仅单设备套餐（试用/流量包等）生效——每条链接绑定
+ * 首个拉取它的客户端家族，其他家族/（已有绑定时）浏览器 UA 再拉取返回 403 并邮件
+ * 通知机主；多设备套餐一律放行（仍记录指纹供管理页展示）。
  * 三种格式共用同一份节点过滤（超配额摘除）/ ISP 排序 / DoH 解析结果，
  * 激活/过期/撤销语义与格式无关。
  */
@@ -137,19 +141,45 @@ subRoutes.get("/", async (c) => {
     return c.text("token 已过期或被撤销，请登录网站查看", 403);
   }
 
+  // 订阅设备锁：状态校验之后、渲染之前。绑定判定在激活之后——
+  // paid 首拉先激活，再由首个拉取的客户端家族认领绑定（懒惰绑定，存量灰度兼容）
+  const ua = c.req.header("user-agent") ?? "";
+  const clientIp = c.req.header("cf-connecting-ip");
+  const binding = await checkSubBinding(c.env, token, uuid, ua, now);
+  if (!binding.allowed) {
+    // 冲突拒绝：纯文本 403（客户端会展示给用户），同时邮件通知机主（节流 24h）
+    c.executionCtx.waitUntil(
+      notifyBindConflict(c.env, token, {
+        subLabel: found.device ? `设备「${found.device.name}」` : "主设备",
+        fp: binding.fp,
+        conflictWith: binding.conflictWith,
+        ip: clientIp,
+        now,
+      })
+    );
+    return c.text(
+      "该订阅链接已绑定其他客户端。多设备请登录管理页添加设备槽位获取独立链接；换手机请在管理页「订阅绑定」处解绑后重新导入。",
+      403
+    );
+  }
+
   const nodes = (await getNodes(c.env)).filter((n) => !isBudgetExhausted(n));
   // 按用户运营商（CF 边缘 ASN）静默重排：线路匹配节点排前，首屏即落最优线路
   const isp = ispFromAsn((c.req.raw.cf as { asn?: number } | undefined)?.asn);
   const orderedNodes = orderNodesForIsp(nodes, isp);
   const nodeIps = await resolveNodeIps(orderedNodes.filter((n) => n.active).map((n) => n.host));
-  const ua = c.req.header("user-agent") ?? "";
   const regions = parseRegions(c.env.CLASH_REGIONS);
   const format = detectSubFormat(c.req.query("format"), ua);
 
-  // 记录订阅拉取的客户端 UA / 来源 IP（客户端类型识别，管理页「订阅客户端」展示）；
+  // 设备锁绑定建立/刷新 + 记录订阅拉取的客户端 UA / 来源 IP（客户端类型识别，
+  // 管理页「订阅客户端」展示）；两者写同一 presence 键，必须串行——recordSubFetch
+  // 在 recordBinding 落库后重读最新副本，并发读-改-写会互相覆盖。
   // 低频路径，waitUntil 不阻塞下发
   c.executionCtx.waitUntil(
-    recordSubFetch(c.env, token.uuid, uuid, ua, c.req.header("cf-connecting-ip"))
+    (async () => {
+      await recordBinding(c.env, token.uuid, uuid, binding.fp, ua, clientIp, now);
+      await recordSubFetch(c.env, token.uuid, uuid, ua, clientIp);
+    })()
   );
 
   let body: string;

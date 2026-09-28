@@ -11,10 +11,12 @@ import {
   type TokenSettlementPatch,
 } from "../lib/kv";
 import { checkNodeBudget, checkTokenRisks, updateSpikeWindow, sendSpikeAlert, notifyIpChange, resolveConcurrentGeoConflict, resolveIpLocationChange } from "../lib/risk-notify";
+import { evaluateTravel } from "../lib/travel-guard";
 import { checkTrialAbuse, applyAbuseWindow } from "../lib/abuse";
 import { getAuthSnapshot, TRAFFIC_GRACE_MS } from "../lib/authsnapshot";
 import { pushAuthRefresh } from "../lib/authpush";
 import { evaluateShareConns } from "../lib/share-guard";
+import { DG_NOTIFY_THROTTLE_MS, evaluateDeviceConns } from "../lib/device-guard";
 import type { Env } from "../types";
 
 export const agentRoutes = new Hono<{ Bindings: Env }>();
@@ -221,6 +223,12 @@ async function applyTrafficDelta(
   // 接入 IP 统计：把本次增量按连接数比例分摊到各来源 IP（估算，写 presence）
   // 活跃 IP 与上次不一致 = 接入地址变更，写库后提醒本人自查（本人换网络属正常）
   attributeIpTraffic(presence, conns, delta, now);
+  // 变更前的接入 IP 与本周期活跃 IP：不可能旅行检测判定「整体迁移 vs 并发新增」用
+  // （prevIps 必须在 detectIpChange 覆写 active_ips 基线之前快照）
+  const prevIps = presence.active_ips?.[nodeKey] ?? [];
+  const currIps = Object.entries(conns)
+    .filter(([, n]) => n > 0)
+    .map(([ip]) => ip);
   const changedIps = detectIpChange(presence, nodeKey, conns);
 
   // 设备级流量审计：该设备 uuid 在各节点的累计消耗之和
@@ -330,11 +338,29 @@ async function applyTrafficDelta(
   if (changedIps.length > 0) {
     // 接入地址变更只更新 active_geo 基线（同城漂移/出差漫游都不打扰客户）；
     // 是否发安全提醒由调用方收齐本 token 全部 uuid 的周期 IP 后统一判定（多地并发在线才发）
-    await resolveIpLocationChange(env, presence, nodeKey, changedIps);
+    const change = await resolveIpLocationChange(env, presence, nodeKey, changedIps);
     // active_geo 基线可能更新，补一次「有变化才写」
     await savePresenceIfChanged(env, token.uuid, presenceBase, presence);
+    // 不可能旅行检测：只在「整体迁移」（上周期 IP 全部离线）且跨城市时判定；
+    // 旧 IP 仍在线属于并发使用，由多地并发在线提醒覆盖——同一事件不重复发两封邮件
+    const moved = prevIps.length > 0 && prevIps.every((ip) => !currIps.includes(ip));
+    if (moved && change.changed && change.oldLocation && change.newGeo) {
+      await evaluateTravel(
+        env,
+        token,
+        { locationKey: change.oldLocation, at: change.oldAt, ips: prevIps },
+        change.newGeo,
+        now
+      );
+    }
     ipChangePending.set(token.uuid, token);
   }
+  // 设备级防护：单凭证多地并发持续 2 周期确认后自动阻断新 IP（lib/device-guard.ts）。
+  // 不能收进上方 changedIps 分支——持续并发时 IP 无变更（prev=curr）也要推进确认；
+  // dg_pending 原地维护，补一次「有变化才写」；notify_log 原地改由下方集中比对收走
+  const dgBlocked = await evaluateDeviceConns(env, token, device, uuid, currIps, prevIps, presence, now);
+  await savePresenceIfChanged(env, token.uuid, presenceBase, presence);
+  if (dgBlocked) authChanged = true; // 新增阻断：推送全节点刷新，blocked_ips 随快照下发
   // 客户要求只保留交易/安全类邮件：月度配额 80% 预警（month80）与预支提醒（borrow_N）已下线
   // 风险检测：流量耗尽 / 多设备时提醒客户（幂等，每类只发一次）
   await checkTokenRisks(env, token);
@@ -451,13 +477,39 @@ agentRoutes.post("/traffic", async (c) => {
     const presenceBase: Presence = JSON.parse(JSON.stringify(presence));
     attributeIpTraffic(presence, conns, 0, now);
     const ipKey = found.device ? `${node.id}:${uuid}` : node.id;
+    // 同 applyTrafficDelta：prevIps 在 detectIpChange 覆写基线前快照
+    const prevIps = presence.active_ips?.[ipKey] ?? [];
+    const currIps = Object.entries(conns)
+      .filter(([, n]) => n > 0)
+      .map(([ip]) => ip);
     const changedIps = detectIpChange(presence, ipKey, conns);
     await savePresenceIfChanged(c.env, found.token.uuid, presenceBase, presence);
     if (changedIps.length > 0) {
       // 同 applyTrafficDelta：只更新 active_geo 基线，邮件判定收敛到下方统一通知段
-      await resolveIpLocationChange(c.env, presence, ipKey, changedIps);
+      const change = await resolveIpLocationChange(c.env, presence, ipKey, changedIps);
       await savePresenceIfChanged(c.env, found.token.uuid, presenceBase, presence);
+      // 不可能旅行检测：整体迁移（旧 IP 全部离线）且跨城市才判定
+      const moved = prevIps.length > 0 && prevIps.every((ip) => !currIps.includes(ip));
+      if (moved && change.changed && change.oldLocation && change.newGeo) {
+        await evaluateTravel(
+          c.env,
+          found.token,
+          { locationKey: change.oldLocation, at: change.oldAt, ips: prevIps },
+          change.newGeo,
+          now
+        );
+      }
       ipChangePending.set(found.token.uuid, found.token);
+    }
+    // 设备级防护（同 applyTrafficDelta 挂载）：有连接但无流量增量的 uuid 同样是并发证据。
+    // 该循环无通知段集中比对，notify_log 变更这里自行键级合并收走
+    const dgNotifyBase = JSON.stringify(found.token.notify_log ?? {});
+    if (await evaluateDeviceConns(c.env, found.token, found.device, uuid, currIps, prevIps, presence, now)) {
+      authChanged = true;
+    }
+    await savePresenceIfChanged(c.env, found.token.uuid, presenceBase, presence);
+    if (JSON.stringify(found.token.notify_log ?? {}) !== dgNotifyBase) {
+      await mergeTokenSettlement(c.env, found.token.uuid, { notify_log: found.token.notify_log });
     }
   });
 
@@ -471,6 +523,9 @@ agentRoutes.post("/traffic", async (c) => {
       .map(([ip]) => ip);
     const ips = new Set([...(cycleIps.get(token.uuid) ?? []), ...recentIps]);
     if (ips.size < 2) continue;
+    // device-guard 12h 内已就该 token 行动（自动阻断 + 邮件）：同一事件不再发多地并发邮件，
+    // 避免重复打扰（省一次 geo 批量查询，放在 conflict 判定前）
+    if (now - (token.notify_log?.device_guard ?? 0) < DG_NOTIFY_THROTTLE_MS) continue;
     const result = await resolveConcurrentGeoConflict(c.env, [...ips]);
     if (!result.conflict) continue;
     // 邮件 await 在 presence 写库之后；notify_log 变更按键级合并写回

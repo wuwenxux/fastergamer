@@ -3,6 +3,9 @@ import worker from "../index";
 import { KV, type Order, type Token } from "../../../../shared/types";
 import { computeAuthSnapshot } from "../lib/authsnapshot";
 import {
+  CONN_OBSERVE_THRESHOLD,
+  CONN_OBSERVE_WRITE_INTERVAL_MS,
+  CONN_SUSPEND_THRESHOLD,
   SHARE_CONN_TOLERANCE,
   SHARE_FALLBACK_MAX_DEVICES,
   SHARE_STRIKE_WINDOW_MS,
@@ -11,10 +14,13 @@ import {
 import type { Env } from "../types";
 
 /**
- * 共享检测（并发连接数判定 → 警告 → 暂停 → 续费自动解锁）：
- * - 阈值 = token.max_devices ?? 套餐 max_devices ?? 3，再 + SHARE_CONN_TOLERANCE
- * - 未超标不动；首次连续超标（count>=2）只警告；7 天内警告过再犯才暂停
- * - 警告超 7 天则重新警告一轮；strikes 超 30 分钟窗口重新计数；未超标清零
+ * 共享检测（并发连接数判定 → 阶梯处置）：
+ * - 单设备套餐（试用/流量包）：limit = max_devices + 容差 = 3，超标即走老状态机
+ * - 企业套餐（plan_biz_*）：limit = max_devices + 容差
+ * - 个人多设备套餐（max_devices 3/5）：并发 >3 且 ≤5 只写 conn_observe（1h 节流，
+ *   不动状态机不发邮件）；>5 才走处置（strikes→警告→7 天内再犯暂停）
+ * - 处置语义：首次连续超标（count>=2）只警告；7 天内警告过再犯才暂停；
+ *   警告超 7 天重新警告一轮；strikes 超 30 分钟窗口重新计数；低于观测带清零
  * - 暂停后授权快照剔除；续费发货（fulfillOrder）与管理端清除可解锁恢复
  * fetch 全部假成功（节点 refresh 推送），不触网。
  */
@@ -24,34 +30,18 @@ vi.mock("../lib/email-aliyun", async (importOriginal) => {
   return { ...orig, sendMail: vi.fn(async () => ({ ok: true })) };
 });
 import { sendMail } from "../lib/email-aliyun";
+import { stubCtx, makeEnv as baseEnv } from "./helpers";
 
-/** 假 KV：map 实现（put 忽略 TTL；list 支持前缀过滤，授权快照重建需要） */
-const fakeNs = () => {
-  const store = new Map<string, string>();
-  const ns = {
-    get: async (k: string) => store.get(k) ?? null,
-    put: async (k: string, v: string) => void store.set(k, v),
-    delete: async (k: string) => void store.delete(k),
-    list: async (opts?: { prefix?: string }) => ({
-      keys: [...store.keys()]
-        .filter((k) => !opts?.prefix || k.startsWith(opts.prefix))
-        .map((name) => ({ name })),
-      list_complete: true,
-      cursor: "",
-    }),
-  } as unknown as KVNamespace;
-  return { ns, store };
-};
-
-const ctx = {
-  waitUntil: (p: Promise<unknown>) => void Promise.resolve(p).catch(() => {}),
-  passThroughOnException: () => {},
-} as unknown as ExecutionContext;
+const ctx = stubCtx();
 
 const PLANS = [
   { id: "plan_trial", name: "7 天免费体验", duration_days: 7, price_cny: 0, traffic_limit_gb: 8, max_devices: 1 },
-  // max_devices 3 → 共享阈值 3 + 2 = 5 并发
+  // 单设备流量包：严格轨道，limit = 1 + 2 = 3 并发
+  { id: "plan_pack_5g", name: "5GB 流量包", duration_days: 0, price_cny: 3, traffic_limit_gb: 5, max_devices: 1 },
+  // max_devices 3 → 阶梯轨道：>3 观测、>5 处置
   { id: "plan_monthly", name: "月付套餐", duration_days: 30, price_cny: 12, traffic_limit_gb: 200, max_devices: 3 },
+  // 企业套餐：老公式 limit = 20 + 2 = 22 并发
+  { id: "plan_biz_yearly", name: "企业年付", duration_days: 365, price_cny: 999, traffic_limit_gb: 5000, max_devices: 20 },
 ];
 
 const NODE = {
@@ -68,23 +58,13 @@ const NODE = {
 
 const ADMIN_KEY = "test-admin-key";
 
-const makeEnv = () => {
-  const tokens = fakeNs();
-  const orders = fakeNs();
-  const nodes = fakeNs();
-  nodes.store.set(KV.NODES, JSON.stringify([NODE]));
-  const env = {
-    TOKENS: tokens.ns,
-    PLANS: fakeNs().ns,
-    ORDERS: orders.ns,
-    NODES: nodes.ns,
-    TICKETS: fakeNs().ns,
-    DEFAULT_PLANS: JSON.stringify(PLANS),
-    SITE_URL: "https://fastergamer.click",
-    ADMIN_KEY,
-  } as unknown as Env;
-  return { env, tokens, orders };
-};
+const makeEnv = () =>
+  baseEnv({
+    nodes: [NODE],
+    defaultPlans: PLANS,
+    adminKey: ADMIN_KEY,
+    extra: { SITE_URL: "https://fastergamer.click" },
+  });
 
 let seq = 0;
 const seedToken = (store: Map<string, string>, over: Partial<Token> = {}): Token => {
@@ -133,23 +113,104 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllGlobals());
 
 describe("共享检测：判定与处置", () => {
-  it("阈值口径：套餐设备上限 + 容差；取不到套餐时兜底 3 + 容差", () => {
+  it("阈值口径：单设备/企业走 max_devices + 容差；个人多设备走阶梯（>3 观测、>5 处置）", () => {
     expect(SHARE_CONN_TOLERANCE).toBe(2);
-    expect(SHARE_FALLBACK_MAX_DEVICES).toBe(3);
+    expect(SHARE_FALLBACK_MAX_DEVICES).toBe(2);
+    expect(CONN_OBSERVE_THRESHOLD).toBe(3);
+    expect(CONN_SUSPEND_THRESHOLD).toBe(5);
+    expect(CONN_OBSERVE_WRITE_INTERVAL_MS).toBe(3_600_000);
     expect(SHARE_STRIKE_WINDOW_MS).toBe(30 * 60_000);
     expect(SHARE_WARN_COOLDOWN_MS).toBe(7 * 86_400_000);
   });
 
-  it("未超标：不写 strikes、不发邮件、不暂停", async () => {
+  it("未超标（观测带以下）：不写 strikes、不写 conn_observe、不发邮件、不暂停", async () => {
     const { env, tokens } = makeEnv();
-    const t = seedToken(tokens.store); // plan_monthly max_devices 3 → 阈值 5
-    await reportConns(env, t.uuid, 5); // == 阈值不超标
-    await reportConns(env, t.uuid, 5);
+    const t = seedToken(tokens.store); // plan_monthly 阶梯轨道：≤3 完全无事
+    await reportConns(env, t.uuid, 3);
+    await reportConns(env, t.uuid, 3);
 
     const saved = readToken(tokens.store, t.uuid);
     expect(saved.share_conn_strikes).toBeUndefined();
+    expect(saved.conn_observe).toBeUndefined();
     expect(saved.share_warned_at).toBeUndefined();
     expect(saved.share_suspended_at).toBeUndefined();
+    expect(sendMail).not.toHaveBeenCalled();
+  });
+
+  it("阶梯观测带：月付 4 并发只写 conn_observe，不动状态机不发邮件", async () => {
+    const { env, tokens } = makeEnv();
+    const t = seedToken(tokens.store);
+
+    await reportConns(env, t.uuid, 4); // >3 且 ≤5：观测带
+    const saved = readToken(tokens.store, t.uuid);
+    expect(saved.conn_observe?.conns).toBe(4);
+    expect(saved.conn_observe?.at).toBeGreaterThan(0);
+    expect(saved.share_conn_strikes).toBeUndefined();
+    expect(saved.share_warned_at).toBeUndefined();
+    expect(saved.share_suspended_at).toBeUndefined();
+    expect(sendMail).not.toHaveBeenCalled();
+  });
+
+  it("阶梯观测带：1h 写节流，重复上报不重复写", async () => {
+    const { env, tokens } = makeEnv();
+    const t = seedToken(tokens.store);
+
+    await reportConns(env, t.uuid, 4);
+    const first = readToken(tokens.store, t.uuid).conn_observe!;
+    await reportConns(env, t.uuid, 5); // 1h 内第二次（值更高也不覆盖）
+    const second = readToken(tokens.store, t.uuid).conn_observe!;
+    expect(second.at).toBe(first.at);
+    expect(second.conns).toBe(4);
+
+    // 距上次记录超 1h 才再次写入
+    const old = { at: first.at - CONN_OBSERVE_WRITE_INTERVAL_MS - 1000, conns: 4 };
+    tokens.store.set(
+      KV.TOKEN + t.uuid,
+      JSON.stringify({ ...readToken(tokens.store, t.uuid), conn_observe: old })
+    );
+    await reportConns(env, t.uuid, 5);
+    expect(readToken(tokens.store, t.uuid).conn_observe?.conns).toBe(5);
+  });
+
+  it("阶梯观测带不清已有 strikes：状态机不受影响，靠窗口自然失效", async () => {
+    const { env, tokens } = makeEnv();
+    const t = seedToken(tokens.store, {
+      share_conn_strikes: { at: Date.now(), count: 1 },
+    });
+
+    await reportConns(env, t.uuid, 4); // 观测带：不累计也不清零
+    const saved = readToken(tokens.store, t.uuid);
+    expect(saved.share_conn_strikes?.count).toBe(1);
+    expect(saved.conn_observe?.conns).toBe(4);
+    expect(sendMail).not.toHaveBeenCalled();
+  });
+
+  it("单设备流量包不走阶梯：4 并发照旧走老状态机（limit = 1 + 2）", async () => {
+    const { env, tokens } = makeEnv();
+    const t = seedToken(tokens.store, { plan_id: "plan_pack_5g" });
+
+    await reportConns(env, t.uuid, 4); // 第 1 周期超标：strikes，不写 conn_observe
+    let saved = readToken(tokens.store, t.uuid);
+    expect(saved.share_conn_strikes?.count).toBe(1);
+    expect(saved.conn_observe).toBeUndefined();
+
+    await reportConns(env, t.uuid, 4); // 第 2 周期连续超标：警告
+    saved = readToken(tokens.store, t.uuid);
+    expect(saved.share_warned_at).toBeGreaterThan(0);
+    expect(sendMail).toHaveBeenCalledTimes(1);
+  });
+
+  it("企业套餐保持 max_devices + 容差：20 台套餐 10 并发无事", async () => {
+    const { env, tokens } = makeEnv();
+    const t = seedToken(tokens.store, { plan_id: "plan_biz_yearly" });
+
+    await reportConns(env, t.uuid, 10);
+    await reportConns(env, t.uuid, 10);
+
+    const saved = readToken(tokens.store, t.uuid);
+    expect(saved.share_conn_strikes).toBeUndefined();
+    expect(saved.conn_observe).toBeUndefined();
+    expect(saved.share_warned_at).toBeUndefined();
     expect(sendMail).not.toHaveBeenCalled();
   });
 

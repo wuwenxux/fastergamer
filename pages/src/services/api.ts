@@ -1,4 +1,4 @@
-import type { CreateOrderResponse, Device, FaqItem, GeoStats, Node, Order, Plan, Presence, Registration, Token } from "../../../shared/types";
+import type { CreateOrderResponse, Device, DeviceGuardEntry, FaqItem, GeoStats, Node, Order, Plan, Presence, Registration, Token } from "../../../shared/types";
 
 // 生产前后端同源（Worker 托管静态资产），VITE_API_BASE 留空即可，仅在需要指向其他 API 域名时设置
 // 本地开发留空，由 Vite 代理到 localhost:8787 的 wrangler dev
@@ -188,6 +188,28 @@ export const api = {
       headers: sessionHeaders(),
     }),
 
+  /** 设备级防护：机主确认「允许」= 迁移流程（自动建新槽位 + 解封 + 7 天过渡名单）；需本人登录，否则 401；槽位满 409 */
+  allowDeviceIp: (tokenId: string, ip: string) =>
+    request<{ blocked_ips: string[]; device_guard: Record<string, DeviceGuardEntry>; devices: Device[]; device?: Device; transition_until?: number }>(
+      `/api/tokens/${tokenId}/device-guard/allow`,
+      {
+        method: "POST",
+        headers: sessionHeaders(),
+        body: JSON.stringify({ ip }),
+      }
+    ),
+
+  /** 设备级防护：机主确认「保持拒绝」（阻断保持，停止重复提醒）；需本人登录，否则 401 */
+  denyDeviceIp: (tokenId: string, ip: string) =>
+    request<{ device_guard: Record<string, DeviceGuardEntry> }>(
+      `/api/tokens/${tokenId}/device-guard/deny`,
+      {
+        method: "POST",
+        headers: sessionHeaders(),
+        body: JSON.stringify({ ip }),
+      }
+    ),
+
   /** 自助重置流量（有效期 -30 天）；需本人登录，否则 401 */
   resetPenalty: (tokenId: string) =>
     request<TokenView>(`/api/tokens/${tokenId}/reset-penalty`, {
@@ -256,6 +278,13 @@ export const api = {
   /** 自助重新生成订阅链接（不限次数；旧链接立即失效）；需本人登录，否则 401 */
   rotateUuid: (tokenId: string) =>
     request<{ id: string; uuid: string }>(`/api/tokens/${tokenId}/rotate-uuid`, {
+      method: "POST",
+      headers: sessionHeaders(),
+    }),
+
+  /** 自助解除全部订阅设备锁绑定（换手机场景；7 天冷却，冷却中返回 429）；需本人登录，否则 401 */
+  subUnbind: (tokenId: string) =>
+    request<{ sub_unbind_at: number }>(`/api/tokens/${tokenId}/sub-unbind`, {
       method: "POST",
       headers: sessionHeaders(),
     }),

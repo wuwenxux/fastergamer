@@ -1,14 +1,21 @@
 /**
- * 共享检测（并发连接数判定）→ 警告 → 暂停 → 续费自动解锁。
+ * 共享检测（并发连接数判定）→ 阶梯处置：观测 / 警告 / 暂停 / 续费自动解锁。
  *
- * 背景：一个 token（VLESS UUID 体系）被多人同时挂用时流量维度抓不快，
- * 改用并发连接数判定——正常一人 2~5 台设备，共享群 10+ 并发。
+ * 处置哲学：不介意同一用户多设备，只介意多人分享——数设备不数人。
+ * 按 token 有效设备数（token.max_devices ?? 套餐 max_devices ?? 2）分三条轨道：
+ * - max_devices = 1（试用 + 流量包）：严格轨道，limit = 1 + 容差，超标即走
+ *    strikes→警告→7 天内再犯暂停 的老状态机；
+ * - 企业套餐（plan_biz_*，max_devices 20/30）：保持老公式 limit = max_devices + 容差；
+ * - 其他个人套餐（max_devices 3/5）：阶梯制——并发 >3 且 ≤5 只记录观测
+ *   （token.conn_observe，1h 写节流，不发邮件不动状态机）；并发 >5 才按分享
+ *   处置（strikes→警告→7 天冷却再犯→暂停），相当于处置阈值提到固定 5。
+ *
  * 处置不踢不删：首次连续超标发警告邮件，警告后 7 天内再犯置 share_suspended_at
  * （授权快照生成侧剔除，连接随节点配置刷新被切断），续费任意套餐后自动解锁恢复，
  * 把共享转化为续费收入。
  *
  * 触发点：/api/agent/traffic 携带的 conns（uuid → 当前并发连接数，xray online 计数）。
- * 幂等与省写：未超标不写库；strikes 只在超标周期更新；已暂停 token 直接跳过。
+ * 幂等与省写：未超标不写库；strikes 只在超标周期更新；观测记录 1h 节流；已暂停 token 直接跳过。
  */
 import type { Plan, Token } from "../../../../shared/types";
 import { sendMail, shouldSendEmail } from "./email-aliyun";
@@ -16,10 +23,16 @@ import { getTokenByUuid, listTokensByContact, saveTokenValue } from "./kv";
 import { siteUrl } from "./site-url";
 import type { Env } from "../types";
 
-/** 并发容差：套餐设备上限 + 2。总和超过即记一次超标 */
+/** 并发容差：严格/企业轨道的 limit = 有效设备数 + 该容差 */
 export const SHARE_CONN_TOLERANCE = 2;
-/** 套餐设备上限取不到时的兜底值 */
-export const SHARE_FALLBACK_MAX_DEVICES = 3;
+/** 有效设备数取不到（套餐缺失且无 token 级覆盖）时的兜底值：按最严的单设备口径 */
+export const SHARE_FALLBACK_MAX_DEVICES = 2;
+/** 阶梯观测带下沿：个人多设备套餐并发 >3 起只记录不处置（同一人多设备属正常用法） */
+export const CONN_OBSERVE_THRESHOLD = 3;
+/** 阶梯处置阈值：个人多设备套餐并发 >5 才按分享处置（超过 5 才可能是多人） */
+export const CONN_SUSPEND_THRESHOLD = 5;
+/** 观测记录写节流：距上次记录 <1h 不写（观测带是常态，省 KV 写配额） */
+export const CONN_OBSERVE_WRITE_INTERVAL_MS = 3_600_000;
 /** strikes 连续窗口：距上次超标超过此时长则重新计数（agent 结算周期远小于窗口，2 个连续周期即 count>=2） */
 export const SHARE_STRIKE_WINDOW_MS = 30 * 60_000;
 /** 警告冷却期：7 天内再犯直接暂停；超过则重新警告一轮 */
@@ -30,6 +43,7 @@ export interface ShareFieldsPatch {
   share_suspended_at?: number | null;
   share_warned_at?: number | null;
   share_conn_strikes?: Token["share_conn_strikes"] | null;
+  conn_observe?: Token["conn_observe"] | null;
   notify_log?: Record<string, number>;
 }
 
@@ -112,10 +126,12 @@ export async function sendShareSuspendEmail(env: Env, token: Token): Promise<boo
 
 /**
  * 单 token 的共享判定（调用方已按 token 聚合好全部 uuid 的并发数总和）。
- * 阈值：token.max_devices ?? 套餐 max_devices ?? 3，再加 SHARE_CONN_TOLERANCE。
+ * 轨道划分与阈值见文件头；处置轨道（超标）语义：
  * 连续 2 个周期超标才处置（strikes.at 超 30 分钟重新计数）：
  * - 无 7 天内警告记录 → 发警告邮件，置 share_warned_at；
  * - 已有 7 天内警告 → 置 share_suspended_at 并返回 true（调用方推送授权刷新）。
+ * 观测带（个人多设备套餐 >3 且 ≤5）：只写 conn_observe（1h 节流），
+ * 不累计 strikes、不清已有 strikes、不动警告/暂停状态机。
  * 返回 true 表示授权名单有变化（新暂停），调用方应 pushAuthRefresh。
  */
 export async function evaluateShareConns(
@@ -127,13 +143,20 @@ export async function evaluateShareConns(
 ): Promise<boolean> {
   // 已暂停：不再重复判定/写库（解锁只能走续费或管理端清除）
   if (token.share_suspended_at) return false;
-  const maxDevices =
-    token.max_devices ?? plansById.get(token.plan_id)?.max_devices ?? SHARE_FALLBACK_MAX_DEVICES;
-  const limit = maxDevices + SHARE_CONN_TOLERANCE;
+  const plan = plansById.get(token.plan_id);
+  const maxDevices = token.max_devices ?? plan?.max_devices ?? SHARE_FALLBACK_MAX_DEVICES;
+  // 阶梯制只适用于个人多设备套餐；企业套餐（20/30 台）保持 max+容差 老公式
+  const ladder = maxDevices > 1 && !(plan?.id.startsWith("plan_biz") ?? false);
+  const limit = ladder ? CONN_SUSPEND_THRESHOLD : maxDevices + SHARE_CONN_TOLERANCE;
   const patch: ShareFieldsPatch = {};
   let authChanged = false;
 
-  if (totalConns > limit) {
+  if (ladder && totalConns > CONN_OBSERVE_THRESHOLD && totalConns <= CONN_SUSPEND_THRESHOLD) {
+    // 观测带：只记录。1h 写节流省 KV 写；观测是常态，值本身只供运营事后排查
+    if (now - (token.conn_observe?.at ?? 0) >= CONN_OBSERVE_WRITE_INTERVAL_MS) {
+      patch.conn_observe = { at: now, conns: totalConns };
+    }
+  } else if (totalConns > limit) {
     const prev = token.share_conn_strikes;
     const count = prev && now - prev.at <= SHARE_STRIKE_WINDOW_MS ? prev.count + 1 : 1;
     if (count < 2) {
@@ -153,7 +176,7 @@ export async function evaluateShareConns(
       authChanged = true;
     }
   } else if (token.share_conn_strikes) {
-    // 未超标：连续计数清零（下次超标从 1 重新计）
+    // 未超标（含观测带以下）：连续计数清零（下次超标从 1 重新计）
     patch.share_conn_strikes = null;
   }
 
