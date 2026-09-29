@@ -38,6 +38,14 @@ dataset = "fastergamer_telemetry"
 binding = "MAIL_QUEUE"
 queue = "mail-queue"
 
+# --- Durable Objects（实时防共享全局裁决，见 src/do/share-guard.ts；miniflare 原生支持）---
+[durable_objects]
+bindings = [{ name = "SHARE_GUARD", class_name = "ShareGuardDO" }]
+
+[[migrations]]
+tag = "v1"
+new_classes = ["ShareGuardDO"]
+
 # --- 环境变量 ---
 [vars]
 # 本地开发环境标记：CORS 放行 localhost 来源（生产 wrangler.cf.toml 为 production，不放行）

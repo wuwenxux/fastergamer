@@ -62,6 +62,13 @@ IDLE_SETTLE_CYCLES = 3      # 连续 3 个周期无增量且离线 = 判定断�
 TRAFFIC_GRACE_S = 48 * 3600 # 与中心 TRAFFIC_GRACE_MS 一致：耗尽后的宽限期
 FORCE_SETTLE_AGE_S = 24 * 3600  # 长期在线用户兜底：距上次上报超 24h 强制结算一次
 FORCE_SETTLE_IP_CONNS = 50      # 或 ip_conns 条目数超过该值时强制结算（防账本无限增长）
+# presence 心跳（实时防共享，与结算完全独立的通道）：每 2 个周期 = 60s 一次 POST
+# /api/agent/presence，只带在线/并发/来源 IP，不带流量数据。持续在线的共享者在结算
+# 通道上对中心静默最长 24h（FORCE_SETTLE_AGE_S），心跳把共享发现压到分钟级
+PRESENCE_EVERY = 2
+# 心跳 ips 的活跃窗口：access log 里最近这么久出现过的来源 IP 视为仍在线
+# （长连接只在接入时记一行日志，窗口要盖过心跳间隔，取 3 个周期）
+IP_ACTIVE_WINDOW_S = 90
 
 # 中心推送的配置刷新请求标志（AgentHandler 写、主循环读）
 _refresh_requested = False
@@ -808,6 +815,60 @@ def report_settlement(
 BLOCK_CHAIN = "FG-BLOCK"
 
 
+# ---------- presence 心跳（实时防共享通道，与结算独立；纯内存，不落账本） ----------
+
+def update_ip_seen(seen: dict, new_conns: dict, now: float,
+                   window: float = IP_ACTIVE_WINDOW_S) -> dict:
+    """
+    维护 {uuid: {ip: last_seen}}：本周期 access log 新连接刷新时间戳，
+    超窗口未见的 IP/条目清掉。只跟踪，不结算；心跳 ips 从这里取。
+    """
+    for u, ips in new_conns.items():
+        entry = seen.setdefault(u, {})
+        for ip in ips:
+            entry[ip] = now
+    for u in list(seen):
+        entry = seen[u]
+        for ip in list(entry):
+            if now - entry[ip] > window:
+                del entry[ip]
+        if not entry:
+            del seen[u]
+    return seen
+
+
+def presence_ips(seen: dict) -> dict:
+    """心跳 payload 的 ips 段：{uuid: [仍活跃的来源 IP]}，空条目不产生"""
+    return {u: sorted(entry) for u, entry in seen.items() if entry}
+
+
+def presence_due(cycle: int, failed: bool) -> bool:
+    """心跳节奏：每 PRESENCE_EVERY 周期一次；上次失败则下个周期立即补发
+    （与结算失败下周期整批重试同节奏），成功前不占结算通道。"""
+    return cycle % PRESENCE_EVERY == 0 or failed
+
+
+def report_presence(api_url: str, node_key: str, online: dict, conns: dict,
+                    ips: dict) -> dict:
+    """POST /api/agent/presence：在线/并发/来源 IP 快照，不含任何流量数据。
+    失败由调用方记日志下周期补发；心跳通道的故障绝不影响结算。"""
+    presence_url = api_url.rsplit("/", 1)[0] + "/presence"
+    payload = json.dumps({
+        "v": 1,
+        "online": online,
+        "conns": conns,
+        "ips": ips,
+    }).encode("utf-8")
+    req = Request(
+        presence_url,
+        data=payload,
+        headers={"x-node-key": node_key, "content-type": "application/json"},
+        method="POST",
+    )
+    with urlopen(req, timeout=10) as resp:
+        return json.loads(resp.read().decode("utf-8"))
+
+
 def valid_ipv4(ip: str) -> bool:
     """合法 IPv4 校验（每段 0-255，拒绝 999.999.999.999 这类形似值）。"""
     m = re.fullmatch(r"(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})", ip)
@@ -904,6 +965,8 @@ def main():
     usage_map: dict[str, dict] = {}  # 快照下发的用量基数：uuid -> {used, limit, exhausted_at}
     quota_settled: set[str] = set()  # 已因触线结算过的 uuid（用量回落前不重复触发）
     allowed_list: list = []
+    ip_seen: dict[str, dict] = {}    # 心跳用的来源 IP 活跃追踪（{uuid:{ip:ts}}，纯内存不落盘）
+    presence_failed = False          # 上次心跳是否失败（失败则下周期补发）
     last_sync_ok = False  # 最近一次配置拉取是否成功（跨周期保持，供 /api/metrics 展示）
     last_sync_at = 0  # 最近一次配置拉取成功的时间；只在成功时更新，中心失联时能如实反映
     ever_synced = False  # 是否已完成过一次成功的配置拉取（未完成前 allowed 兜底读磁盘配置）
@@ -1039,6 +1102,9 @@ def main():
 
             settled: dict[str, int] = {}
             settled_ip_conns: dict[str, dict] = {}
+
+            # 心跳的来源 IP 活跃追踪：每周期增量刷新（只跟踪白名单 uuid，与结算过滤同口径）
+            update_ip_seen(ip_seen, {u: ips for u, ips in new_conns.items() if u in allowed}, now)
 
             def settle(uuid: str):
                 e = ledger.users.get(uuid)
@@ -1191,6 +1257,19 @@ def main():
                         pending_settled[u] = b
                     for u, conns in merged_conns.items():
                         pending_ip_conns[u] = dict(conns)
+
+            # ---- presence 心跳（每 2 周期 = 60s；与结算完全独立的通道）----
+            # statsquery 失败的周期不跳：user_online/user_conns 已被置空，
+            # 发空快照会把中心侧本节点的并发视图清空（误判共享消失），直接跳过下周期再来。
+            # 失败下周期立即补发（presence_due），任何异常都不许外溢影响结算。
+            if presence_due(cycle, presence_failed) and raw_stats is not None:
+                try:
+                    report_presence(api_url, node_key, user_online, user_conns,
+                                    presence_ips(ip_seen))
+                    presence_failed = False
+                except Exception as e:
+                    presence_failed = True
+                    print(f"[warn] presence heartbeat failed: {e}", file=sys.stderr)
 
             ledger.save()
 

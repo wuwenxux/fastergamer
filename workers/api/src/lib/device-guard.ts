@@ -115,8 +115,9 @@ const geoDisplayOf = async (env: Env, ip: string): Promise<string | undefined> =
 
 /** 机主通知邮件：新 IP 已自动阻断，引导到管理页决策。节流 12h。
  *  文案按有效设备数分支：单设备套餐（试用/流量包，maxDevices=1）没有建槽空间，
- *  「允许」只是临时解封，文案必须明说「仅支持 1 台设备、链接不可分享」，别承诺建槽 */
-async function sendDeviceGuardEmail(
+ *  「允许」只是临时解封，文案必须明说「仅支持 1 台设备、链接不可分享」，别承诺建槽。
+ *  导出供 DO 实时裁决路径（src/do/share-guard.ts）复用，与结算路径同一文案同一节流键 */
+export async function sendDeviceGuardEmail(
   env: Env,
   token: Token,
   deviceName: string,

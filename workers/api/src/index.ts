@@ -17,6 +17,9 @@ import { handleMailBatch } from "./lib/email-aliyun";
 import { rateLimit } from "./middleware/rateLimit";
 import { turnstile } from "./middleware/turnstile";
 
+// Durable Object 类必须从入口导出（wrangler migrations 的 class_name 与此对应）
+export { ShareGuardDO } from "./do/share-guard";
+
 const app = new Hono<{ Bindings: Env }>();
 
 // CORS 只允许本站来源（同源请求自动放行，兼容 workers.dev / 自定义域名）；

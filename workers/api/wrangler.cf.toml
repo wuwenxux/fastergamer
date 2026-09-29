@@ -76,6 +76,16 @@ max_retries = 3
 [[send_email]]
 name = "EMAIL"
 
+# --- Durable Objects（实时防共享全局裁决，见 src/do/share-guard.ts）。
+# 心跳路由 /api/agent/presence 鉴权后转发到 idFromName("global") 的唯一实例；
+# 状态全内存，逐出后由后续心跳重建。首次部署必须带下方 migrations ---
+[durable_objects]
+bindings = [{ name = "SHARE_GUARD", class_name = "ShareGuardDO" }]
+
+[[migrations]]
+tag = "v1"
+new_classes = ["ShareGuardDO"]
+
 # --- 环境变量 ---
 # ADMIN_KEY / ALIYUN_* / ADMIN_NOTIFY_EMAIL / TURNSTILE_SECRET_KEY 均为 secret，
 # 用 wrangler secret put --config wrangler.cf.toml 管理，不入库

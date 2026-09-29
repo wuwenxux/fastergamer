@@ -382,6 +382,38 @@ async function applyTrafficDelta(
 }
 
 /**
+ * POST /api/agent/presence —— 节点 Agent 实时心跳（60s 一次，与结算通道独立）
+ * payload：{ online, conns: {uuid: 并发数}, ips: {uuid: [来源IP]} }——不含流量数据。
+ * 鉴权后把节点身份（node.id）注入转发给全局 ShareGuardDO 做跨节点并发裁决
+ * （src/do/share-guard.ts）；本端点不落 KV。DO 未绑定（本地 dev/老部署）直接 ack，
+ * 防共享退回结算路径兜底，行为与上线前一致。
+ */
+agentRoutes.post("/presence", async (c) => {
+  const key = c.req.header("x-node-key");
+  if (!key) {
+    return c.json({ ok: false, error: "missing x-node-key" }, 401);
+  }
+  const node = await getNodeByKey(c.env, key);
+  if (!node || !node.active) {
+    return c.json({ ok: false, error: "invalid or inactive node" }, 403);
+  }
+  if (!c.env.SHARE_GUARD) return c.json({ ok: true, data: { forwarded: false } });
+
+  const body = (await c.req.json().catch(() => null)) as {
+    conns?: Record<string, number>;
+    ips?: Record<string, string[]>;
+  } | null;
+  const stub = c.env.SHARE_GUARD.get(c.env.SHARE_GUARD.idFromName("global"));
+  const resp = await stub.fetch("https://share-guard.do/heartbeat", {
+    method: "POST",
+    // nodeId 用鉴权过的注册表身份，不信任 agent 自报
+    body: JSON.stringify({ nodeId: node.id, conns: body?.conns ?? {}, ips: body?.ips ?? {} }),
+  });
+  if (!resp.ok) console.error(`[presence] DO rejected node=${node.id}: ${resp.status}`);
+  return c.json({ ok: true, data: { forwarded: true } });
+});
+
+/**
  * POST /api/agent/traffic —— 节点 Agent 上报流量
  * 两种格式：
  * - 旧版（滚动升级兼容）：{ "stats": { uuid: 计数器累计值 } }，中心按计数器差值算增量

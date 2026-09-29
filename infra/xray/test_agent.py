@@ -478,5 +478,81 @@ class ReportSettlementTest(unittest.TestCase):
         self.assertEqual(holder["payload"]["conns"], {})
 
 
+class PresenceHeartbeatTest(unittest.TestCase):
+    """presence 心跳：60s 节奏、来源 IP 活跃窗口、payload 组装（不带流量数据）。"""
+
+    @staticmethod
+    def _capture(payload_holder):
+        class R:
+            def read(self):
+                return json.dumps({"ok": True}).encode()
+            def __enter__(self):
+                return self
+            def __exit__(self, *a):
+                return False
+
+        def fake_urlopen(req, **kw):
+            payload_holder["payload"] = json.loads(req.data.decode("utf-8"))
+            payload_holder["url"] = req.full_url
+            return R()
+
+        return mock.patch.object(agent, "urlopen", fake_urlopen)
+
+    def test_presence_due_cadence(self):
+        self.assertFalse(agent.presence_due(1, False))
+        self.assertTrue(agent.presence_due(2, False))   # 每 2 周期 = 60s
+        self.assertFalse(agent.presence_due(3, False))
+        self.assertTrue(agent.presence_due(4, False))
+        self.assertTrue(agent.presence_due(3, True))    # 上次失败：下周期立即补发
+
+    def test_update_ip_seen_merge_and_prune(self):
+        seen = {}
+        agent.update_ip_seen(seen, {UUID_A: {"1.1.1.1": 1}}, now=1000.0)
+        agent.update_ip_seen(seen, {UUID_A: {"2.2.2.2": 1}}, now=1030.0)
+        self.assertEqual(seen, {UUID_A: {"1.1.1.1": 1000.0, "2.2.2.2": 1030.0}})
+        # 同一 IP 再现刷新时间戳
+        agent.update_ip_seen(seen, {UUID_A: {"1.1.1.1": 2}}, now=1060.0)
+        self.assertEqual(seen[UUID_A]["1.1.1.1"], 1060.0)
+        # 超窗口未见的 IP 清掉；空条目整体移除
+        agent.update_ip_seen(seen, {}, now=1060.0 + agent.IP_ACTIVE_WINDOW_S + 1)
+        self.assertEqual(seen, {})
+
+    def test_update_ip_seen_window_boundary(self):
+        seen = {}
+        agent.update_ip_seen(seen, {UUID_A: {"1.1.1.1": 1}}, now=1000.0)
+        # 窗口边缘（恰好 window 秒）仍视为活跃
+        agent.update_ip_seen(seen, {}, now=1000.0 + agent.IP_ACTIVE_WINDOW_S)
+        self.assertEqual(agent.presence_ips(seen), {UUID_A: ["1.1.1.1"]})
+
+    def test_presence_ips_sorted_and_non_empty_only(self):
+        seen = {UUID_A: {"2.2.2.2": 1.0, "1.1.1.1": 2.0}, UUID_B: {}}
+        self.assertEqual(agent.presence_ips(seen), {UUID_A: ["1.1.1.1", "2.2.2.2"]})
+
+    def test_report_presence_payload(self):
+        holder = {}
+        with self._capture(holder):
+            agent.report_presence(
+                "https://x/api/agent/config", "k",
+                {UUID_A: True}, {UUID_A: 3}, {UUID_A: ["1.1.1.1"]},
+            )
+        p = holder["payload"]
+        self.assertEqual(holder["url"], "https://x/api/agent/presence")
+        self.assertEqual(p, {
+            "v": 1,
+            "online": {UUID_A: True},
+            "conns": {UUID_A: 3},
+            "ips": {UUID_A: ["1.1.1.1"]},
+        })
+        # 心跳通道绝不含流量字段
+        self.assertNotIn("settled", p)
+        self.assertNotIn("stats", p)
+
+    def test_report_presence_failure_raises_for_caller(self):
+        # 网络失败向外抛：由主循环捕获记日志并置补发标志，心跳自身不重试不吞错
+        with mock.patch.object(agent, "urlopen", side_effect=OSError("down")):
+            self.assertRaises(OSError, agent.report_presence,
+                              "https://x/api/agent/config", "k", {}, {}, {})
+
+
 if __name__ == "__main__":
     unittest.main()

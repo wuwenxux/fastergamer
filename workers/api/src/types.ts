@@ -43,4 +43,7 @@ export interface Env {
   MAIL_QUEUE?: Queue<import("./lib/email-aliyun").MailMessage>;
   /** CF Email Service 发信（可选绑定，仅工单域邮件优先走它；缺失回退阿里云 DM，见 lib/email-cf.ts） */
   EMAIL?: SendEmail;
+  /** 实时防共享裁决 DO（可选绑定；缺失时 /api/agent/presence 心跳直接 ack，
+   *  防共享由结算路径的 device-guard/share-guard 兜底，见 src/do/share-guard.ts） */
+  SHARE_GUARD?: DurableObjectNamespace;
 }
