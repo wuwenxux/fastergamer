@@ -1,9 +1,9 @@
 /**
  * Cloudflare Email Routing 工单邮件闭环（接收侧）。
  *
- * 背景：工单外发邮件走阿里云 DM（AccountName service@mail.fastergamer.cn，回信地址
- * 在控制台配置为 support@tickets.fastergamer.click）。用户直接回复邮件时，CF Email
- * Routing（子域名 tickets.fastergamer.click，绝不碰主域 MX——主域 MX 是阿里企业邮箱）
+ * 背景：工单外发邮件优先走 CF Email Service（发件人即收件地址 support@tickets.
+ * fastergamer.click，见 lib/email-cf.ts；无 EMAIL binding 时回退阿里云 DM）。用户直接
+ * 回复邮件时，CF Email Routing（子域名 tickets.fastergamer.click，绝不碰主域 MX）
  * 把邮件路由到本 Worker 的 email handler，解析后追加进工单对话（Ticket.thread）。
  *
  * 串线：外发工单邮件主题统一带 [工单 fb_xxx] 标签，用户回复时邮件客户端保留该标签，
@@ -123,7 +123,8 @@ export async function handleEmail(
           ticket.contact,
           `Re: [工单 ${ticket.id}] 该工单已关闭`,
           `<p>你好，工单 <strong>${ticket.id}</strong> 已关闭，回复内容未收录。如问题仍未解决，请重新提交反馈：<a href="https://fastergamer.click">fastergamer.click</a>（页脚「问题反馈」）。</p>`,
-          `工单 ${ticket.id} 已关闭，回复内容未收录。如问题仍未解决，请到 fastergamer.click 重新提交反馈。`
+          `工单 ${ticket.id} 已关闭，回复内容未收录。如问题仍未解决，请到 fastergamer.click 重新提交反馈。`,
+          { kind: "ticket" }
         ).catch(() => {})
       );
       return;
@@ -155,7 +156,8 @@ export async function handleEmail(
           `Re: [工单 ${ticket.id}] 我们已收到你的补充`,
           `<p>你好，你的补充已收录到工单 <strong>${ticket.id}</strong>，客服会尽快通过本邮箱回复你。</p>
            <p style="color:#64748b;font-size:13px;">你的补充：${escapeHtml(text.slice(0, 500))}</p>`,
-          `你的补充已收录到工单 ${ticket.id}，客服会尽快通过本邮箱回复你。\n\n你的补充：${text.slice(0, 500)}`
+          `你的补充已收录到工单 ${ticket.id}，客服会尽快通过本邮箱回复你。\n\n你的补充：${text.slice(0, 500)}`,
+          { kind: "ticket" }
         );
         if (!ack.ok) console.error(`[email-ticket] 回执发送失败 ${ticket.id}: ${ack.error}`);
         // 站长通知：含正文摘要，不用登管理端也能直接看

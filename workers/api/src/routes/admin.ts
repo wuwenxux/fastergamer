@@ -201,7 +201,9 @@ adminRoutes.post("/tickets/:id/reply", async (c) => {
      <div style="padding:16px;background:#f0f9ff;border-radius:8px;margin:16px 0;">${escapeHtml(reply).replace(/\n/g, "<br>")}</div>
      <p style="color:#64748b;font-size:13px;">你的原始问题：${escapeHtml(ticket.message.slice(0, 500))}</p>
      <p style="color:#64748b;font-size:13px;">如问题仍未解决，直接回复本邮件即可继续补充（请勿修改主题）。</p>`,
-    `你之前反馈的问题已有回复：\n\n${reply}\n\n---\n你的原始问题：${ticket.message.slice(0, 500)}\n如问题仍未解决，直接回复本邮件即可继续补充（请勿修改主题）。`
+    `你之前反馈的问题已有回复：\n\n${reply}\n\n---\n你的原始问题：${ticket.message.slice(0, 500)}\n如问题仍未解决，直接回复本邮件即可继续补充（请勿修改主题）。`,
+    // kind:ticket = 工单域邮件，生产走 CF Email Service（回信直接进闭环）
+    { kind: "ticket" }
   );
   if (!res.ok) {
     return c.json({ ok: false, error: `邮件发送失败：${res.error}` }, 502);

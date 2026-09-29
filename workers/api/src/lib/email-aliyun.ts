@@ -1,4 +1,5 @@
 import type { Env } from "../types";
+import { sendMailCf } from "./email-cf";
 import { maskEmail } from "./mask-email";
 import { track } from "./telemetry";
 import { siteUrl } from "./site-url";
@@ -15,14 +16,16 @@ export function shouldSendEmail(contact?: string): contact is string {
 
 /**
  * 队列消息体（Cloudflare Queues 邮件异步化）：所有邮件默认入 mail-queue 由 consumer
- * 重试发送，替代「即发即弃、失败只记日志」的静默丢失。kind 仅用于观测分类（日志/遥测）。
+ * 重试发送，替代「即发即弃、失败只记日志」的静默丢失。
+ * kind 双用途：观测分类（日志/遥测）+ 通道选择（"ticket" = 工单域邮件，
+ * 优先走 CF Email Service，见 sendMailDispatch）。
  */
 export interface MailMessage {
   to: string;
   subject: string;
   html: string;
   text: string;
-  /** 观测分类：如 "magic" / "ticket" / "notify" */
+  /** 观测分类 + 通道选择：如 "ticket"（工单域，走 CF Email Service）/ "magic" / "notify" */
   kind?: string;
 }
 
@@ -72,7 +75,27 @@ export async function sendMail(
       console.error("[email] 入队失败，降级直发:", (e as Error).message);
     }
   }
-  return sendMailDirect(env, to, subject, html, text);
+  return sendMailDispatch(env, { to, subject, html, text, kind: opts?.kind });
+}
+
+/**
+ * 通道分发：工单域邮件（kind:"ticket"）且 EMAIL binding 在 → CF Email Service
+ * （发件人 support@tickets.fastergamer.click，回信直接进 Email Routing 闭环）；
+ * 其余（token 凭证/magic/站长通知等）一律阿里云 DM。
+ * binding 只能运行时探测，所以通道在发送一刻才定（consumer 消费时/sync 直发时），
+ * 入队消息里不写死通道。CF 通道失败回退阿里云 DM——工单邮件不能因单通道故障丢失
+ * （重复风险可接受：CF 实际已发出但报错返回的窗口极小）。
+ */
+export async function sendMailDispatch(
+  env: Env,
+  msg: MailMessage
+): Promise<{ ok: boolean; id?: string; error?: string }> {
+  if (msg.kind === "ticket" && env.EMAIL) {
+    const res = await sendMailCf(env, msg);
+    if (res.ok) return res;
+    console.error("[email] CF Email Service 失败，回退阿里云 DM:", res.error);
+  }
+  return sendMailDirect(env, msg.to, msg.subject, msg.html, msg.text);
 }
 
 /** 阿里云 DM 同步直发（原 sendMail 实现）：队列 consumer 与 sync/无绑定兜底共用 */
@@ -105,7 +128,8 @@ async function sendMailDirect(
     Subject: subject,
     HtmlBody: html,
     TextBody: text,
-    // true = 回信发到控制台为 service@mail.fastergamer.cn 配置的回信地址（support@fastergamer.cn）
+    // true = 回信发到控制台配置的回信地址。工单邮件已优先走 CF Email Service（见
+    // sendMailDispatch），DM 只是回退通道；回信地址统一指向 support@tickets.fastergamer.click
     ReplyToAddress: "true",
   };
 
@@ -139,16 +163,17 @@ async function sendMailDirect(
 }
 
 /**
- * mail-queue consumer（index.ts 以 queue 方法导出）：逐条调 DM 直发，
- * 失败 message.retry() 交给 Queues 指数退避重试（max_retries=3，见 wrangler.cf.toml）；
- * 成功显式 ack（不写也是默认 ack，写明便于阅读）。
+ * mail-queue consumer（index.ts 以 queue 方法导出）：逐条经 sendMailDispatch 按通道发送
+ * （工单邮件优先 CF Email Service，其余阿里云 DM），失败 message.retry() 交给 Queues
+ * 指数退避重试（max_retries=3，见 wrangler.cf.toml）；成功显式 ack（不写也是默认 ack，
+ * 写明便于阅读）。
  * 最后一次投递仍失败（attempts > max_retries，之后 Queues 不再投递）：
  * 记日志（带 kind + 收件人脱敏 + 主题摘要）并写 mail_failed 遥测点，便于发现系统性故障。
  */
 export async function handleMailBatch(batch: MessageBatch<MailMessage>, env: Env): Promise<void> {
   for (const m of batch.messages) {
-    const { to, subject, html, text, kind } = m.body;
-    const res = await sendMailDirect(env, to, subject, html, text);
+    const res = await sendMailDispatch(env, m.body);
+    const { to, subject, kind } = m.body;
     if (res.ok) {
       m.ack();
       continue;

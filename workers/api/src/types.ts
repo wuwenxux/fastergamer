@@ -41,4 +41,6 @@ export interface Env {
   TELEMETRY?: AnalyticsEngineDataset;
   /** 邮件队列（可选绑定；有绑定 sendMail 默认入队异步重试，无绑定同步直发，见 lib/email-aliyun.ts） */
   MAIL_QUEUE?: Queue<import("./lib/email-aliyun").MailMessage>;
+  /** CF Email Service 发信（可选绑定，仅工单域邮件优先走它；缺失回退阿里云 DM，见 lib/email-cf.ts） */
+  EMAIL?: SendEmail;
 }
