@@ -228,8 +228,8 @@ describe("sing-box 订阅内容", () => {
   it("输出是合法 JSON，outbound 必填字段齐全", async () => {
     const cfg = await getConfig();
     const outbounds = cfg.outbounds as Record<string, unknown>[];
-    // 3 WS + 1 reality + 1 hy2 + selector + urltest + direct
-    expect(outbounds).toHaveLength(8);
+    // 3 WS + 1 reality + 1 hy2 + selector + urltest + 🇯🇵 日本组 + direct
+    expect(outbounds).toHaveLength(9);
     const byTag = new Map(outbounds.map((o) => [o.tag as string, o]));
 
     const ws = byTag.get("HK 香港 CN2 01")!;
@@ -306,6 +306,11 @@ describe("sing-box 订阅内容", () => {
       { ip_is_private: true, outbound: "direct" },
       // 小红书 CDN 有境外边缘 IP，GEOIP 判不准，按域名后缀强制直连
       { domain_suffix: ["xiaohongshu.com", "xhscdn.com", "xhslink.com"], outbound: "direct" },
+      // OpenAI/Claude 钉日本出口（HK 出口被两家封锁），抢在 geosite 分流之前
+      {
+        domain_suffix: ["chatgpt.com", "openai.com", "oaistatic.com", "oaiusercontent.com", "claude.ai", "anthropic.com"],
+        outbound: "🇯🇵 日本",
+      },
       { rule_set: ["geosite-cn"], outbound: "direct" },
       { rule_set: ["geosite-gfw"], outbound: "🚀 节点选择" },
       { rule_set: ["geoip-cn"], outbound: "direct" },
@@ -320,6 +325,36 @@ describe("sing-box 订阅内容", () => {
       expect(rs.download_detour).toBe("direct");
     }
     expect(JSON.stringify(cfg)).not.toContain("github");
+  });
+
+  it("有日本节点时生成「🇯🇵 日本」urltest 组（仅供 route 引用，不进主 selector）", async () => {
+    const cfg = await getConfig();
+    const outbounds = cfg.outbounds as Record<string, unknown>[];
+    const jp = outbounds.find((o) => o.tag === "🇯🇵 日本")!;
+    expect(jp.type).toBe("urltest");
+    expect(jp.outbounds).toEqual(["JP 日本 BGP 02"]);
+    expect(jp.url).toBe("http://ping.fastergamer.click/generate_204");
+    expect(jp.interval).toBe("5m");
+    expect(jp.tolerance).toBe(50);
+    // 主 selector 成员不变：日本组不是用户手选项，仅被 AI 域名规则引用
+    const selector = outbounds.find((o) => o.type === "selector")!;
+    expect(selector.outbounds).not.toContain("🇯🇵 日本");
+  });
+
+  it("无日本节点时不下发 AI 定向规则与日本组（与 clash 同口径）", async () => {
+    const tokens = fakeNs();
+    const nodes = fakeNs();
+    await nodes.ns.put(KV.NODES, JSON.stringify(NODES.filter((n) => n.region !== "JP")));
+    const token = makeToken();
+    await tokens.ns.put(KV.TOKEN + token.uuid, JSON.stringify(token));
+    await tokens.ns.put(KV.TOKEN_BY_ID + token.id, JSON.stringify({ uuid: token.uuid }));
+    invalidateNodesCache();
+    const res = await getSub(makeEnv(tokens.ns, nodes.ns), UUID, { format: "singbox" });
+    expect(res.status).toBe(200);
+    const text = await res.text();
+    expect(text).not.toContain("claude.ai");
+    expect(text).not.toContain("chatgpt.com");
+    expect(text).not.toContain("🇯🇵 日本");
   });
 });
 

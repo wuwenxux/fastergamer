@@ -87,6 +87,26 @@ const MAIN_GROUP = "🚀 节点选择";
 export const SPEED_TEST_URL = "http://ping.fastergamer.click/generate_204";
 
 /**
+ * OpenAI/Claude 域名清单：两家均不支持香港地区，HK 出口一律封锁
+ * （OpenAI 403 unsupported_country；Claude 302 到 app-unavailable-in-region），
+ * 与协议（WS/Reality）无关。clash 与 sing-box 订阅共用这份清单定向到日本出口。
+ */
+export const AI_SERVICE_DOMAINS = [
+  "chatgpt.com",
+  "openai.com",
+  "oaistatic.com",
+  "oaiusercontent.com",
+  "claude.ai",
+  "anthropic.com",
+];
+
+/** 区域组展示名（emoji + 中文名），clash / sing-box 订阅同口径 */
+export const regionDisplayName = (code: string, regionMeta: ClashRegion[]): string => {
+  const meta = regionMeta.find((r) => r.code === code);
+  return meta ? `${meta.flag} ${meta.name}` : code;
+};
+
+/**
  * 共享节点条目：WS 兜底条目与 ⚡Reality / 🚀Hysteria2 变体的共同基座。
  * vless 链接订阅（sub-links.ts）与 sing-box 订阅（singbox.ts）复用同一套
  * 命名（「区域代码 基名 全局序号」）与选路（nodeIps 命中写 IP，否则域名）逻辑。
@@ -371,10 +391,7 @@ export const buildClashConfig = ({ uuid, nodes, regions, userAgent, nodeIps, isp
     ...regionMeta.map((r) => r.code).filter((c) => byRegion.has(c)),
     ...[...byRegion.keys()].filter((c) => !regionMeta.some((r) => r.code === c)),
   ];
-  const regionGroupName = (code: string) => {
-    const meta = regionMeta.find((r) => r.code === code);
-    return meta ? `${meta.flag} ${meta.name}` : code;
-  };
+  const regionGroupName = (code: string) => regionDisplayName(code, regionMeta);
 
   lines.push("", "proxy-groups:");
   // 主分组：默认「自动选择」，可切到某区域（区域内自动测速切换）；单节点按地域分块排列
@@ -441,20 +458,12 @@ export const buildClashConfig = ({ uuid, nodes, regions, userAgent, nodeIps, isp
     "  - IP-CIDR,192.168.0.0/16,DIRECT,no-resolve",
     "  - IP-CIDR,127.0.0.0/8,DIRECT,no-resolve"
   );
-  // OpenAI/Claude 固定走日本区域组：两家均不支持香港地区，HK 出口一律封锁
-  // （OpenAI 403 unsupported_country；Claude 302 到 app-unavailable-in-region），
-  // 与协议（WS/Reality）无关。仅当配置里存在日本组时下发；没有日本节点时保持默认走主分组。
+  // OpenAI/Claude 固定走日本区域组（原因见 AI_SERVICE_DOMAINS 注释）。
+  // 仅当配置里存在日本组时下发；没有日本节点时保持默认走主分组。
   // 用 DOMAIN-SUFFIX 而非 GEOSITE：新老内核都兼容
   if (byRegion.has("JP")) {
     const jp = regionGroupName("JP");
-    lines.push(
-      `  - DOMAIN-SUFFIX,chatgpt.com,${jp}`,
-      `  - DOMAIN-SUFFIX,openai.com,${jp}`,
-      `  - DOMAIN-SUFFIX,oaistatic.com,${jp}`,
-      `  - DOMAIN-SUFFIX,oaiusercontent.com,${jp}`,
-      `  - DOMAIN-SUFFIX,claude.ai,${jp}`,
-      `  - DOMAIN-SUFFIX,anthropic.com,${jp}`
-    );
+    for (const d of AI_SERVICE_DOMAINS) lines.push(`  - DOMAIN-SUFFIX,${d},${jp}`);
   }
   // 小红书强制直连：其 CDN 存在境外边缘 IP，GEOIP 兜底可能漏判进代理；
   // 域名后缀规则排在 GEOSITE/GEOIP 之前，不看解析结果，新老内核通吃

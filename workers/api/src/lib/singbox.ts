@@ -10,13 +10,19 @@
  * 规则集（.srs）不走 GitHub（国内不可达，启动即下载失败），由 update-clients.py
  * 每日同步到 R2 后引用 dl.fastergamer.click 固定地址；download_detour 固定 direct
  * 避免规则未加载时代理不可用的自举循环。
+ *
+ * OpenAI/Claude 与 clash 同口径钉日本出口：存在日本节点时额外生成「🇯🇵 日本」
+ * urltest 组（不进主 selector，仅供 route 引用），AI_SERVICE_DOMAINS 域名后缀
+ * 规则排在 geosite 分流之前指向该组；无日本节点时不下发，保持默认走主分组。
  */
 import type { Node } from "../../../../shared/types";
 import {
+  AI_SERVICE_DOMAINS,
   buildHy2Entries,
   buildProxyEntries,
   buildRealityEntries,
   parseRegions,
+  regionDisplayName,
   SPEED_TEST_URL,
   type ClashRegion,
 } from "./clash";
@@ -41,11 +47,28 @@ const RULE_SET_BASE = "https://dl.fastergamer.click/rules";
 type Outbound = Record<string, unknown>;
 
 export const buildSingboxConfig = ({ uuid, nodes, regions, nodeIps }: BuildSingboxInput): string => {
-  const wsEntries = buildProxyEntries(nodes, regions ?? parseRegions(undefined), nodeIps);
+  const regionMeta = regions ?? parseRegions(undefined);
+  const wsEntries = buildProxyEntries(nodes, regionMeta, nodeIps);
   const realityEntries = buildRealityEntries(wsEntries);
   const hy2Entries = buildHy2Entries(wsEntries, realityEntries);
   // 测速池顺序与 clash 自动组同口径：🚀Hy2 → ⚡Reality → WS（延迟实测递增 + tolerance 粘滞）
   const autoPool = [...hy2Entries, ...realityEntries, ...wsEntries];
+
+  // 日本区域 urltest 组：OpenAI/Claude 域名定向出口（原因见 clash.ts AI_SERVICE_DOMAINS
+  // 注释——两家均封香港，必须钉到 JP）。组名与 clash 区域组同口径（如「🇯🇵 日本」）。
+  // 没有日本节点时不下发组与规则，AI 域名保持默认走主分组（与 clash 行为一致）
+  const jpNames = autoPool.filter((p) => p.region === "JP").map((p) => p.name);
+  const jpTag = jpNames.length > 0 ? regionDisplayName("JP", regionMeta) : null;
+  const jpOutbound: Outbound | null = jpTag
+    ? {
+        type: "urltest",
+        tag: jpTag,
+        outbounds: jpNames,
+        url: SPEED_TEST_URL,
+        interval: "5m",
+        tolerance: 50,
+      }
+    : null;
 
   const nodeOutbounds: Outbound[] = [];
   for (const p of wsEntries) {
@@ -115,6 +138,8 @@ export const buildSingboxConfig = ({ uuid, nodes, regions, nodeIps }: BuildSingb
         tolerance: 50,
       },
       ...nodeOutbounds,
+      // 日本区域组不进主 selector（那是给用户手选的）；仅被 route 规则引用
+      ...(jpOutbound ? [jpOutbound] : []),
       { type: "direct", tag: "direct" },
     ],
     route: {
@@ -122,6 +147,8 @@ export const buildSingboxConfig = ({ uuid, nodes, regions, nodeIps }: BuildSingb
         { ip_is_private: true, outbound: "direct" },
         // 小红书例外直连：其 CDN 有境外边缘 IP，geoip 兜底判不准，按域名后缀强判
         { domain_suffix: ["xiaohongshu.com", "xhscdn.com", "xhslink.com"], outbound: "direct" },
+        // OpenAI/Claude 钉日本出口（HK 出口被两家封锁），抢在 geosite 分流之前
+        ...(jpTag ? [{ domain_suffix: [...AI_SERVICE_DOMAINS], outbound: jpTag }] : []),
         // 与 clash 同口径三层：cn 域名直连 → 已知境外域名代理 → cn IP 兜底直连
         { rule_set: ["geosite-cn"], outbound: "direct" },
         { rule_set: ["geosite-gfw"], outbound: SELECTOR_TAG },
