@@ -15,6 +15,9 @@ workers_dev = true
 enabled = true
 head_sampling_rate = 1
 
+# Workers Logpush：trace events 归档到 R2 桶 fg-logs（job 用 CF API 建，此处只开 Worker 侧开关）
+logpush = true
+
 # 自定义域名（Workers Custom Domain，自动签发证书并创建 DNS 记录）
 # uluw.kdns.fr 为备用订阅域：主域被 DNS 污染时用户整体切换入口，zone 需先在 CF 激活
 routes = [
