@@ -64,6 +64,16 @@ describe("generateTicketDraft", () => {
     expect(draft!.draft).toContain("切换日本节点");
   });
 
+  it("OpenAI chat-completions 形态（choices[0].message.content）→ 正常解析", async () => {
+    // @cf/qwen/qwen3-30b-a3b-fp8 的 binding 实测返回此结构而非 {response}
+    const run = vi.fn(async () => ({
+      choices: [{ message: { content: '{"category":"connect","draft":"先更新订阅，再换个节点试试。"}' } }],
+    }));
+    const draft = await generateTicketDraft(envWithAi(run), TICKET);
+    expect(draft!.category).toBe("connect");
+    expect(draft!.draft).toContain("更新订阅");
+  });
+
   it("返回非法 JSON → null + parse-failed 日志（附 raw 截断）", async () => {
     const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
     const raw = "抱歉，我无法回答这个问题";

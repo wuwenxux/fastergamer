@@ -121,12 +121,22 @@ export const generateTicketDraftVerbose = async (env: Env, ticket: Ticket): Prom
     const messages = buildMessages(ticket, faqContext);
     // Promise.race 超时：AI.run 不支持 AbortSignal，超时后底层请求随请求结束被回收
     const result = await Promise.race([
-      env.AI.run(MODEL, { messages, max_tokens: 1024 }) as Promise<{ response?: string }>,
+      env.AI.run(MODEL, { messages, max_tokens: 1024 }) as Promise<{
+        response?: string;
+        choices?: { message?: { content?: string } }[];
+      }>,
       new Promise<never>((_, reject) =>
         setTimeout(() => reject(new Error("AI timeout")), AI_TIMEOUT_MS)
       ),
     ]);
-    const raw = typeof result?.response === "string" ? result.response : "";
+    // 兼容两种返回形态：旧式 {response} 与 OpenAI chat-completions {choices[0].message.content}
+    //（@cf/qwen/qwen3-30b-a3b-fp8 走后者，生产实测）
+    const raw =
+      typeof result?.response === "string"
+        ? result.response
+        : typeof result?.choices?.[0]?.message?.content === "string"
+          ? result.choices[0].message.content
+          : "";
     if (!raw) {
       return fail(ticket.id, "empty-response", JSON.stringify(result ?? null).slice(0, 200));
     }
