@@ -13,6 +13,7 @@ import { referralRoutes } from "./routes/referral";
 import { registerRoutes } from "./routes/register";
 import { ticketsRoutes } from "./routes/tickets";
 import { handleEmail } from "./email";
+import { handleMailBatch } from "./lib/email-aliyun";
 import { rateLimit } from "./middleware/rateLimit";
 import { turnstile } from "./middleware/turnstile";
 
@@ -104,4 +105,6 @@ export default {
   // Email Routing：support@tickets.fastergamer.click 的来信（用户回复工单邮件）追加进工单对话，
   // 见 email.ts。wrangler 无需绑定，接收规则在 CF 控制台/脚本（scripts/cf-email-routing.mjs）配置
   email: handleEmail,
+  // Queues consumer：mail-queue 的邮件异步发送（重试/削峰），见 lib/email-aliyun.ts handleMailBatch
+  queue: handleMailBatch,
 };

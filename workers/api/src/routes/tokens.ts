@@ -221,7 +221,8 @@ tokensRoutes.post("/login-link", async (c) => {
       ${items.map((i) => `<p style="margin:12px 0;"><a href="${i.url}" style="color:#0ea5e9;">${i.label}</a></p>`).join("")}
       <p style="color:#64748b;font-size:13px;">链接 72 小时内有效，可重复打开。如果这不是你本人的操作，请忽略本邮件；链接即登录凭证，请勿转发给他人。</p>`.trim();
     const text = `点击以下链接直接登录你的 Token 管理页：\n\n${items.map((i) => `${i.label}\n${i.url}`).join("\n\n")}\n\n链接 72 小时内有效，可重复打开。如非本人操作请忽略。`;
-    const res = await sendMail(c.env, contact, "【GameBoost】一键登录链接", html, text);
+    // sync: 用户正盯着页面等登录邮件，队列的 batch_timeout 会多等几秒，强制直发
+    const res = await sendMail(c.env, contact, "【GameBoost】一键登录链接", html, text, { sync: true, kind: "magic" });
     if (!res.ok) console.error(`[login-link] mail failed for ${maskEmail(contact)}: ${res.error}`);
   }
   return c.json({ ok: true, data: { throttled: false } });

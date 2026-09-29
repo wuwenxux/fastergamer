@@ -39,4 +39,6 @@ export interface Env {
   TURNSTILE_SITE_KEY?: string;
   /** Analytics Engine 遥测（可选绑定，观测用途；缺失时 track() 静默跳过，见 lib/telemetry.ts） */
   TELEMETRY?: AnalyticsEngineDataset;
+  /** 邮件队列（可选绑定；有绑定 sendMail 默认入队异步重试，无绑定同步直发，见 lib/email-aliyun.ts） */
+  MAIL_QUEUE?: Queue<import("./lib/email-aliyun").MailMessage>;
 }

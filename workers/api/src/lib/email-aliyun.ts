@@ -1,4 +1,6 @@
 import type { Env } from "../types";
+import { maskEmail } from "./mask-email";
+import { track } from "./telemetry";
 import { siteUrl } from "./site-url";
 
 const ALIYUN_DM_API = "https://dm.aliyuncs.com";
@@ -10,6 +12,22 @@ export function isEmail(contact: string): boolean {
 export function shouldSendEmail(contact?: string): contact is string {
   return !!contact && isEmail(contact);
 }
+
+/**
+ * 队列消息体（Cloudflare Queues 邮件异步化）：所有邮件默认入 mail-queue 由 consumer
+ * 重试发送，替代「即发即弃、失败只记日志」的静默丢失。kind 仅用于观测分类（日志/遥测）。
+ */
+export interface MailMessage {
+  to: string;
+  subject: string;
+  html: string;
+  text: string;
+  /** 观测分类：如 "magic" / "ticket" / "notify" */
+  kind?: string;
+}
+
+/** 与 wrangler.cf.toml 的 max_retries 对齐：判断最后一次投递用（attempts 含首次投递，耗尽 = attempts > max_retries） */
+export const MAIL_MAX_RETRIES = 3;
 
 interface TokenEmailContext {
   tokenId: string;
@@ -27,9 +45,38 @@ interface TokenEmailContext {
 }
 
 /**
- * 通用邮件发送（阿里云邮件推送 SingleSendMail）
+ * 通用邮件发送（阿里云邮件推送 SingleSendMail）。
+ *
+ * 默认走队列削峰+重试：有 MAIL_QUEUE 绑定且未强制 sync → 入队立即返回 { ok, queued:true }，
+ * 实际发送由 consumer（handleMailBatch）完成，失败自动重试；无绑定（本地/测试）→ 同步直发。
+ * opts.sync=true 强制直发：时效极敏感的链路用（magic 登录链接，用户盯着页面等邮件，
+ * 队列的 batch_timeout 会多等几秒）。
+ * 入队本身失败降级直发——队列不可用不能成为丢邮件的新途径。
+ *
+ * 幂等说明（为什么不做幂等键）：Queues 是 at-least-once，ack 前崩溃会重复发信。
+ * 邮件重复无资金副作用，且 DM 返回 EnvId 才算成功、ack 紧随成功之后，窗口极小，可接受。
  */
 export async function sendMail(
+  env: Env,
+  to: string,
+  subject: string,
+  html: string,
+  text: string,
+  opts?: { sync?: boolean; kind?: string }
+): Promise<{ ok: boolean; id?: string; error?: string; queued?: boolean }> {
+  if (env.MAIL_QUEUE && !opts?.sync) {
+    try {
+      await env.MAIL_QUEUE.send({ to, subject, html, text, kind: opts?.kind });
+      return { ok: true, queued: true };
+    } catch (e) {
+      console.error("[email] 入队失败，降级直发:", (e as Error).message);
+    }
+  }
+  return sendMailDirect(env, to, subject, html, text);
+}
+
+/** 阿里云 DM 同步直发（原 sendMail 实现）：队列 consumer 与 sync/无绑定兜底共用 */
+async function sendMailDirect(
   env: Env,
   to: string,
   subject: string,
@@ -88,6 +135,30 @@ export async function sendMail(
     const error = (e as Error).message;
     console.error("[email] aliyun exception:", error);
     return { ok: false, error };
+  }
+}
+
+/**
+ * mail-queue consumer（index.ts 以 queue 方法导出）：逐条调 DM 直发，
+ * 失败 message.retry() 交给 Queues 指数退避重试（max_retries=3，见 wrangler.cf.toml）；
+ * 成功显式 ack（不写也是默认 ack，写明便于阅读）。
+ * 最后一次投递仍失败（attempts > max_retries，之后 Queues 不再投递）：
+ * 记日志（带 kind + 收件人脱敏 + 主题摘要）并写 mail_failed 遥测点，便于发现系统性故障。
+ */
+export async function handleMailBatch(batch: MessageBatch<MailMessage>, env: Env): Promise<void> {
+  for (const m of batch.messages) {
+    const { to, subject, html, text, kind } = m.body;
+    const res = await sendMailDirect(env, to, subject, html, text);
+    if (res.ok) {
+      m.ack();
+      continue;
+    }
+    console.error(`[mail-queue] 发送失败 kind=${kind ?? "-"} to=${maskEmail(to)} attempt=${m.attempts}: ${res.error}`);
+    if (m.attempts > MAIL_MAX_RETRIES) {
+      console.error(`[mail-queue] 重试耗尽，邮件丢失 kind=${kind ?? "-"} to=${maskEmail(to)} subject=${subject.slice(0, 60)}`);
+      track(env, "mail_failed", [kind ?? "unknown"], []);
+    }
+    m.retry();
   }
 }
 

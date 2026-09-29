@@ -50,6 +50,18 @@ id = "f52063f8c3bf4c538ce26030fa2411db"
 binding = "TELEMETRY"
 dataset = "fastergamer_telemetry"
 
+# --- Queues（邮件异步化与重试，见 src/lib/email-aliyun.ts）。
+# 队列本体需人工创建一次：npx wrangler queues create mail-queue --config wrangler.cf.toml ---
+[[queues.producers]]
+binding = "MAIL_QUEUE"
+queue = "mail-queue"
+
+[[queues.consumers]]
+queue = "mail-queue"
+max_batch_size = 10
+max_batch_timeout = 5
+max_retries = 3
+
 # --- 环境变量 ---
 # ADMIN_KEY / ALIYUN_* / ADMIN_NOTIFY_EMAIL / TURNSTILE_SECRET_KEY 均为 secret，
 # 用 wrangler secret put --config wrangler.cf.toml 管理，不入库

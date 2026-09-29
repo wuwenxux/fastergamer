@@ -47,7 +47,7 @@ Token 制 VPN 服务（对外品牌 GameBoost / FasterGamer）：用户无需注
 - 密钥（`ADMIN_KEY`、`ALIYUN_*`、`ADMIN_NOTIFY_EMAIL`、`CLOUDFLARE_API_TOKEN`、`TURNSTILE_SECRET_KEY` 等）放 `workers/api/.dev.vars`（本地，git 已忽略）或用 `wrangler secret put --config wrangler.cf.toml`（生产），**绝不入库**。模板见 `.dev.vars.example`。
 - 人机验证用 Cloudflare Turnstile：匿名表单接口（试用/下单/notify-paid/反馈/登录链接）在 rateLimit 后挂 `middleware/turnstile.ts`（token 走 `x-turnstile-token` 头，只校验 POST，GET 轮询不受影响）；前端 sitekey 经 `GET /api/config` 下发，组件在 `pages/src/components/Turnstile.tsx`。**未配置 `TURNSTILE_SECRET_KEY` 时全链路自动放行**（本地开发/灰度期），sitekey 配在 wrangler.cf.toml 的 vars（`TURNSTILE_SITE_KEY`），secret 用 secret put。
 - 支付通道（易支付 pay.neil.asia）**已彻底断开**（疑似诈骗）：下单与回调代码已删除，交易状态机保留。当前过渡方案为**人工收款码**：`POST /api/orders` 与升级补差价落 pending 订单，支付页展示站长收款码（`pages/public/pay/` 静态图），用户点「我已支付」（`POST /api/orders/:id/notify-paid`，6h 幂等节流 + IP 限流）邮件通知站长，站长确认收款（`POST /api/admin/orders/:id/paid` → `fulfillOrder`，或管理端 `/admin` 页「订单」标签一键确认/取消）自动发货发邮件。用户侧凭订单号在 `/orders/:id` 查询进度/继续支付（页脚有「查询订单」入口）。`lib/epay.ts` 仅保留退款代码（`refundEpayOrder`，SHA256WithRSA 签名，RSA 工具函数在 `lib/rsa-sign.ts`），但 `EPAY_*` 密钥已从生产删除，退款接口当前不可用，确需退款时重新 `secret put` 三项配置即可恢复。
-- 邮件走阿里云 DirectMail（`lib/email-aliyun.ts`）。
+- 邮件发送：阿里云 DirectMail（`lib/email-aliyun.ts`），生产经 Cloudflare Queues 异步化——`MAIL_QUEUE`（队列 `mail-queue`）为**可选绑定**：有绑定 `sendMail` 默认入队立即返回 `{ok, queued:true}`，consumer（index.ts 导出的 `queue` → `handleMailBatch`）逐条直发、失败 `retry()` 指数退避（max_retries=3，耗尽记日志 + `mail_failed` 遥测）；无绑定（本地/测试）回退同步直发；时效敏感链路传 `{sync:true}` 强制直发（目前只有 magic 登录链接——用户盯着页面等）。队列本体需人工创建一次：`npx wrangler queues create mail-queue --config wrangler.cf.toml`；Queues 是 at-least-once 不做幂等键（重复邮件无资金副作用，理由见 email-aliyun.ts 注释）。
 
 ## 常用命令
 
