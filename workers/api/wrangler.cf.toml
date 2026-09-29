@@ -10,13 +10,23 @@ compatibility_flags = ["nodejs_compat"]
 # 保留 workers.dev 备用入口（配置 routes 后默认会被关掉，需显式开启）
 workers_dev = true
 
+# Workers Logpush：trace events 归档到 R2 桶 fg-logs（job 用 CF API 建，此处只开 Worker 侧开关）
+# 必须放顶层——写在 [observability] 段后面会被 TOML 归进子表，wrangler 不认且 deploy 会把 API 侧设置抹回 false
+logpush = true
+
 # Workers Logs 持久化（付费计划能力）：声明在配置里防止 wrangler deploy 把 Dashboard/API 侧设置抹掉
 [observability]
 enabled = true
 head_sampling_rate = 1
 
-# Workers Logpush：trace events 归档到 R2 桶 fg-logs（job 用 CF API 建，此处只开 Worker 侧开关）
-logpush = true
+[observability.logs]
+enabled = true
+persist = true
+invocation_logs = true
+
+[observability.traces]
+enabled = true
+persist = true
 
 # 自定义域名（Workers Custom Domain，自动签发证书并创建 DNS 记录）
 # uluw.kdns.fr 为备用订阅域：主域被 DNS 污染时用户整体切换入口，zone 需先在 CF 激活
