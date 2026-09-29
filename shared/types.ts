@@ -450,6 +450,16 @@ export interface TicketThreadItem {
   at: number;
 }
 
+/** AI 工单助手产出：回复草稿 + 分类校正建议（仅供管理端参考采纳，绝不自动发给用户） */
+export interface TicketAiDraft {
+  /** 建议分类：install / connect / speed / other */
+  category: string;
+  /** 中文回复草稿（口语化，≤300 字） */
+  draft: string;
+  /** 生成时间戳 */
+  at: number;
+}
+
 /** 用户反馈工单 —— 安装/使用问题反馈与邮件解答 */
 export interface Ticket {
   /** 短 ID，如 fb_a1b2c3 */
@@ -470,6 +480,8 @@ export interface Ticket {
   thread?: TicketThreadItem[];
   /** 是否沉淀到公开 FAQ（需已回复） */
   publish_faq?: boolean;
+  /** AI 回复草稿（Workers AI 异步写回；仅管理端展示，不自动发用户） */
+  ai_draft?: TicketAiDraft;
   created_at: number;
   replied_at?: number;
 }

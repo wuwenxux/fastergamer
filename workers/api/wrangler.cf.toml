@@ -96,6 +96,10 @@ bindings = [{ name = "SHARE_GUARD", class_name = "ShareGuardDO" }]
 tag = "v1"
 new_sqlite_classes = ["ShareGuardDO"]
 
+# --- Workers AI（工单回复草稿，见 src/lib/ticket-ai.ts；生成失败静默降级，不影响工单链路）---
+[ai]
+binding = "AI"
+
 # --- 环境变量 ---
 # ADMIN_KEY / ALIYUN_* / ADMIN_NOTIFY_EMAIL / TURNSTILE_SECRET_KEY 均为 secret，
 # 用 wrangler secret put --config wrangler.cf.toml 管理，不入库

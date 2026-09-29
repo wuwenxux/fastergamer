@@ -42,6 +42,10 @@ queue = "mail-queue"
 [durable_objects]
 bindings = [{ name = "SHARE_GUARD", class_name = "ShareGuardDO" }]
 
+# --- Workers AI（工单回复草稿，见 src/lib/ticket-ai.ts；本地 dev 由 miniflare mock，调用会失败但静默降级）---
+[ai]
+binding = "AI"
+
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["ShareGuardDO"]

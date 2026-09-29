@@ -1,4 +1,4 @@
-import type { CreateOrderResponse, Device, DeviceGuardEntry, FaqItem, GeoStats, Node, Order, Plan, Presence, Registration, Token } from "../../../shared/types";
+import type { CreateOrderResponse, Device, DeviceGuardEntry, FaqItem, GeoStats, Node, Order, Plan, Presence, Registration, Ticket, Token } from "../../../shared/types";
 
 // 生产前后端同源（Worker 托管静态资产），VITE_API_BASE 留空即可，仅在需要指向其他 API 域名时设置
 // 本地开发留空，由 Vite 代理到 localhost:8787 的 wrangler dev
@@ -260,6 +260,27 @@ export const api = {
   /** 管理接口：取消未支付订单（已用推广额度自动归还）；需 x-admin-key */
   adminOrderCancel: (key: string, id: string) =>
     request<Order>(`/api/admin/orders/${id}/cancel`, {
+      method: "POST",
+      headers: { "x-admin-key": key },
+    }),
+
+  /** 管理接口：工单列表（可按状态过滤）；需 x-admin-key */
+  adminTickets: (key: string, status?: string) =>
+    request<Ticket[]>(`/api/admin/tickets${status ? `?status=${encodeURIComponent(status)}` : ""}`, {
+      headers: { "x-admin-key": key },
+    }),
+
+  /** 管理接口：回复工单（邮件通知用户，默认关闭；publish_faq 沉淀到公开 FAQ）；需 x-admin-key */
+  adminTicketReply: (key: string, id: string, body: { reply: string; publish_faq?: boolean; close?: boolean }) =>
+    request<Ticket>(`/api/admin/tickets/${id}/reply`, {
+      method: "POST",
+      headers: { "x-admin-key": key },
+      body: JSON.stringify(body),
+    }),
+
+  /** 管理接口：不回复直接关闭工单；需 x-admin-key */
+  adminTicketClose: (key: string, id: string) =>
+    request<{ id: string; status: string }>(`/api/admin/tickets/${id}/close`, {
       method: "POST",
       headers: { "x-admin-key": key },
     }),

@@ -46,4 +46,6 @@ export interface Env {
   /** 实时防共享裁决 DO（可选绑定；缺失时 /api/agent/presence 心跳直接 ack，
    *  防共享由结算路径的 device-guard/share-guard 兜底，见 src/do/share-guard.ts） */
   SHARE_GUARD?: DurableObjectNamespace;
+  /** Workers AI（可选绑定；缺失时工单 AI 草稿静默跳过，见 lib/ticket-ai.ts） */
+  AI?: Ai;
 }

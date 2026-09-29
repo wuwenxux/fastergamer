@@ -48,8 +48,8 @@ describe("POST /api/feedback 邮件经 waitUntil 发出", () => {
 
     const res = await postFeedback(makeEnv(), ctx);
     expect(res.status).toBe(200);
-    // 两封邮件都挂在 waitUntil 上
-    expect(pending.length).toBe(2);
+    // 两封邮件 + AI 草稿（无 AI 绑定静默跳过但仍注册 waitUntil）都挂在 waitUntil 上
+    expect(pending.length).toBe(3);
     await Promise.all(pending);
 
     const mails = fetchMock.mock.calls.filter((c) => String(c[0]).includes("dm.aliyuncs.com"));
@@ -66,7 +66,8 @@ describe("POST /api/feedback 邮件经 waitUntil 发出", () => {
 
     const res = await postFeedback(makeEnv({ ADMIN_NOTIFY_EMAIL: undefined }), ctx);
     expect(res.status).toBe(200);
-    expect(pending.length).toBe(1);
+    // 用户回执 + AI 草稿（同上）两条 waitUntil
+    expect(pending.length).toBe(2);
     await Promise.all(pending);
 
     const mails = fetchMock.mock.calls.filter((c) => String(c[0]).includes("dm.aliyuncs.com"));

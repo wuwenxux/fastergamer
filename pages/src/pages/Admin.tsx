@@ -1,5 +1,5 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from "react";
-import { isTrialPlan, TEST_CONTACT_RE, type GeoStats, type Order } from "../../../shared/types";
+import { isTrialPlan, TEST_CONTACT_RE, type GeoStats, type Order, type Ticket } from "../../../shared/types";
 import { STATUS_COLOR, STATUS_LABEL } from "../lib/status";
 import { api, ApiError, type AdminNode, type AdminToken } from "../services/api";
 
@@ -87,13 +87,16 @@ export default function Admin() {
   const [tokens, setTokens] = useState<AdminToken[]>([]);
   const [nodes, setNodes] = useState<AdminNode[]>([]);
   const [orders, setOrders] = useState<Order[]>([]);
-  const [tab, setTab] = useState<"overview" | "orders" | "geo">("overview");
+  const [tab, setTab] = useState<"overview" | "orders" | "geo" | "tickets">("overview");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [days, setDays] = useState<14 | 30>(14);
   // 地理分布独立懒加载：切到「分布」tab 才请求，避免拖慢概览首屏
   const [geo, setGeo] = useState<GeoStats | null>(null);
   const [geoLoading, setGeoLoading] = useState(false);
+  // 工单同样懒加载：切到「工单」tab 才请求
+  const [tickets, setTickets] = useState<Ticket[] | null>(null);
+  const [ticketsLoading, setTicketsLoading] = useState(false);
 
   const load = useCallback(async (k: string) => {
     setLoading(true);
@@ -141,6 +144,22 @@ export default function Admin() {
   useEffect(() => {
     if (tab === "geo" && !geo && !geoLoading) void loadGeo(key);
   }, [tab, geo, geoLoading, key, loadGeo]);
+
+  const loadTickets = useCallback(async (k: string) => {
+    setTicketsLoading(true);
+    try {
+      setTickets(await api.adminTickets(k));
+    } catch {
+      // 加载失败不打扰：保留旧数据，下次进入 tab 重试
+    } finally {
+      setTicketsLoading(false);
+    }
+  }, []);
+
+  // 首次切到「工单」tab 时加载；失败重进 tab 会重试
+  useEffect(() => {
+    if (tab === "tickets" && !tickets && !ticketsLoading) void loadTickets(key);
+  }, [tab, tickets, ticketsLoading, key, loadTickets]);
 
   const submitKey = () => {
     const k = keyInput.trim();
@@ -246,6 +265,7 @@ export default function Admin() {
             onClick={() => {
               void load(key);
               if (geo) void loadGeo(key); // 已加载过分布数据时一并刷新
+              if (tickets) void loadTickets(key); // 工单同理
             }}
             disabled={loading}
             className="rounded-lg border border-slate-700 bg-slate-900 px-4 py-2 hover:border-sky-500 transition-colors disabled:opacity-60"
@@ -255,12 +275,13 @@ export default function Admin() {
         </div>
       </div>
 
-      {/* 标签页：概览 / 订单（待支付角标提醒站长核账；测试订单不算真实交易，不计入）/ 分布 */}
+      {/* 标签页：概览 / 订单（待支付角标提醒站长核账；测试订单不算真实交易，不计入）/ 工单 / 分布 */}
       <div className="flex gap-1 text-[15px] sm:text-sm">
         {(
           [
             ["overview", "概览"],
             ["orders", `订单${orders.some((o) => o.status === "pending" && !isTestOrder(o)) ? `（${orders.filter((o) => o.status === "pending" && !isTestOrder(o)).length} 待支付）` : ""}`],
+            ["tickets", `工单${tickets?.some((t) => t.status === "open") ? `（${tickets.filter((t) => t.status === "open").length} 待处理）` : ""}`],
             ["geo", "分布"],
           ] as const
         ).map(([t, label]) => (
@@ -283,6 +304,15 @@ export default function Admin() {
 
       {tab === "orders" && (
         <OrdersSection adminKey={key} orders={orders} onChanged={() => void load(key)} />
+      )}
+
+      {tab === "tickets" && (
+        <TicketsSection
+          adminKey={key}
+          tickets={tickets}
+          loading={ticketsLoading}
+          onChanged={() => void loadTickets(key)}
+        />
       )}
 
       {tab === "geo" && <GeoSection stats={geo} loading={geoLoading} />}
@@ -711,6 +741,243 @@ function OrdersSection({
             )}
           </tbody>
         </table>
+      </div>
+    </section>
+  );
+}
+
+/** 工单分类 / 状态的中文展示名与配色 */
+const TICKET_CATEGORY_LABEL: Record<string, string> = {
+  install: "安装",
+  connect: "连接",
+  speed: "速度",
+  pay: "支付",
+  other: "其他",
+};
+const TICKET_STATUS_LABEL: Record<Ticket["status"], string> = {
+  open: "待处理",
+  replied: "已回复",
+  closed: "已关闭",
+};
+const TICKET_STATUS_COLOR: Record<Ticket["status"], string> = {
+  open: "bg-amber-500/20 text-amber-300 border-amber-500/40",
+  replied: "bg-sky-500/20 text-sky-300 border-sky-500/40",
+  closed: "bg-slate-600/30 text-slate-400 border-slate-500/40",
+};
+
+/**
+ * 工单管理：邮件闭环的人工回复入口。
+ * AI 草稿块（ticket.ai_draft）只是参考稿——「采纳」填入回复框后仍由站长修改确认才发出，
+ * 系统绝不自动回复用户。回复即发邮件并默认关闭工单；勾选 publish_faq 沉淀到公开 FAQ。
+ */
+function TicketsSection({
+  adminKey,
+  tickets,
+  loading,
+  onChanged,
+}: {
+  adminKey: string;
+  tickets: Ticket[] | null;
+  loading: boolean;
+  onChanged: () => void;
+}) {
+  const [filter, setFilter] = useState<"all" | Ticket["status"]>("all");
+  const [openId, setOpenId] = useState("");
+  const [replyText, setReplyText] = useState("");
+  const [publishFaq, setPublishFaq] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [actionError, setActionError] = useState("");
+
+  if (loading && !tickets) {
+    return <p className="text-[15px] sm:text-sm text-slate-500">正在加载工单…</p>;
+  }
+  const list = tickets ?? [];
+  const filtered = filter === "all" ? list : list.filter((t) => t.status === filter);
+
+  const toggle = (t: Ticket) => {
+    if (openId === t.id) {
+      setOpenId("");
+    } else {
+      setOpenId(t.id);
+      setReplyText("");
+      setPublishFaq(false);
+      setActionError("");
+    }
+  };
+
+  const act = async (t: Ticket, kind: "reply" | "close") => {
+    setBusy(true);
+    setActionError("");
+    try {
+      if (kind === "reply") await api.adminTicketReply(adminKey, t.id, { reply: replyText.trim(), publish_faq: publishFaq });
+      else await api.adminTicketClose(adminKey, t.id);
+      setOpenId("");
+      onChanged();
+    } catch (e) {
+      setActionError(`${t.id}：${(e as Error).message}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <section className="space-y-3">
+      <div className="flex items-center justify-between flex-wrap gap-2">
+        <h3 className="font-semibold text-slate-300">工单（{filtered.length}）</h3>
+        <div className="flex gap-1 text-xs">
+          {(
+            [
+              ["all", "全部"],
+              ["open", "待处理"],
+              ["replied", "已回复"],
+              ["closed", "已关闭"],
+            ] as const
+          ).map(([f, label]) => (
+            <button
+              key={f}
+              onClick={() => setFilter(f)}
+              className={`rounded-md px-3 py-1 border transition-colors ${
+                filter === f
+                  ? "border-sky-500 bg-sky-500/20 text-sky-300"
+                  : "border-slate-700 bg-slate-900 text-slate-400 hover:border-slate-500"
+              }`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {actionError && <p className="text-rose-400 text-[15px] sm:text-sm">{actionError}</p>}
+
+      <div className="space-y-2">
+        {filtered.map((t) => {
+          const expanded = openId === t.id;
+          return (
+            <div key={t.id} className="rounded-xl border border-slate-700 bg-slate-900">
+              <button
+                onClick={() => toggle(t)}
+                className="w-full flex items-center gap-3 px-4 py-3 text-left flex-wrap"
+              >
+                <span className="font-mono text-sm sm:text-xs text-slate-400">{t.id}</span>
+                <span className="text-sm sm:text-xs text-slate-400 max-w-44 truncate">{t.contact}</span>
+                <span className="inline-block rounded-full border border-slate-600 bg-slate-800 px-2.5 py-0.5 text-xs text-slate-300">
+                  {TICKET_CATEGORY_LABEL[t.category ?? "other"] ?? t.category}
+                </span>
+                <span
+                  className={`inline-block rounded-full border px-2.5 py-0.5 text-xs font-medium ${TICKET_STATUS_COLOR[t.status]}`}
+                >
+                  {TICKET_STATUS_LABEL[t.status]}
+                </span>
+                {t.ai_draft && (
+                  <span className="inline-block rounded-full border border-violet-500/40 bg-violet-500/20 px-2.5 py-0.5 text-xs text-violet-300">
+                    AI 草稿
+                  </span>
+                )}
+                <span className="text-sm sm:text-xs text-slate-500 ml-auto whitespace-nowrap">
+                  {fmtTime(t.created_at)}
+                </span>
+              </button>
+
+              {expanded && (
+                <div className="border-t border-slate-800 px-4 py-4 space-y-4">
+                  <div>
+                    <div className="text-sm sm:text-xs text-slate-500 mb-1">用户问题</div>
+                    <p className="text-[15px] sm:text-sm text-slate-200 whitespace-pre-wrap">{t.message}</p>
+                    {t.token_id && (
+                      <p className="mt-1 text-sm sm:text-xs text-slate-500 font-mono">Token：{t.token_id}</p>
+                    )}
+                  </div>
+
+                  {t.thread && t.thread.length > 0 && (
+                    <div className="space-y-2">
+                      <div className="text-sm sm:text-xs text-slate-500">对话记录</div>
+                      {t.thread.map((m, i) => (
+                        <div
+                          key={i}
+                          className={`rounded-lg px-3 py-2 text-[15px] sm:text-sm whitespace-pre-wrap ${
+                            m.from === "admin"
+                              ? "bg-sky-500/10 border border-sky-500/30 text-slate-200"
+                              : "bg-slate-800 border border-slate-700 text-slate-300"
+                          }`}
+                        >
+                          <span className="text-xs text-slate-500 block mb-0.5">
+                            {m.from === "admin" ? "站长" : "用户"} · {fmtTime(m.at)}
+                          </span>
+                          {m.text}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {t.ai_draft && (
+                    <div className="rounded-lg border border-violet-500/40 bg-violet-500/10 px-3 py-3 space-y-2">
+                      <div className="flex items-center justify-between flex-wrap gap-2">
+                        <span className="text-xs font-medium text-violet-300">
+                          AI 参考草稿（不会自动发给用户）
+                          {t.ai_draft.category !== (t.category ?? "other") && (
+                            <span className="ml-2 text-violet-400">
+                              建议改分类：{TICKET_CATEGORY_LABEL[t.ai_draft.category] ?? t.ai_draft.category}
+                            </span>
+                          )}
+                        </span>
+                        <button
+                          onClick={() => setReplyText(t.ai_draft?.draft ?? "")}
+                          className="rounded-md border border-violet-500/50 bg-violet-500/20 px-3 py-1 text-xs text-violet-200 hover:bg-violet-500/30 transition-colors"
+                        >
+                          采纳草稿
+                        </button>
+                      </div>
+                      <p className="text-[15px] sm:text-sm text-slate-300 whitespace-pre-wrap">{t.ai_draft.draft}</p>
+                    </div>
+                  )}
+
+                  <div className="space-y-2">
+                    <textarea
+                      value={replyText}
+                      onChange={(e) => setReplyText(e.target.value)}
+                      rows={4}
+                      placeholder="回复内容（发送后邮件通知用户，并默认关闭工单）"
+                      className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-base sm:text-sm outline-none focus:border-sky-500"
+                    />
+                    <label className="flex items-center gap-2 text-[15px] sm:text-sm text-slate-400">
+                      <input
+                        type="checkbox"
+                        checked={publishFaq}
+                        onChange={(e) => setPublishFaq(e.target.checked)}
+                        className="accent-sky-500"
+                      />
+                      沉淀到公开 FAQ
+                    </label>
+                    <div className="flex gap-2">
+                      <button
+                        onClick={() => void act(t, "reply")}
+                        disabled={busy || replyText.trim().length < 2}
+                        className="rounded-lg bg-sky-500 px-4 py-2 text-[15px] sm:text-sm font-medium hover:bg-sky-400 transition-colors disabled:opacity-60"
+                      >
+                        发送回复
+                      </button>
+                      {t.status !== "closed" && (
+                        <button
+                          onClick={() => void act(t, "close")}
+                          disabled={busy}
+                          className="rounded-lg border border-slate-600 bg-slate-800 px-4 py-2 text-[15px] sm:text-sm text-slate-300 hover:border-rose-500/50 hover:text-rose-300 transition-colors disabled:opacity-60"
+                        >
+                          直接关闭
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          );
+        })}
+        {filtered.length === 0 && (
+          <p className="rounded-xl border border-slate-700 bg-slate-900 px-4 py-8 text-center text-slate-500 text-[15px] sm:text-sm">
+            暂无工单
+          </p>
+        )}
       </div>
     </section>
   );

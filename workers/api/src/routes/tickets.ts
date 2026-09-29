@@ -9,9 +9,10 @@ import type { FaqItem, Ticket } from "../../../../shared/types";
 import { isEmail, sendMail } from "../lib/email-aliyun";
 import { mailThrottleAllows } from "../lib/mail-throttle";
 import { maskEmail } from "../lib/mask-email";
-import { listTickets, saveTicket } from "../lib/kv";
+import { listTickets, getTicket, saveTicket } from "../lib/kv";
 import { escapeHtml } from "../lib/escape-html";
 import { siteUrl } from "../lib/site-url";
+import { generateTicketDraft } from "../lib/ticket-ai";
 import type { Env } from "../types";
 
 export const ticketsRoutes = new Hono<{ Bindings: Env }>();
@@ -50,6 +51,19 @@ ticketsRoutes.post("/feedback", async (c) => {
     created_at: Date.now(),
   };
   await saveTicket(c.env, ticket);
+
+  // AI 回复草稿（Workers AI）：异步生成写回 ai_draft，仅供管理端参考，绝不自动发用户。
+  // 绑定缺失/超时/解析失败静默跳过；重新 getTicket 再改再存，避免覆盖管理员在生成期间的并发回复
+  c.executionCtx.waitUntil(
+    (async () => {
+      const draft = await generateTicketDraft(c.env, ticket);
+      if (!draft) return;
+      const latest = await getTicket(c.env, ticket.id);
+      if (!latest) return;
+      latest.ai_draft = draft;
+      await saveTicket(c.env, latest);
+    })().catch(() => {})
+  );
 
   // 回执邮件（尽力发送，失败不影响提交）；按收件人节流（防邮件炸弹），超限静默不发。
   // waitUntil 包裹：响应返回后 Worker 可能随时被杀，裸 async 会静默丢邮件
