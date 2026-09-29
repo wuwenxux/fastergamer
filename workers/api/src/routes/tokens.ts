@@ -462,10 +462,11 @@ tokensRoutes.post("/:id/blocked-ips", async (c) => {
 });
 
 /**
- * POST /api/tokens/:id/device-guard/allow —— 设备级防护：机主确认「允许」= 迁移流程
- * 自动为新设备创建独立槽位（共用链接只能是过渡），被拦 IP 解封并记入涉事凭证的
- * 迁移过渡名单（7 天），台账删除；响应带新槽位（前端展示引导导入专属订阅链接）。
- * 槽位已满返回 409，阻断与台账保持。仅本人可操作。
+ * POST /api/tokens/:id/device-guard/allow —— 设备级防护：机主确认「允许」
+ * 多设备套餐有余量 = 迁移流程：自动建新槽位，被拦 IP 记 7 天过渡名单，响应带新槽位
+ * （前端引导导入专属订阅链接）；单设备套餐（试用/流量包）或槽位已满 = 临时解封：
+ * 只解封 + 7 天过渡名单 + 删台账，不建槽（409 对 max_devices=1 是死路，合法换机无救济）。
+ * 到期仍并发活跃会被重新拦截。仅本人可操作。
  * body: { ip: "1.2.3.4" }
  */
 tokensRoutes.post("/:id/device-guard/allow", async (c) => {
@@ -484,19 +485,14 @@ tokensRoutes.post("/:id/device-guard/allow", async (c) => {
   if (result.reason === "not_found") {
     return c.json({ ok: false, error: "该 IP 不在待授权列表" }, 404);
   }
-  if (result.reason === "slots_full") {
-    return c.json(
-      { ok: false, error: "设备数已达上限：请先解绑一台旧设备，或升级套餐后再允许新设备" },
-      409
-    );
-  }
-  c.executionCtx.waitUntil(pushAuthRefresh(c.env)); // 解封 + 新槽位 uuid 立即下发各节点
+  c.executionCtx.waitUntil(pushAuthRefresh(c.env)); // 解封（+ 新槽位 uuid）立即下发各节点
   return c.json({
     ok: true,
     data: {
       blocked_ips: token.blocked_ips ?? [],
       device_guard: token.device_guard ?? {},
       devices: token.devices ?? [],
+      slot_created: result.slot_created,
       device: result.device,
       transition_until: result.transition_until,
     },

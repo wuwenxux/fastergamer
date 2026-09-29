@@ -16,7 +16,7 @@ import { collectCtx, fakeNs } from "./helpers";
  * 订阅设备锁 + 自助解绑：
  * - clientFamily 家族归一化（忽略版本号）
  * - 锁仅单设备套餐（试用/流量包，有效 max_devices=1）生效：首个拉取者懒惰认领绑定，
- *   同家族放行、新家族拒绝（403 文案引导槽位/解绑）
+ *   同家族放行、新家族拒绝（403 文案明说「仅支持 1 台设备」，引导解绑/购买多设备套餐）
  * - 多设备套餐一律放行任何家族（同一人多台设备是正常用法），指纹仍照常记录供展示
  * - 浏览器/未知 UA：无绑定放行（灰度兼容），有绑定拒绝（堵抄配置旁路）
  * - 绑定 30 天未拉取自动过期（自愈）；冲突邮件节流 24h 且仅单设备套餐发送
@@ -165,14 +165,14 @@ describe("订阅设备锁判定与下发", () => {
     expect(tokens.store.get(KV.PRESENCE + UUID)).toBe(firstRaw);
   });
 
-  it("新家族指纹冲突（单设备套餐）：403 拒绝下发 + 文案引导槽位/解绑 + 邮件通知机主", async () => {
+  it("新家族指纹冲突（单设备套餐）：403 拒绝下发 + 文案为单设备口径（解绑/多设备套餐）+ 邮件通知机主", async () => {
     const { env } = await setup(makeToken({ plan_id: "plan_pack_5g" }));
     await fetchSub(env, UUID, { ua: "clash-verge/v2.0", ip: "1.2.3.4" });
 
     const res = await fetchSub(env, UUID, { ua: "Shadowrocket/2.2.57", ip: "9.9.9.9" });
     expect(res.status).toBe(403);
     const text = await res.text();
-    expect(text).toContain("设备槽位");
+    expect(text).toContain("仅支持 1 台设备");
     expect(text).toContain("解绑");
     expect(sendMail).toHaveBeenCalledTimes(1);
     const [, to, subject, html] = vi.mocked(sendMail).mock.calls[0];

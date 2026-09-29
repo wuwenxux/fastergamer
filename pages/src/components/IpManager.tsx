@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { api, type TokenView } from "../services/api";
 import { copyText } from "../utils/clipboard";
 
@@ -6,8 +6,10 @@ import { copyText } from "../utils/clipboard";
  * 接入 IP 管理（从 TokenStatus 拆出）：按估算流量展示最近接入 IP，支持封禁/解封，
  * 封禁 30 秒内全节点生效，误封可随时解封。
  * 「待授权接入」区块：设备级防护（单凭证多地并发）自动拦截的新 IP，待机主决策——
- * 「允许」= 迁移流程：自动为新设备创建独立槽位，该 IP 进入 7 天过渡名单（期内可继续
- * 用旧链接，请尽快让新设备导入专属链接）；「保持拒绝」维持拦截并停止提醒。
+ * 「允许」分两条路径：多设备套餐且槽位有余量 → 自动为新设备创建独立槽位
+ * （该 IP 进入 7 天过渡名单，期内可继续用旧链接，请尽快让新设备导入专属链接）；
+ * 单设备套餐/槽位已满 → 不建槽，只临时解封该 IP 7 天（请让旧设备停止连接）。
+ * 「保持拒绝」维持拦截并停止提醒。
  */
 export default function IpManager({
   token,
@@ -17,9 +19,22 @@ export default function IpManager({
   onChange: (t: TokenView) => void;
 }) {
   const [ipActionLoading, setIpActionLoading] = useState<string | null>(null);
-  // 「允许」迁移成功的提示：新槽位名 + 专属订阅链接（可复制）
-  const [migrated, setMigrated] = useState<{ name: string; url: string } | null>(null);
+  // 「允许」成功的提示：slot=true 时为建槽迁移（新槽位名 + 专属订阅链接可复制）；
+  // slot=false 为单设备套餐的临时解封（不建槽，无链接可展示）
+  const [migrated, setMigrated] = useState<{ slot: boolean; name?: string; url?: string } | null>(null);
   const [copiedMigrated, setCopiedMigrated] = useState(false);
+  // 套餐设备上限（token 级 max_devices 优先）：决定「允许」是建槽迁移还是临时解封
+  const [maxDevices, setMaxDevices] = useState(2);
+
+  useEffect(() => {
+    api
+      .plans()
+      .then((plans) => {
+        const plan = plans.find((p) => p.id === token.plan_id);
+        setMaxDevices(token.max_devices ?? plan?.max_devices ?? 2);
+      })
+      .catch(() => {});
+  }, [token.plan_id, token.max_devices]);
 
   // 接入 IP 统计（按估算流量降序，最多展示 10 条）
   const ipStats = Object.entries(token.traffic_by_ip ?? {})
@@ -67,10 +82,12 @@ export default function IpManager({
           device_guard: res.device_guard,
           devices: res.devices,
         });
-        // 迁移流程：展示新槽位专属链接，引导 7 天内让新设备导入
-        if (res.device) {
-          setCopiedMigrated(false);
-          setMigrated({ name: res.device.name, url: api.subUrl(res.device.uuid) });
+        // 建槽迁移：展示新槽位专属链接；临时解封：只提示，无链接
+        setCopiedMigrated(false);
+        if (res.slot_created && res.device) {
+          setMigrated({ slot: true, name: res.device.name, url: api.subUrl(res.device.uuid) });
+        } else {
+          setMigrated({ slot: false });
         }
       } else {
         const res = await api.denyDeviceIp(token.id, ip);
@@ -100,7 +117,7 @@ export default function IpManager({
   ];
 
   const copyMigratedUrl = async () => {
-    if (!migrated) return;
+    if (!migrated?.url) return;
     if (await copyText(migrated.url)) {
       setCopiedMigrated(true);
       setTimeout(() => setCopiedMigrated(false), 1500);
@@ -137,7 +154,7 @@ export default function IpManager({
                   disabled={ipActionLoading === `dg-${ip}`}
                   className="rounded px-2 py-0.5 border border-emerald-500/50 text-emerald-400 text-xs hover:bg-emerald-500/10 transition-colors disabled:opacity-50"
                 >
-                  允许（加入白名单）
+                  {maxDevices > 1 ? "允许（创建独立槽位）" : "允许（临时解封 7 天）"}
                 </button>
                 <button
                   onClick={() => decideGuard(ip, false)}
@@ -150,30 +167,45 @@ export default function IpManager({
             </div>
           ))}
           <p className="text-sm leading-relaxed sm:text-xs text-slate-400">
-            该凭证检测到多个来源 IP 同时在线，新出现的 IP 已被自动拦截。是你本人的新设备就点「允许」——
-            系统会为它创建独立槽位（7 天过渡期内该 IP 可继续用旧链接）；否则点「保持拒绝」，并建议重新生成订阅链接。
+            该凭证检测到多个来源 IP 同时在线，新出现的 IP 已被自动拦截。
+            {maxDevices > 1
+              ? "是你本人的新设备就点「允许」——系统会为它创建独立槽位（7 天过渡期内该 IP 可继续用旧链接）；否则点「保持拒绝」，并建议重新生成订阅链接。"
+              : "你的套餐仅支持 1 台设备使用，订阅链接不可分享。是本人换设备/换网络就点「允许」——临时解封该 IP 7 天，并请让旧设备停止连接；否则点「保持拒绝」。如有多设备需求，请购买支持多设备的套餐。"}
           </p>
         </div>
       )}
       {migrated && (
         <div className="rounded-md border border-emerald-500/40 bg-emerald-500/10 p-2 space-y-1">
-          <div className="text-sm sm:text-xs text-emerald-300">
-            已为新设备创建独立槽位「{migrated.name}」，请在 7 天内让新设备导入专属链接
-          </div>
-          <div className="flex items-center gap-2">
-            <code className="flex-1 truncate rounded bg-slate-900/60 px-2 py-1 text-xs text-slate-300">
-              {migrated.url}
-            </code>
-            <button
-              onClick={copyMigratedUrl}
-              className="shrink-0 rounded px-2 py-0.5 border border-emerald-500/50 text-emerald-400 text-xs hover:bg-emerald-500/10 transition-colors"
-            >
-              {copiedMigrated ? "✓ 已复制" : "复制链接"}
-            </button>
-          </div>
-          <p className="text-sm leading-relaxed sm:text-xs text-slate-400">
-            过渡期结束后若新设备仍用旧链接接入，会被重新拦截；届时再到这里点「允许」即可（需槽位有余量）。
-          </p>
+          {migrated.slot ? (
+            <>
+              <div className="text-sm sm:text-xs text-emerald-300">
+                已为新设备创建独立槽位「{migrated.name}」，请在 7 天内让新设备导入专属链接
+              </div>
+              <div className="flex items-center gap-2">
+                <code className="flex-1 truncate rounded bg-slate-900/60 px-2 py-1 text-xs text-slate-300">
+                  {migrated.url}
+                </code>
+                <button
+                  onClick={copyMigratedUrl}
+                  className="shrink-0 rounded px-2 py-0.5 border border-emerald-500/50 text-emerald-400 text-xs hover:bg-emerald-500/10 transition-colors"
+                >
+                  {copiedMigrated ? "✓ 已复制" : "复制链接"}
+                </button>
+              </div>
+              <p className="text-sm leading-relaxed sm:text-xs text-slate-400">
+                过渡期结束后若新设备仍用旧链接接入，会被重新拦截；届时再到这里点「允许」即可（需槽位有余量）。
+              </p>
+            </>
+          ) : (
+            <>
+              <div className="text-sm sm:text-xs text-emerald-300">
+                已临时解封该 IP（7 天），请让旧设备停止连接
+              </div>
+              <p className="text-sm leading-relaxed sm:text-xs text-slate-400">
+                你的套餐仅支持 1 台设备使用。过渡期后仍有多处同时在线会被再次拦截；如有多设备需求，请购买支持多设备的套餐。
+              </p>
+            </>
+          )}
         </div>
       )}
       {transitions.length > 0 && (

@@ -7,8 +7,8 @@ import type { Env } from "../types";
  * 设备级防护（lib/device-guard.ts，结算链路驱动）：
  * - 换 IP（顺序行为）不触发；单周期并发不触发（记 dg_pending 等下周期确认）
  * - 持续 2 个周期并发 → 只阻断新出现的 IP（老 IP 不动），台账 status=pending，邮件机主
- * - 白名单 IP 跳过；试用/企业 token 不判定
- * - 机主决策：allow（解封+白名单+清台账）/ deny（阻断保持+置 denied）
+ * - 白名单 IP 跳过；企业 token 不判定（试用/流量包 max_devices=1 纳入，邮件为单设备口径）
+ * - 机主决策：allow（多设备有余量→建槽迁移；单设备/槽位满→临时解封 7 天不建槽）/ deny（阻断保持+置 denied）
  * - blocked_ips 满 50 不写 + 记日志；device_guard 行动后 12h 内抑制 notifyIpChange；邮件 12h 节流
  * 邮件 mock 掉；geo 走 KV 缓存（KV.GEO）或 ip-api 批量接口 stub；其余出站请求假成功，不触网。
  */
@@ -31,6 +31,16 @@ const MONTHLY_PLAN = {
   traffic_limit_gb: 20,
 };
 
+// 试用套餐 max_devices=1：device-guard 邮件据此走单设备口径（临时解封，不承诺建槽）
+const TRIAL_PLAN = {
+  id: TRIAL_PLAN_ID,
+  name: "试用",
+  duration_days: 3,
+  price_cny: 0,
+  traffic_limit_gb: 1,
+  max_devices: 1,
+};
+
 const NODE = {
   id: "node-hk-01",
   key: "node-key-1",
@@ -46,7 +56,7 @@ const NODE = {
 const makeEnv = () =>
   baseEnv({
     nodes: [NODE],
-    defaultPlans: [MONTHLY_PLAN],
+    defaultPlans: [MONTHLY_PLAN, TRIAL_PLAN],
     extra: { SITE_URL: "https://fastergamer.click", ADMIN_NOTIFY_EMAIL: "admin@test.com" },
   });
 
@@ -223,6 +233,9 @@ describe("设备级防护：判定与自动阻断", () => {
     expect(to).toBe(t.contact);
     expect(subject).toContain("自动拦截");
     expect(html).toContain(IP_B);
+    // 多设备口径：引导建槽迁移，不出现单设备文案
+    expect(html).toContain("独立槽位");
+    expect(html).not.toContain("仅支持 1 台设备");
     expect(saved.notify_log?.device_guard).toBeGreaterThan(0);
   });
 
@@ -259,21 +272,43 @@ describe("设备级防护：判定与自动阻断", () => {
     expect(readPresence(tokens.store, t.uuid).dg_pending ?? {}).toEqual({});
   });
 
-  it("试用与企业 token 不判定", async () => {
+  it("试用 token（max_devices=1）纳入判定：两周期并发 → 阻断新 IP，邮件为单设备口径（不承诺建槽）", async () => {
     const { env, tokens } = makeEnv();
     stubFetch();
-    const trial = seedToken(tokens.store, { plan_id: TRIAL_PLAN_ID });
+    seedGeo(tokens.store, IP_A);
+    seedGeo(tokens.store, IP_B, "广东", "广州");
+    const t = seedToken(tokens.store, { plan_id: TRIAL_PLAN_ID, traffic_limit_gb: 1 });
+
+    await report(env, t.uuid, { [IP_A]: 2 });
+    await report(env, t.uuid, { [IP_A]: 1, [IP_B]: 2 });
+    advance(CONFIRM_MS);
+    await report(env, t.uuid, { [IP_A]: 1, [IP_B]: 2 });
+
+    const saved = readToken(tokens.store, t.uuid);
+    expect(saved.blocked_ips).toEqual([IP_B]);
+    expect(saved.device_guard?.[IP_B]).toMatchObject({ uuid: t.uuid, status: "pending" });
+    // 邮件文案是单设备口径：明说仅支持 1 台设备、临时解封，不承诺创建槽位
+    expect(sendMail).toHaveBeenCalledTimes(1);
+    const [, to, , html] = vi.mocked(sendMail).mock.calls[0];
+    expect(to).toBe(t.contact);
+    expect(html).toContain("仅支持 1 台设备");
+    expect(html).toContain("临时解封");
+    expect(html).not.toContain("独立槽位");
+  });
+
+  it("企业 token（plan_biz_*）仍不判定：团队共享是设计用途", async () => {
+    const { env, tokens } = makeEnv();
+    stubFetch();
     const biz = seedToken(tokens.store, { plan_id: "plan_biz_yearly", traffic_limit_gb: 0 });
 
-    for (const t of [trial, biz]) {
-      await report(env, t.uuid, { [IP_A]: 2 });
-      await report(env, t.uuid, { [IP_A]: 1, [IP_B]: 2 });
-      advance(CONFIRM_MS);
-      await report(env, t.uuid, { [IP_A]: 1, [IP_B]: 2 });
-      const saved = readToken(tokens.store, t.uuid);
-      expect(saved.blocked_ips ?? []).toEqual([]);
-      expect(saved.device_guard ?? {}).toEqual({});
-    }
+    await report(env, biz.uuid, { [IP_A]: 2 });
+    await report(env, biz.uuid, { [IP_A]: 1, [IP_B]: 2 });
+    advance(CONFIRM_MS);
+    await report(env, biz.uuid, { [IP_A]: 1, [IP_B]: 2 });
+
+    const saved = readToken(tokens.store, biz.uuid);
+    expect(saved.blocked_ips ?? []).toEqual([]);
+    expect(saved.device_guard ?? {}).toEqual({});
     expect(sendMail).not.toHaveBeenCalled();
   });
 
@@ -350,9 +385,10 @@ describe("设备级防护：机主决策端点", () => {
     expect(res.status).toBe(200);
     const body = (await res.json()) as {
       ok: boolean;
-      data: { device: { id: string; uuid: string; name: string }; transition_until: number };
+      data: { slot_created: boolean; device: { id: string; uuid: string; name: string }; transition_until: number };
     };
     // 响应带新槽位（前端引导导入专属链接用）
+    expect(body.data.slot_created).toBe(true);
     expect(body.data.device.name).toBe("新设备 · 广州");
     expect(body.data.transition_until).toBeGreaterThan(Date.now() + 6 * 86_400_000);
 
@@ -395,7 +431,7 @@ describe("设备级防护：机主决策端点", () => {
     expect(saved.device_guard ?? {}).toEqual({});
   });
 
-  it("allow 无余量（槽位已满）：409，阻断与台账保持，不建槽", async () => {
+  it("allow 无余量（槽位已满/单设备套餐）：临时解封不建槽——解封 + 过渡名单 7 天 + 台账清除，返回 200", async () => {
     const { env, tokens } = makeEnv();
     stubFetch();
     // plan_monthly 未设 max_devices → 缺省 2；已有 1 个槽位即满
@@ -405,14 +441,38 @@ describe("设备级防护：机主决策端点", () => {
     const session = seedOwnerSession(tokens.store, t);
 
     const res = await guardAction(env, t.id, "allow", IP_B, session);
-    expect(res.status).toBe(409);
-    const body = (await res.json()) as { ok: boolean; error: string };
-    expect(body.error).toContain("设备数已达上限");
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      ok: boolean;
+      data: { slot_created: boolean; device?: unknown; transition_until: number };
+    };
+    expect(body.data.slot_created).toBe(false);
+    expect(body.data.device).toBeUndefined();
+    expect(body.data.transition_until).toBeGreaterThan(Date.now() + 6 * 86_400_000);
+
     const saved = readToken(tokens.store, t.uuid);
-    expect(saved.blocked_ips).toEqual([IP_B]); // 阻断保持
-    expect(saved.device_guard?.[IP_B]?.status).toBe("pending"); // 台账保持
+    expect(saved.blocked_ips ?? []).toEqual([]); // 已解封
+    expect(saved.device_guard ?? {}).toEqual({}); // 台账清除
     expect(saved.devices).toHaveLength(1); // 没建槽
-    expect(saved.transition_ips ?? {}).toEqual({});
+    expect(saved.transition_ips?.[IP_B]).toBeGreaterThan(Date.now() + 6 * 86_400_000); // 临时解封 7 天
+  });
+
+  it("allow 单设备套餐（试用，max_devices=1）：同样只临时解封不建槽", async () => {
+    const { env, tokens } = makeEnv();
+    stubFetch();
+    const t = seedGuarded(tokens.store, { plan_id: TRIAL_PLAN_ID, traffic_limit_gb: 1 });
+    const session = seedOwnerSession(tokens.store, t);
+
+    const res = await guardAction(env, t.id, "allow", IP_B, session);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { ok: boolean; data: { slot_created: boolean } };
+    expect(body.data.slot_created).toBe(false);
+
+    const saved = readToken(tokens.store, t.uuid);
+    expect(saved.blocked_ips ?? []).toEqual([]);
+    expect(saved.device_guard ?? {}).toEqual({});
+    expect(saved.devices ?? []).toEqual([]);
+    expect(saved.transition_ips?.[IP_B]).toBeGreaterThan(Date.now() + 6 * 86_400_000);
   });
 
   it("allow 建槽失败（KV 写异常）：不残留半状态，阻断与台账保持", async () => {

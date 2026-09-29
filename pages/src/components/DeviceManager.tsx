@@ -124,9 +124,9 @@ export default function DeviceManager({
       </div>
 
       <p className="text-sm leading-relaxed sm:text-xs text-slate-400">
-        主设备使用上方的订阅链接。其他设备请在下方添加，每台设备有独立的订阅链接和流量统计，
-        哪台设备用了多少流量一目了然。多台设备同时在线会在上方「接入 IP 统计」里体现，
-        发现陌生 IP 可在上方封禁。
+        {maxDevices > 1
+          ? "主设备使用上方的订阅链接。其他设备请在下方添加，每台设备有独立的订阅链接和流量统计，哪台设备用了多少流量一目了然。多台设备同时在线会在上方「接入 IP 统计」里体现，发现陌生 IP 可在上方封禁。"
+          : "主设备使用上方的订阅链接。当前套餐仅支持 1 台设备使用，订阅链接不可分享；多处同时在线会被系统自动拦截，可在上方「接入 IP 统计」里处理。"}
       </p>
 
       {token.share_suspended_at && (
@@ -257,7 +257,9 @@ export default function DeviceManager({
         </form>
       ) : (
         <p className="text-sm sm:text-xs text-amber-400">
-          已达设备上限，解绑不用的设备后才能添加新设备。
+          {maxDevices > 1
+            ? "已达设备上限，解绑不用的设备后才能添加新设备。"
+            : "当前套餐仅支持 1 台设备使用，订阅链接不可分享；如有多设备需求，请购买支持多设备的套餐。"}
         </p>
       )}
 

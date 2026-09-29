@@ -1,16 +1,21 @@
 /**
- * 设备级防护：单凭证多地并发时自动阻断新接入 IP（付费 token 专用）。
+ * 设备级防护：单凭证多地并发时自动阻断新接入 IP（个人 token 含试用/流量包）。
  *
  * 规则（与用户确认）：
  * - 换 IP 直接用（旧 IP 下线、新 IP 上线是顺序行为）：不触发任何判定；
  * - 同凭证并发 ≥2 个来源 IP，且持续 2 个结算周期确认后（吸收 WiFi↔5G 切换的瞬时双 IP），
  *   只自动阻断「新出现的 IP」（有历史基线的老 IP 不动，老设备不断线），邮件通知机主决策；
- * - 机主决策（管理页操作）：「允许」= 迁移流程——自动为新设备创建独立槽位（共用链接只能是
- *   过渡，长期必须一台设备一条凭证），被拦 IP 解封并记入该凭证的迁移过渡名单（7 天），
- *   引导新设备导入专属订阅链接；槽位已满则 409，阻断保持。「拒绝」= 保持阻断并停止重复提醒。
+ * - 机主决策（管理页操作）：「允许」按有效设备数分两种——
+ *   多设备套餐有余量：迁移流程，自动为新设备创建独立槽位（共用链接只能是过渡，
+ *   长期必须一台设备一条凭证），被拦 IP 解封记入涉事凭证的迁移过渡名单（7 天）；
+ *   单设备套餐（试用/流量包，max_devices=1）或槽位已满：没有建槽空间，「允许」只做
+ *   临时解封——解封该 IP + 记 7 天过渡名单 + 删台账，不创建槽位。到期仍并发活跃会被
+ *   重新拦截（对共享的持续压力）；合法换机用户只要旧设备下线就不会再触发（并发 <2 不判定）。
+ *   「拒绝」= 保持阻断并停止重复提醒。
  *
- * 适用范围：付费个人 token（!isTrialPlan && !plan_biz*，流量包含在内——付费且最易被分享）；
- * 企业套餐排除（团队共享是设计用途），免费用户不做任何设备管理（免登录原则）。
+ * 适用范围：全部个人 token（试用 plan_trial、流量包 plan_pack_*、付费个人套餐——
+ * 试用/流量包 max_devices=1 恰是链接共享重灾区，纳入判定）；
+ * 企业套餐（plan_biz_*）排除（团队共享是设计用途）。
  *
  * 关键设计决策：
  * 1. 阻断复用 token.blocked_ips 链路（authpush 快照 → agent iptables FG-BLOCK 链 DROP），
@@ -32,8 +37,7 @@
  * 由调用方（applyTrafficDelta 通知段末尾的集中比对）键级合并收走。
  * 用户操作端点（允许/拒绝）走整 JSON 写先例（tokens.ts 设备改名同款，低频无并发问题）。
  */
-import { isTrialPlan } from "../../../../shared/types";
-import type { Device, DeviceGuardEntry, Presence, Token } from "../../../../shared/types";
+import type { Device, DeviceGuardEntry, Plan, Presence, Token } from "../../../../shared/types";
 import { sendMail, shouldSendEmail } from "./email-aliyun";
 import { getPlans, getTokenByUuid, saveDeviceIndex, saveToken, saveTokenValue } from "./kv";
 import { lookupIpGeo, shell } from "./risk-notify";
@@ -109,14 +113,17 @@ const geoDisplayOf = async (env: Env, ip: string): Promise<string | undefined> =
   return g ? [g.country, g.region, g.city, g.isp].filter(Boolean).join(" / ") : undefined;
 };
 
-/** 机主通知邮件：新 IP 已自动阻断，引导到管理页决策（允许=建槽迁移 / 保持拒绝）。节流 12h */
+/** 机主通知邮件：新 IP 已自动阻断，引导到管理页决策。节流 12h。
+ *  文案按有效设备数分支：单设备套餐（试用/流量包，maxDevices=1）没有建槽空间，
+ *  「允许」只是临时解封，文案必须明说「仅支持 1 台设备、链接不可分享」，别承诺建槽 */
 async function sendDeviceGuardEmail(
   env: Env,
   token: Token,
   deviceName: string,
   blocked: { ip: string; geo?: string }[],
   prevIps: string[],
-  now: number
+  now: number,
+  maxDevices: number
 ): Promise<void> {
   if (!shouldSendEmail(token.contact)) return;
   token.notify_log = token.notify_log ?? {};
@@ -126,6 +133,14 @@ async function sendDeviceGuardEmail(
   const newListHtml = blocked.map((b) => `<li>${fmt(b.ip, b.geo)}</li>`).join("\n       ");
   const newListText = blocked.map((b) => fmt(b.ip, b.geo)).join("；");
   const manageUrl = `${siteUrl(env)}/tokens?id=${token.id}`;
+  const decisionHtml =
+    maxDevices <= 1
+      ? `<p><strong>你的套餐仅支持 1 台设备使用，订阅链接不可分享。</strong>上面列出的新 IP 已被拦截：如果是你本人换设备/换网络，请到管理页点「允许」临时解封（7 天），并让旧设备停止连接——过渡期结束后仍多处同时在线会被再次拦截。如非本人使用，请重新生成订阅链接（旧链接立即失效）。如有多设备需求，请购买支持多设备的套餐。</p>`
+      : `<p><strong>请到管理页做出决定：</strong>如果是你本人的新设备，点「允许」——系统会为它创建一个独立槽位（7 天过渡期内该 IP 可继续用旧链接，请尽快让新设备导入专属链接）；如果不是本人使用，点「保持拒绝」，并建议重新生成订阅链接（旧链接立即失效）。</p>`;
+  const decisionText =
+    maxDevices <= 1
+      ? `你的套餐仅支持 1 台设备使用，订阅链接不可分享。新 IP 已拦截：本人换设备请到管理页点「允许」临时解封（7 天）并让旧设备停止连接，过渡期后仍多处在线会被再次拦截；非本人使用请重新生成订阅链接（旧链接立即失效）。多设备需求请购买多设备套餐。管理页：${manageUrl}`
+      : `请到管理页决定：本人新设备点「允许」（自动创建独立槽位，7 天过渡期内请让新设备导入专属链接），非本人点「保持拒绝」并建议重新生成订阅链接：${manageUrl}`;
   const { subject, html, text } = shell(
     env,
     "账号安全提醒：检测到异常接入，已自动拦截新 IP",
@@ -134,10 +149,10 @@ async function sendDeviceGuardEmail(
        ${newListHtml}
      </ul>
      <p>其中原有接入 ${oldLines.join("、") || "（无）"} 未受影响；<strong>上面列出的新 IP 已被自动拦截</strong>，无法再连接任何节点。</p>
-     <p><strong>请到管理页做出决定：</strong>如果是你本人的新设备，点「允许」——系统会为它创建一个独立槽位（7 天过渡期内该 IP 可继续用旧链接，请尽快让新设备导入专属链接）；如果不是本人使用，点「保持拒绝」，并建议重新生成订阅链接（旧链接立即失效）。</p>
+     ${decisionHtml}
      <p style="color:#64748b;font-size:13px;">注意：拦截对 IP 全局生效，若该 IP 是多人共享的出口网络（如公司/校园网），同网络的其他设备也会无法连接，「允许」即可恢复。</p>
      <p style="color:#64748b;font-size:13px;">管理页：<a href="${manageUrl}" style="color:#0ea5e9;">${manageUrl}</a></p>`,
-    `检测到你的 Token（${token.id}）的「${deviceName}」凭证在多个来源 IP 同时在线，新 IP ${newListText} 已被自动拦截。\n请到管理页决定：本人新设备点「允许」（自动创建独立槽位，7 天过渡期内请让新设备导入专属链接），非本人点「保持拒绝」并建议重新生成订阅链接：${manageUrl}\n注意：拦截对 IP 全局生效，共享出口网络下同网络设备会一并无法连接。`
+    `检测到你的 Token（${token.id}）的「${deviceName}」凭证在多个来源 IP 同时在线，新 IP ${newListText} 已被自动拦截。\n${decisionText}\n注意：拦截对 IP 全局生效，共享出口网络下同网络设备会一并无法连接。`
   );
   const res = await sendMail(env, token.contact, subject, html, text);
   if (res.ok) {
@@ -167,10 +182,12 @@ export async function evaluateDeviceConns(
   currIps: string[],
   prevIps: string[],
   presence: Presence,
+  plansById: Map<string, Plan>,
   now: number
 ): Promise<boolean> {
-  // 范围门控：只覆盖付费个人 token；试用（免登录无管理入口）与企业（团队共享是设计用途）不判定
-  if (isTrialPlan(token.plan_id) || token.plan_id.startsWith("plan_biz")) return false;
+  // 范围门控：覆盖全部个人 token（试用/流量包 max_devices=1，正是链接共享重灾区）；
+  // 企业套餐（plan_biz_*）不判定——团队共享是设计用途
+  if (token.plan_id.startsWith("plan_biz")) return false;
 
   // 迁移过渡核查（判定前先做，不受并发数门控影响）：该凭证 transition_ips 里已到期的 IP——
   // 仍在本周期活跃集合中：移出名单并按「新 IP」重新走 pending→确认→阻断（长期共用必须迁移）；
@@ -244,31 +261,38 @@ export async function evaluateDeviceConns(
   clearPending();
   if (!written) return false; // 封禁列表已满：已记日志，不发邮件（没有实际阻断）
 
-  // 邮件机主决策（await 在写库之后；notify_log 原地改由调用方集中比对收走）
+  // 邮件机主决策（await 在写库之后；notify_log 原地改由调用方集中比对收走）。
+  // 文案按有效设备数分支：单设备套餐不承诺建槽（口径与 allowGuardedIp/加设备端点一致）
   const deviceName = device?.name ?? "主设备";
-  await sendDeviceGuardEmail(env, token, deviceName, blocked, prevIps, now);
+  const maxDevices = token.max_devices ?? plansById.get(token.plan_id)?.max_devices ?? 2;
+  await sendDeviceGuardEmail(env, token, deviceName, blocked, prevIps, now, maxDevices);
   return true;
 }
 
-/** 机主「允许」的结果：not_found = 该 IP 不在台账；slots_full = 设备数已达上限 */
+/** 机主「允许」的结果：not_found = 该 IP 不在台账 */
 export interface GuardAllowResult {
   ok: boolean;
-  reason?: "not_found" | "slots_full";
-  /** 为新设备自动创建的槽位（ok 时必有） */
+  reason?: "not_found";
+  /** true = 为新设备创建了独立槽位（多设备套餐有余量）；
+   *  false = 单设备套餐/槽位已满：只临时解封 7 天，不建槽 */
+  slot_created?: boolean;
+  /** 新创建的槽位（slot_created=true 时必有） */
   device?: Device;
-  /** 迁移过渡截止时间（unix ms，ok 时必有） */
+  /** 迁移/临时解封过渡截止时间（unix ms，ok 时必有） */
   transition_until?: number;
 }
 
 /**
- * 机主决策「允许」= 迁移流程：共用链接只能是过渡，长期必须一台设备一条凭证。
- * 1. 有效设备数余量检查（token.max_devices ?? 套餐 ?? 2，已用 = 1 + devices.length），
- *    无余量返回 slots_full（调用方 409），阻断与台账都不动；
- * 2. 自动创建新设备槽位（名字默认「新设备 · {城市}」，城市取台账 geo），先建槽成功再解封——
- *    建槽失败（抛错）时 blocked_ips / 台账保持原样，不残留半状态；
- * 3. 被拦 IP 解封但不进永久白名单：记入涉事凭证的 transition_ips（7 天），
- *    到期仍活跃由 evaluateDeviceConns 重新走 pending→确认→阻断；
- * 4. 台账条目删除。整 JSON 写（tokens.ts 设备改名同款先例：用户操作低频，无并发覆盖问题）。
+ * 机主决策「允许」。按有效设备数分两条路径（共用链接只能是过渡）：
+ * 1. 多设备套餐有余量 = 迁移流程：自动创建新设备槽位（名字默认「新设备 · {城市}」，
+ *    城市取台账 geo），先建槽成功再解封——建槽失败（抛错）时 blocked_ips / 台账保持原样，
+ *    不残留半状态；
+ * 2. 单设备套餐（试用/流量包，max_devices=1）或槽位已满 = 临时解封：不建槽（没有槽位空间，
+ *    409 是死路——合法用户旧手机在家挂着、新手机被拦将无任何自助救济），只解封该 IP +
+ *    记入涉事凭证 transition_ips（7 天）+ 删台账。到期仍并发活跃会被 evaluateDeviceConns
+ *    重新拦截（对共享的持续压力）；合法换机用户旧设备下线后并发 <2 不再触发。
+ * 两条路径都不进永久白名单；台账条目删除。整 JSON 写（tokens.ts 设备改名同款先例：
+ * 用户操作低频，无并发覆盖问题）。
  */
 export const allowGuardedIp = async (env: Env, token: Token, ip: string): Promise<GuardAllowResult> => {
   const entry = token.device_guard?.[ip];
@@ -278,24 +302,25 @@ export const allowGuardedIp = async (env: Env, token: Token, ip: string): Promis
   const plan = plans.find((p) => p.id === token.plan_id);
   // token 级 max_devices 优先（管理员售后单独放宽），否则按套餐，缺省 2（与加设备端点同口径）
   const maxDevices = token.max_devices ?? plan?.max_devices ?? 2;
-  if (1 + (token.devices?.length ?? 0) >= maxDevices) {
-    return { ok: false, reason: "slots_full" };
+  const hasRoom = 1 + (token.devices?.length ?? 0) < maxDevices;
+
+  let device: Device | undefined;
+  if (hasRoom) {
+    // 先建槽：槽位名取台账归属地城市（geo 格式「国家 / 省 / 市 / 运营商」），无则「新设备」
+    const city = entry.geo?.split("/").map((s) => s.trim())[2];
+    device = {
+      id: `dv_${crypto.randomUUID().replace(/-/g, "").slice(0, 12)}`,
+      uuid: crypto.randomUUID(),
+      name: city ? `新设备 · ${city}` : "新设备",
+      traffic_used_gb: 0,
+      created_at: Date.now(),
+    };
+    token.devices = [...(token.devices ?? []), device];
+    await saveToken(env, token);
+    await saveDeviceIndex(env, device.uuid, token.id);
   }
 
-  // 先建槽：槽位名取台账归属地城市（geo 格式「国家 / 省 / 市 / 运营商」），无则「新设备」
-  const city = entry.geo?.split("/").map((s) => s.trim())[2];
-  const device: Device = {
-    id: `dv_${crypto.randomUUID().replace(/-/g, "").slice(0, 12)}`,
-    uuid: crypto.randomUUID(),
-    name: city ? `新设备 · ${city}` : "新设备",
-    traffic_used_gb: 0,
-    created_at: Date.now(),
-  };
-  token.devices = [...(token.devices ?? []), device];
-  await saveToken(env, token);
-  await saveDeviceIndex(env, device.uuid, token.id);
-
-  // 建槽成功后再解封：被拦 IP 记入涉事凭证的迁移过渡名单（7 天），不进永久白名单
+  // （建槽成功后/临时解封路径）解封：被拦 IP 记入涉事凭证的过渡名单（7 天），不进永久白名单
   token.blocked_ips = (token.blocked_ips ?? []).filter((x) => x !== ip);
   if (token.blocked_ips.length === 0) delete token.blocked_ips;
   const until = Date.now() + TRANSITION_MS;
@@ -308,7 +333,7 @@ export const allowGuardedIp = async (env: Env, token: Token, ip: string): Promis
   delete token.device_guard![ip];
   if (Object.keys(token.device_guard!).length === 0) delete token.device_guard;
   await saveToken(env, token);
-  return { ok: true, device, transition_until: until };
+  return { ok: true, slot_created: hasRoom, device, transition_until: until };
 };
 
 /**

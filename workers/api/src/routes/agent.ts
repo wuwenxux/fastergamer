@@ -358,7 +358,7 @@ async function applyTrafficDelta(
   // 设备级防护：单凭证多地并发持续 2 周期确认后自动阻断新 IP（lib/device-guard.ts）。
   // 不能收进上方 changedIps 分支——持续并发时 IP 无变更（prev=curr）也要推进确认；
   // dg_pending 原地维护，补一次「有变化才写」；notify_log 原地改由下方集中比对收走
-  const dgBlocked = await evaluateDeviceConns(env, token, device, uuid, currIps, prevIps, presence, now);
+  const dgBlocked = await evaluateDeviceConns(env, token, device, uuid, currIps, prevIps, presence, plansById, now);
   await savePresenceIfChanged(env, token.uuid, presenceBase, presence);
   if (dgBlocked) authChanged = true; // 新增阻断：推送全节点刷新，blocked_ips 随快照下发
   // 客户要求只保留交易/安全类邮件：月度配额 80% 预警（month80）与预支提醒（borrow_N）已下线
@@ -416,8 +416,10 @@ agentRoutes.post("/traffic", async (c) => {
   const billing = body?.billing === "downlink" ? "downlink" : "sum";
   const now = Date.now();
 
-  // 月度配额与共享检测需要套餐定义，循环前一次性加载
-  const hasWork = Object.keys(stats).length + Object.keys(settled).length + Object.keys(shareConns).length > 0;
+  // 月度配额、共享检测与设备级防护（邮件文案按有效设备数分支）需要套餐定义，循环前一次性加载；
+  // ipConns 兜底循环也会跑 device-guard，故 ip_conns 也算 hasWork
+  const hasWork =
+    Object.keys(stats).length + Object.keys(settled).length + Object.keys(shareConns).length + Object.keys(ipConns).length > 0;
   const plans = hasWork ? await getPlans(c.env) : [];
   const plansById = new Map(plans.map((p) => [p.id, p]));
 
@@ -504,7 +506,7 @@ agentRoutes.post("/traffic", async (c) => {
     // 设备级防护（同 applyTrafficDelta 挂载）：有连接但无流量增量的 uuid 同样是并发证据。
     // 该循环无通知段集中比对，notify_log 变更这里自行键级合并收走
     const dgNotifyBase = JSON.stringify(found.token.notify_log ?? {});
-    if (await evaluateDeviceConns(c.env, found.token, found.device, uuid, currIps, prevIps, presence, now)) {
+    if (await evaluateDeviceConns(c.env, found.token, found.device, uuid, currIps, prevIps, presence, plansById, now)) {
       authChanged = true;
     }
     await savePresenceIfChanged(c.env, found.token.uuid, presenceBase, presence);

@@ -188,9 +188,10 @@ export const api = {
       headers: sessionHeaders(),
     }),
 
-  /** 设备级防护：机主确认「允许」= 迁移流程（自动建新槽位 + 解封 + 7 天过渡名单）；需本人登录，否则 401；槽位满 409 */
+  /** 设备级防护：机主确认「允许」——多设备套餐有余量则自动建新槽位（slot_created=true）；
+   *  单设备套餐/槽位满则只临时解封 7 天（slot_created=false）。需本人登录，否则 401 */
   allowDeviceIp: (tokenId: string, ip: string) =>
-    request<{ blocked_ips: string[]; device_guard: Record<string, DeviceGuardEntry>; devices: Device[]; device?: Device; transition_until?: number }>(
+    request<{ blocked_ips: string[]; device_guard: Record<string, DeviceGuardEntry>; devices: Device[]; slot_created?: boolean; device?: Device; transition_until?: number }>(
       `/api/tokens/${tokenId}/device-guard/allow`,
       {
         method: "POST",
