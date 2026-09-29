@@ -4,8 +4,10 @@
  * 定位是「给站长的参考稿」——结果写回 ticket.ai_draft，仅管理端展示，
  * 采纳与否由人决定，绝不自动发给用户。
  *
- * 降级原则：AI 绑定缺失 / 调用超时 / 返回解析失败，一律返回 null 静默跳过，
- * 绝不影响工单创建主链路。
+ * 降级原则：AI 绑定缺失 / 调用超时 / 返回解析失败，一律静默降级（每个失败分支
+ * 打日志便于排障），绝不影响工单创建主链路。两个入口：
+ * - generateTicketDraft：null 语义，工单创建 waitUntil 用
+ * - generateTicketDraftVerbose：判别联合带失败原因，管理端手动补草稿端点用
  */
 import type { Ticket, TicketAiDraft } from "../../../../shared/types";
 import { listTickets } from "./kv";
@@ -97,12 +99,23 @@ const parseDraft = (raw: string, fallbackCategory: string): TicketAiDraft | null
   return { category, draft: parsed.draft.trim().slice(0, 300), at: Date.now() };
 };
 
+/** 草稿生成结果判别联合：失败带机器可读原因，管理端手动补草稿端点据此返回 502 */
+export type TicketDraftResult =
+  | { ok: true; draft: TicketAiDraft }
+  | { ok: false; error: string };
+
+const fail = (ticketId: string, reason: string, detail = ""): TicketDraftResult => {
+  console.log(`[ticket-ai] draft skipped for ${ticketId}: ${reason}${detail ? ` — ${detail}` : ""}`);
+  return { ok: false, error: reason };
+};
+
 /**
- * 生成工单回复草稿。任何失败（无绑定/超时/异常/解析失败）都返回 null，
- * 调用方据此静默跳过——AI 只是辅助，绝不能成为工单链路的故障点。
+ * 生成工单回复草稿（带失败原因）。任何失败都不抛异常：
+ * 绑定缺失/超时/异常/解析失败分别打日志并返回 {ok:false, error}。
+ * AI 只是辅助，绝不能成为工单链路的故障点。
  */
-export const generateTicketDraft = async (env: Env, ticket: Ticket): Promise<TicketAiDraft | null> => {
-  if (!env.AI) return null;
+export const generateTicketDraftVerbose = async (env: Env, ticket: Ticket): Promise<TicketDraftResult> => {
+  if (!env.AI) return fail(ticket.id, "no-binding");
   try {
     const faqContext = await loadFaqContext(env);
     const messages = buildMessages(ticket, faqContext);
@@ -114,10 +127,23 @@ export const generateTicketDraft = async (env: Env, ticket: Ticket): Promise<Tic
       ),
     ]);
     const raw = typeof result?.response === "string" ? result.response : "";
-    if (!raw) return null;
-    return parseDraft(raw, ticket.category ?? "other");
+    if (!raw) {
+      return fail(ticket.id, "empty-response", JSON.stringify(result ?? null).slice(0, 200));
+    }
+    const draft = parseDraft(raw, ticket.category ?? "other");
+    if (!draft) return fail(ticket.id, "parse-failed", raw.slice(0, 200));
+    return { ok: true, draft };
   } catch (e) {
-    console.log(`[ticket-ai] draft skipped for ${ticket.id}: ${(e as Error).message}`);
-    return null;
+    const msg = (e as Error).message;
+    return fail(ticket.id, msg === "AI timeout" ? "timeout" : "exception", msg);
   }
+};
+
+/**
+ * 生成工单回复草稿（null 语义版，工单创建路径用）：失败一律返回 null 静默跳过。
+ * 失败原因日志已在 verbose 版里打全，这里无需重复记录。
+ */
+export const generateTicketDraft = async (env: Env, ticket: Ticket): Promise<TicketAiDraft | null> => {
+  const r = await generateTicketDraftVerbose(env, ticket);
+  return r.ok ? r.draft : null;
 };

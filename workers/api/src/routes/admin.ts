@@ -7,6 +7,7 @@ import { notifyAdmin, sendServiceEmail } from "../lib/risk-notify";
 import { sendMail, shouldSendEmail } from "../lib/email-aliyun";
 import { fulfillOrder } from "../lib/issue-token";
 import { buildGeoStats } from "../lib/geo-stats";
+import { generateTicketDraftVerbose } from "../lib/ticket-ai";
 import { escapeHtml } from "../lib/escape-html";
 import type { Env } from "../types";
 import { adminPlansRoutes } from "./admin/plans";
@@ -226,4 +227,20 @@ adminRoutes.post("/tickets/:id/close", async (c) => {
   ticket.status = "closed";
   await saveTicket(c.env, ticket);
   return c.json({ ok: true, data: { id: ticket.id, status: ticket.status } });
+});
+
+/**
+ * POST /api/admin/tickets/:id/ai-draft —— 手动为已存在工单生成/重新生成 AI 草稿。
+ * 用途有二：生产验证（创建路径静默降级时排查具体失败原因）、老工单补草稿。
+ * 同步等待 AI 结果：成功写回 ai_draft 并返回；失败 502 带原因（no-binding / empty-response /
+ * parse-failed / timeout / exception），与创建路径的静默降级不同——这里是显式操作，站长需要知道为什么。
+ */
+adminRoutes.post("/tickets/:id/ai-draft", async (c) => {
+  const ticket = await getTicket(c.env, c.req.param("id"));
+  if (!ticket) return c.json({ ok: false, error: "ticket not found" }, 404);
+  const r = await generateTicketDraftVerbose(c.env, ticket);
+  if (!r.ok) return c.json({ ok: false, error: `AI 草稿生成失败：${r.error}` }, 502);
+  ticket.ai_draft = r.draft;
+  await saveTicket(c.env, ticket);
+  return c.json({ ok: true, data: { id: ticket.id, ai_draft: r.draft } });
 });

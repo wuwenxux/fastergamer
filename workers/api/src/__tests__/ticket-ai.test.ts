@@ -64,9 +64,27 @@ describe("generateTicketDraft", () => {
     expect(draft!.draft).toContain("切换日本节点");
   });
 
-  it("返回非法 JSON → null", async () => {
-    const run = vi.fn(async () => ({ response: "抱歉，我无法回答这个问题" }));
+  it("返回非法 JSON → null + parse-failed 日志（附 raw 截断）", async () => {
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    const raw = "抱歉，我无法回答这个问题";
+    const run = vi.fn(async () => ({ response: raw }));
     expect(await generateTicketDraft(envWithAi(run), TICKET)).toBeNull();
+    const line = logSpy.mock.calls.map((c) => String(c[0])).find((l) => l.includes("[ticket-ai]"));
+    expect(line).toContain("parse-failed");
+    expect(line).toContain(TICKET.id);
+    expect(line).toContain(raw.slice(0, 50));
+    logSpy.mockRestore();
+  });
+
+  it("响应缺 response 字段 → null + empty-response 日志（附 result 截断）", async () => {
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    const run = vi.fn(async () => ({ unexpected: "shape" }));
+    expect(await generateTicketDraft(envWithAi(run), TICKET)).toBeNull();
+    const line = logSpy.mock.calls.map((c) => String(c[0])).find((l) => l.includes("[ticket-ai]"));
+    expect(line).toContain("empty-response");
+    expect(line).toContain(TICKET.id);
+    expect(line).toContain("unexpected");
+    logSpy.mockRestore();
   });
 
   it("JSON 缺 draft 字段 → null", async () => {
@@ -157,5 +175,81 @@ describe("POST /api/feedback 挂载点", () => {
     await Promise.all(pending);
     const t = await readFirstTicket(env);
     expect(t.ai_draft).toBeUndefined();
+  });
+});
+
+describe("POST /api/admin/tickets/:id/ai-draft（手动补草稿端点）", () => {
+  const ADMIN_KEY = "test-admin-key";
+
+  const seedTicket = (env: Env, over: Partial<Ticket> = {}): Ticket => {
+    const t = { ...TICKET, ...over };
+    void env.TICKETS.put(KV.TICKET + t.id, JSON.stringify(t));
+    return t;
+  };
+
+  const postAiDraft = (env: Env, id: string, key?: string) =>
+    worker.fetch(
+      new Request(`https://api.test/api/admin/tickets/${id}/ai-draft`, {
+        method: "POST",
+        headers: key ? { "x-admin-key": key } : {},
+      }),
+      env,
+      collectCtx().ctx
+    );
+
+  it("无 x-admin-key → 401", async () => {
+    const { env } = makeEnv({ adminKey: ADMIN_KEY });
+    seedTicket(env);
+    const res = await postAiDraft(env, TICKET.id);
+    expect(res.status).toBe(401);
+  });
+
+  it("工单不存在 → 404", async () => {
+    const { env } = makeEnv({ adminKey: ADMIN_KEY });
+    const res = await postAiDraft(env, "fb_nonexist", ADMIN_KEY);
+    expect(res.status).toBe(404);
+  });
+
+  it("AI 正常 → 写回 ai_draft 并返回草稿", async () => {
+    const run = vi.fn(async () => ({
+      response: '{"category":"speed","draft":"晚高峰建议切日本节点，延迟更低。"}',
+    }));
+    const env = makeEnv({ adminKey: ADMIN_KEY, extra: { AI: { run } } }).env;
+    seedTicket(env);
+    const res = await postAiDraft(env, TICKET.id, ADMIN_KEY);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { ok: boolean; data: { id: string; ai_draft: { category: string; draft: string } } };
+    expect(body.ok).toBe(true);
+    expect(body.data.ai_draft.category).toBe("speed");
+    // 落库验证
+    const stored = JSON.parse((await env.TICKETS.get(KV.TICKET + TICKET.id))!) as Ticket;
+    expect(stored.ai_draft?.draft).toContain("日本节点");
+  });
+
+  it("AI 失败 → 502 带原因，工单不被改动", async () => {
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    const run = vi.fn(async () => {
+      throw new Error("model unavailable");
+    });
+    const env = makeEnv({ adminKey: ADMIN_KEY, extra: { AI: { run } } }).env;
+    seedTicket(env);
+    const res = await postAiDraft(env, TICKET.id, ADMIN_KEY);
+    expect(res.status).toBe(502);
+    const body = (await res.json()) as { ok: boolean; error: string };
+    expect(body.ok).toBe(false);
+    expect(body.error).toContain("exception");
+    const stored = JSON.parse((await env.TICKETS.get(KV.TICKET + TICKET.id))!) as Ticket;
+    expect(stored.ai_draft).toBeUndefined();
+    logSpy.mockRestore();
+  });
+
+  it("无 AI 绑定 → 502 no-binding", async () => {
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    const { env } = makeEnv({ adminKey: ADMIN_KEY });
+    seedTicket(env);
+    const res = await postAiDraft(env, TICKET.id, ADMIN_KEY);
+    expect(res.status).toBe(502);
+    expect(((await res.json()) as { error: string }).error).toContain("no-binding");
+    logSpy.mockRestore();
   });
 });
