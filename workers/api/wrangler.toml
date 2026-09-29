@@ -44,7 +44,7 @@ bindings = [{ name = "SHARE_GUARD", class_name = "ShareGuardDO" }]
 
 [[migrations]]
 tag = "v1"
-new_classes = ["ShareGuardDO"]
+new_sqlite_classes = ["ShareGuardDO"]
 
 # --- 环境变量 ---
 [vars]
