@@ -441,6 +441,13 @@ export interface Node {
   probe_at?: number;
 }
 
+/** 工单对话条目：用户邮件补充（from:"user"，Email Routing 收件解析）与管理员回复（from:"admin"）按时间排列 */
+export interface TicketThreadItem {
+  from: "user" | "admin";
+  text: string;
+  at: number;
+}
+
 /** 用户反馈工单 —— 安装/使用问题反馈与邮件解答 */
 export interface Ticket {
   /** 短 ID，如 fb_a1b2c3 */
@@ -456,6 +463,9 @@ export interface Ticket {
   status: "open" | "replied" | "closed";
   /** 管理员回复内容 */
   reply?: string;
+  /** 往返对话记录（邮件闭环：用户直接回复工单邮件追加 from:"user" 条目；管理员回复同步追加 from:"admin"）。
+   *  老工单无此字段；reply/replied_at 语义不变（thread 只是追加式会话流水） */
+  thread?: TicketThreadItem[];
   /** 是否沉淀到公开 FAQ（需已回复） */
   publish_faq?: boolean;
   created_at: number;
@@ -525,4 +535,5 @@ export const KV = {
   SUBMON: "submon:", // submon:{contact} → { last_paid_at }（连续包月资格：上次支付成功时间，存 TOKENS namespace）
   SUBYEAR: "subyear:", // subyear:{contact} → { last_paid_at }（连续包年资格：上次支付成功时间，存 TOKENS namespace）
   YRSTD: "yrstd:", // yrstd:{contact} → { last_paid_at }（年付套餐 ¥120 连续续费奖励判定，存 TOKENS namespace）
+  MAILIN: "mailin:", // mailin:{sha1(from邮箱)} → 计数（工单邮件追加节流，1h 窗口，存 TICKETS namespace）
 } as const;

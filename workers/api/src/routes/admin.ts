@@ -195,12 +195,13 @@ adminRoutes.post("/tickets/:id/reply", async (c) => {
   const res = await sendMail(
     c.env,
     ticket.contact,
-    `【GameBoost】你的反馈已有回复（${ticket.id}）`,
+    // 主题带 [工单 {id}] 标签：用户直接回复本邮件可串线回工单（Email Routing 闭环）
+    `[工单 ${ticket.id}]【GameBoost】你的反馈已有回复`,
     `<p>你好，你之前反馈的问题已有回复：</p>
      <div style="padding:16px;background:#f0f9ff;border-radius:8px;margin:16px 0;">${escapeHtml(reply).replace(/\n/g, "<br>")}</div>
      <p style="color:#64748b;font-size:13px;">你的原始问题：${escapeHtml(ticket.message.slice(0, 500))}</p>
-     <p style="color:#64748b;font-size:13px;">如问题仍未解决，可直接回复本邮件继续咨询。</p>`,
-    `你之前反馈的问题已有回复：\n\n${reply}\n\n---\n你的原始问题：${ticket.message.slice(0, 500)}\n如问题仍未解决，可直接回复本邮件继续咨询。`
+     <p style="color:#64748b;font-size:13px;">如问题仍未解决，直接回复本邮件即可继续补充（请勿修改主题）。</p>`,
+    `你之前反馈的问题已有回复：\n\n${reply}\n\n---\n你的原始问题：${ticket.message.slice(0, 500)}\n如问题仍未解决，直接回复本邮件即可继续补充（请勿修改主题）。`
   );
   if (!res.ok) {
     return c.json({ ok: false, error: `邮件发送失败：${res.error}` }, 502);
@@ -208,6 +209,8 @@ adminRoutes.post("/tickets/:id/reply", async (c) => {
 
   ticket.reply = reply;
   ticket.replied_at = Date.now();
+  // 管理员回复同步进对话流水（与用户邮件补充的 from:"user" 条目组成完整 thread）
+  ticket.thread = [...(ticket.thread ?? []), { from: "admin", text: reply, at: ticket.replied_at }];
   ticket.status = body?.close === false ? "replied" : "closed";
   if (body?.publish_faq) ticket.publish_faq = true;
   await saveTicket(c.env, ticket);

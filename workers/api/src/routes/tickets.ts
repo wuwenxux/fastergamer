@@ -60,10 +60,12 @@ ticketsRoutes.post("/feedback", async (c) => {
       await sendMail(
         c.env,
         contact,
-        "【GameBoost】我们已收到你的问题反馈",
+        // 主题带 [工单 {id}] 标签：用户直接回复本邮件时客户端保留标签，Email Routing 收件侧据此串线
+        `[工单 ${ticket.id}]【GameBoost】我们已收到你的问题反馈`,
         `<p>你好，我们已收到你的问题反馈（工单号 <strong>${ticket.id}</strong>），客服会尽快通过本邮箱回复你。</p>
-       <p style="color:#64748b;font-size:13px;">你的问题：${escapeHtml(message.slice(0, 500))}</p>`,
-        `我们已收到你的问题反馈（工单号 ${ticket.id}），客服会尽快通过本邮箱回复你。\n\n你的问题：${message.slice(0, 500)}`
+       <p style="color:#64748b;font-size:13px;">你的问题：${escapeHtml(message.slice(0, 500))}</p>
+       <p style="color:#64748b;font-size:13px;">直接回复本邮件即可继续补充问题（请勿修改主题）。</p>`,
+        `我们已收到你的问题反馈（工单号 ${ticket.id}），客服会尽快通过本邮箱回复你。\n\n你的问题：${message.slice(0, 500)}\n\n直接回复本邮件即可继续补充问题（请勿修改主题）。`
       );
     })().catch(() => {})
   );

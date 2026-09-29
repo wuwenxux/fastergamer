@@ -143,7 +143,7 @@ curl -s -X POST https://fastergamer.click/api/admin/seed \
 - 节点月配额：节点可配 `monthly_budget_gb`（PUT /api/admin/nodes/:id），按自然月记账；80% 告警，100% 自动从订阅与同步摘除，跨月自动恢复
 - 节点失联告警：`scripts/probe-nodes.sh`（cron 每 5 分钟）从国内探测各节点 /ping，连续 2 次失败邮件告警，恢复后自动通知
 - 数据生命周期：expired/revoked 满 90 天的 token 由 notify-scan 自动清除（含 id 索引与全部设备索引，试用 token 同样适用）；closed 满 90 天的工单同样清理（已沉淀 FAQ 的保留）；付费 token 过期后不可重新激活，需购买新套餐；试用 token 可失效被清理，但试用标记 trial:{email} 永存——邮箱永是续用凭证，首次付费仍享转正赠送（见上条）
-- 反馈渠道：用户在「帮助反馈」页提交问题（邮箱必填）→ 管理员通过 `/api/admin/tickets` 查看、`reply` 接口回复（自动发邮件）→ 有价值的问答标 `publish_faq` 沉淀到 FAQ 给新用户自助查阅
+- 反馈渠道：用户在「帮助反馈」页提交问题（邮箱必填）→ 管理员通过 `/api/admin/tickets` 查看、`reply` 接口回复（自动发邮件）→ 有价值的问答标 `publish_faq` 沉淀到 FAQ 给新用户自助查阅。工单邮件闭环：回执/回复邮件主题带 `[工单 fb_xxx]` 标签，用户**直接回复邮件**即可继续补充——CF Email Routing（子域名 tickets.fastergamer.click 收件，路由到 Worker email handler，见 workers/api/src/email.ts）解析来信追加进工单对话 thread（校验 From = 工单联系人、closed 拒收、剥引用段、每邮箱 1h 限 10 条），管理员回复也同步进 thread
 - WebSocket 隧道仅支持 TCP，不支持 UDP/QUIC（游戏 UDP 类应用不可用）
 - 支付通道（易支付 pay.neil.asia）已彻底断开：下单/回调代码删除，交易状态机保留。当前过渡方案为人工收款码：POST /api/orders 与升级补差价落 pending 订单，支付页展示站长收款码（pages/public/pay/），用户点「我已支付」（/notify-paid，6h 节流）邮件通知站长，站长确认收款（/api/admin/orders/:id/paid → fulfillOrder）自动发货；EPAY_* 密钥已从生产删除，退款接口随之失效（lib/epay.ts 代码保留，重新配置密钥可恢复）
 - 请确保服务的运营符合你所在地区的法律法规
