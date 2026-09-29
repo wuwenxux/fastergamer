@@ -6,6 +6,7 @@
 import type { Token } from "../../../../shared/types";
 import { getPlans, hasPlanBonus, markPlanBonusGranted, saveToken } from "./kv";
 import { currentMonthKey } from "./nodes";
+import { track } from "./telemetry";
 import type { Env } from "../types";
 
 export const activatePaidToken = async (env: Env, token: Token): Promise<Token> => {
@@ -38,5 +39,7 @@ export const activatePaidToken = async (env: Env, token: Token): Promise<Token> 
     activated.month_key = currentMonthKey();
   }
   await saveToken(env, activated);
+  // 遥测：激活事件（来源区分试用转正/直接购买，转化率分析用）
+  track(env, "token_activated", [token.plan_id, token.trial_converted ? "trial_converted" : "direct"], [], token.id);
   return activated;
 };

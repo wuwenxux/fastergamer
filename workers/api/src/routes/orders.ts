@@ -10,6 +10,7 @@ import { newOrderId } from "../lib/ids";
 import { fulfillOrder } from "../lib/issue-token";
 import { availableDiscount, orderDiscount, recordReferral } from "../lib/referral";
 import { notifyAdmin } from "../lib/risk-notify";
+import { track } from "../lib/telemetry";
 import type { Env } from "../types";
 
 export const ordersRoutes = new Hono<{ Bindings: Env }>();
@@ -95,6 +96,9 @@ ordersRoutes.post("/", async (c) => {
     }
   }
   const payable = order.payable_cny ?? plan.price_cny;
+
+  // 遥测：下单事件（含 0 元直发单；金额为抵扣后实付）
+  track(c.env, "order_created", [plan.id, "manual"], [payable], order.id);
 
   // 减免后实付 0 元：无需支付，直接发放 token
   if (payable <= 0) {

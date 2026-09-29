@@ -17,6 +17,7 @@ import { getAuthSnapshot, TRAFFIC_GRACE_MS } from "../lib/authsnapshot";
 import { pushAuthRefresh } from "../lib/authpush";
 import { evaluateShareConns } from "../lib/share-guard";
 import { DG_NOTIFY_THROTTLE_MS, evaluateDeviceConns } from "../lib/device-guard";
+import { track } from "../lib/telemetry";
 import type { Env } from "../types";
 
 export const agentRoutes = new Hono<{ Bindings: Env }>();
@@ -211,6 +212,9 @@ async function applyTrafficDelta(
   }
   token.traffic_total_by_node[nodeKey] =
     (token.traffic_total_by_node[nodeKey] ?? token.traffic_by_node[nodeKey] ?? 0) + delta;
+
+  // 遥测：结算增量（delta=0 的口径切换周期不计，避免零值噪音）
+  if (delta > 0) track(env, "traffic_settled", [token.plan_id, node.id], [delta], token.id);
 
   // 流量暴增检测的窗口记账（纯计算）：1h 窗口内新增超阈值（3GB）时返回 true，
   // 触发即吊销（下方写库段并入同一 patch），写库后由 sendSpikeAlert 通知站长

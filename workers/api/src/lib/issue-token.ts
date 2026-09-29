@@ -15,6 +15,7 @@ import { rewardReferrerOnPayment, consumeCredit } from "./referral";
 import { pushAuthRefresh } from "./authpush";
 import { unlockShareSuspendedByContact } from "./share-guard";
 import { siteUrl } from "./site-url";
+import { track } from "./telemetry";
 import type { Env } from "../types";
 
 /** 只需要 waitUntil，用最小结构类型兼容 Hono 与 workers-types 的 ExecutionContext 差异 */
@@ -57,6 +58,9 @@ export const issueTokenForOrder = async (
     const marker = await getTrialMarker(env, email);
     if ((trials.length > 0 || marker) && !marker?.converted_at) {
       token.bonus_ms = (token.bonus_ms ?? 0) + TRIAL_CONVERT_BONUS_MS;
+      // 标记该 token 来自试用转正（激活遥测的「是否试用转正」口径用；
+      // bonus_ms 还混有年付续费奖励，不能据它反推转正）
+      token.trial_converted = true;
       if (marker) await markTrialConverted(env, email);
     }
   }
@@ -261,6 +265,8 @@ export const fulfillOrder = async (
     // 续费/升级自动解锁：同 contact 名下被共享检测暂停的 token 恢复服务
     await unlockShareSuspendedByContact(env, order.contact);
     ctx.waitUntil(pushAuthRefresh(env)); // 配额/状态变化立即同步各节点
+    // 遥测：发货成功（升级路径）
+    track(env, "order_fulfilled", [plan.id], [order.payable_cny ?? plan.price_cny], order.id);
     return { token: upgraded, already: false };
   }
 
@@ -318,6 +324,8 @@ export const fulfillOrder = async (
     );
   }
 
+  // 遥测：发货成功（新购路径，已过对账——竞态 loser 在上方 return，不会重复计数）
+  track(env, "order_fulfilled", [plan.id], [order.payable_cny ?? plan.price_cny], order.id);
   return { token, already: false };
 };
 

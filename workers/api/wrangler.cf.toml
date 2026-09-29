@@ -45,6 +45,11 @@ id = "67c4b5949d7144c095935bc1ea669eba"
 binding = "TICKETS"
 id = "f52063f8c3bf4c538ce26030fa2411db"
 
+# --- Analytics Engine（遥测数据集，观测用途；数据点清单见 src/lib/telemetry.ts） ---
+[[analytics_engine_datasets]]
+binding = "TELEMETRY"
+dataset = "fastergamer_telemetry"
+
 # --- 环境变量 ---
 # ADMIN_KEY / ALIYUN_* / ADMIN_NOTIFY_EMAIL / TURNSTILE_SECRET_KEY 均为 secret，
 # 用 wrangler secret put --config wrangler.cf.toml 管理，不入库

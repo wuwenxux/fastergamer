@@ -208,6 +208,8 @@ export interface Token {
   expires_at?: number;
   /** 体验转正并入的剩余时长（毫秒）：下单时从同邮箱激活中的体验 token 折算，激活计时一次性加进 expires_at */
   bonus_ms?: number;
+  /** 该 token 来自试用转正（发货时标记）；bonus_ms 混有年付续费奖励不能反推转正，遥测/分析用独立标记 */
+  trial_converted?: boolean;
   /** 上次重新生成订阅链接的时间（unix 毫秒），仅作记录，不限次数 */
   rotated_at?: number;
 }

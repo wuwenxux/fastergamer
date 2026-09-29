@@ -28,6 +28,11 @@ id = "b5d4e8c33a9f421d8e7b0f1234567890"
 binding = "TICKETS"
 id = "c6e5f9d44b0a5320e9f8c1a234567890"
 
+# --- Analytics Engine（遥测，观测用途；miniflare 本地 mock 成 no-op）---
+[[analytics_engine_datasets]]
+binding = "TELEMETRY"
+dataset = "fastergamer_telemetry"
+
 # --- 环境变量 ---
 [vars]
 # 本地开发环境标记：CORS 放行 localhost 来源（生产 wrangler.cf.toml 为 production，不放行）

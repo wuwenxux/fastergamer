@@ -37,4 +37,6 @@ export interface Env {
   TURNSTILE_SECRET_KEY?: string;
   /** Turnstile 站点密钥（公开，经 /api/config 下发给前端，避免打进构建产物） */
   TURNSTILE_SITE_KEY?: string;
+  /** Analytics Engine 遥测（可选绑定，观测用途；缺失时 track() 静默跳过，见 lib/telemetry.ts） */
+  TELEMETRY?: AnalyticsEngineDataset;
 }

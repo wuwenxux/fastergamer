@@ -8,7 +8,8 @@ import { getNodes, isBudgetExhausted } from "../lib/nodes";
 import { ispFromAsn, orderNodesForIsp } from "../lib/isp";
 import { pushAuthRefresh } from "../lib/authpush";
 import { qrPng } from "../lib/qr-png";
-import { checkSubBinding, notifyBindConflict, recordBinding } from "../lib/sub-lock";
+import { checkSubBinding, clientFamily, notifyBindConflict, recordBinding } from "../lib/sub-lock";
+import { track } from "../lib/telemetry";
 import type { Env } from "../types";
 
 export const subRoutes = new Hono<{ Bindings: Env }>();
@@ -170,6 +171,9 @@ subRoutes.get("/", async (c) => {
   const nodeIps = await resolveNodeIps(orderedNodes.filter((n) => n.active).map((n) => n.host));
   const regions = parseRegions(c.env.CLASH_REGIONS);
   const format = detectSubFormat(c.req.query("format"), ua);
+
+  // 遥测：订阅成功下发（403 设备锁拒绝的在上方 return，不计入）
+  track(c.env, "sub_fetched", [format, clientFamily(ua)], [], uuid);
 
   // 设备锁绑定建立/刷新 + 记录订阅拉取的客户端 UA / 来源 IP（客户端类型识别，
   // 管理页「订阅客户端」展示）；两者写同一 presence 键，必须串行——recordSubFetch
