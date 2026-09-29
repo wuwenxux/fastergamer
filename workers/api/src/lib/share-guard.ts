@@ -88,7 +88,8 @@ export async function sendShareWarnEmail(
      <p>如果是你本人在多台设备上使用，可以忽略本邮件；否则说明你的订阅链接可能已被转发共享。</p>
      <p><strong>如非本人使用，请尽快登录管理页重置订阅链接</strong>（旧链接立即失效）。<strong>7 天内再次检测到异常并发，服务将被暂停。</strong></p>
      <p style="color:#64748b;font-size:13px;">管理页：<a href="${manageUrl}" style="color:#0ea5e9;">${manageUrl}</a></p>`,
-    `检测到你的 Token（${token.id}）当前有 ${conns} 个并发连接，超出套餐允许的设备规模（${limit}）。\n如非本人使用，请尽快登录管理页重置订阅链接（旧链接立即失效）：${manageUrl}\n7 天内再次检测到异常并发，服务将被暂停。`
+    `检测到你的 Token（${token.id}）当前有 ${conns} 个并发连接，超出套餐允许的设备规模（${limit}）。\n如非本人使用，请尽快登录管理页重置订阅链接（旧链接立即失效）：${manageUrl}\n7 天内再次检测到异常并发，服务将被暂停。`,
+    { kind: "account" }
   );
   if (res.ok) {
     token.notify_log.share_warn = Date.now();
@@ -113,7 +114,8 @@ export async function sendShareSuspendEmail(env: Env, token: Token): Promise<boo
     `<p>你好，你的 Token（<strong>${token.id}</strong>）因持续检测到异常并发连接（疑似订阅链接被多人共享），服务已暂停。</p>
      <p><strong>续费任意套餐后服务自动恢复</strong>，订阅链接与已配置的设备无需变动。如有疑问请联系站长。</p>
      <p style="color:#64748b;font-size:13px;">续费入口：<a href="${site}" style="color:#0ea5e9;">${site}</a></p>`,
-    `你的 Token（${token.id}）因持续检测到异常并发连接（疑似订阅链接被多人共享），服务已暂停。\n续费任意套餐后服务自动恢复，订阅链接与设备无需变动。如有疑问请联系站长。\n续费入口：${site}`
+    `你的 Token（${token.id}）因持续检测到异常并发连接（疑似订阅链接被多人共享），服务已暂停。\n续费任意套餐后服务自动恢复，订阅链接与设备无需变动。如有疑问请联系站长。\n续费入口：${site}`,
+    { kind: "account" }
   );
   if (res.ok) {
     token.notify_log.share_suspended = Date.now();

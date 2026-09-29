@@ -187,7 +187,8 @@ export const upgradeTokenForOrder = async (
         `<p>你好，你的 Token（<strong>${token.id}</strong>）已升级为 <strong>${plan.name}</strong>。</p>
          ${bonusHtml}
          <p>新有效期至 <strong>${new Date(token.expires_at!).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" })}</strong>，流量额度已重置为满额。订阅链接与设备保持不变，无需重新配置。</p>`,
-        `你的 Token（${token.id}）已升级为 ${plan.name}。${bonusText}\n新有效期至 ${new Date(token.expires_at!).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" })}，流量已重置为满额。订阅链接与设备不变。`
+        `你的 Token（${token.id}）已升级为 ${plan.name}。${bonusText}\n新有效期至 ${new Date(token.expires_at!).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" })}，流量已重置为满额。订阅链接与设备不变。`,
+        { kind: "order" }
       )
     );
   }

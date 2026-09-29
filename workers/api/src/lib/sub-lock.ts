@@ -198,7 +198,7 @@ export async function notifyBindConflict(
      <p>如果都不是本人操作，说明订阅链接已泄露：解绑后请重新生成订阅链接（旧链接立即失效）。</p>`,
     `检测到你的 Token（${token.id}）的订阅链接（${info.subLabel}）被陌生客户端（${fpLabel}，IP ${info.ip ?? "未知"}，${when}）尝试拉取，已拒绝下发。\n该链接已绑定 ${boundLabel}。换手机/换客户端：登录管理页「订阅客户端」卡片解除订阅绑定后重新导入。你的套餐仅支持 1 台设备；多设备需求请购买多设备套餐。\n如非本人操作：解绑后重新生成订阅链接（旧链接立即失效）。\n管理页：${manageUrl}`
   );
-  const res = await sendMail(env, token.contact, subject, html, text);
+  const res = await sendMail(env, token.contact, subject, html, text, { kind: "account" });
   if (res.ok) {
     token.notify_log.sub_bind_conflict = info.now;
     await mergeTokenSettlement(env, token.uuid, { notify_log: token.notify_log });

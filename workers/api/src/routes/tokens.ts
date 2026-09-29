@@ -169,7 +169,7 @@ tokensRoutes.post("/recover", async (c) => {
       ${lines.map((l) => `<p style="margin:12px 0;font-family:monospace;">${l.label}</p>`).join("")}
       <p style="color:#64748b;font-size:13px;">如果这不是你本人的操作，请忽略本邮件。</p>`.trim();
     const text = `与该邮箱关联的 Token：\n\n${lines.map((l) => l.label).join("\n")}\n\n如非本人操作请忽略。`;
-    const res = await sendMail(c.env, contact, "【GameBoost】你的 Token 列表", html, text);
+    const res = await sendMail(c.env, contact, "【GameBoost】你的 Token 列表", html, text, { kind: "account" });
     if (!res.ok) console.error(`[recover] mail failed for ${maskEmail(contact)}: ${res.error}`);
   }
   return c.json({ ok: true });

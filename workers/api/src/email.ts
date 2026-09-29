@@ -1,14 +1,14 @@
 /**
  * Cloudflare Email Routing 工单邮件闭环（接收侧）。
  *
- * 背景：工单外发邮件优先走 CF Email Service（发件人即收件地址 support@tickets.
+ * 背景：工单外发邮件优先走 CF Email Service（发件人即收件地址 support@
  * fastergamer.click，见 lib/email-cf.ts；无 EMAIL binding 时回退阿里云 DM）。用户直接
- * 回复邮件时，CF Email Routing（子域名 tickets.fastergamer.click，绝不碰主域 MX）
+ * 回复邮件时，CF Email Routing（主域 fastergamer.click 的 support@ 规则）
  * 把邮件路由到本 Worker 的 email handler，解析后追加进工单对话（Ticket.thread）。
  *
  * 串线：外发工单邮件主题统一带 [工单 fb_xxx] 标签，用户回复时邮件客户端保留该标签，
  * handler 用正则 /fb_[0-9a-z]{4,}/i 从 Subject 提取工单号；To 的 plus-addressing
- * （support+fb_xxx@tickets...）作为兜底。提取不到工单号的来信不入库，只通知站长。
+ * （support+fb_xxx@fastergamer.click）作为兜底。提取不到工单号的来信不入库，只通知站长。
  *
  * 安全口径：
  * - 来信 From 必须等于 ticket.contact（防陌生人往别人的工单里灌内容）；
@@ -99,7 +99,8 @@ export async function handleEmail(
             `<p>收到一封无法关联工单的来信（主题不含 [工单 fb_xxx] 标签）：</p>
              <p>发件人：${escapeHtml(from || "未知")}<br>主题：${escapeHtml(subject || "（无）")}</p>
              <p style="color:#64748b;font-size:13px;">正文摘要：${escapeHtml(cleanReplyText(parsed.text ?? "").slice(0, 500)) || "（空）"}</p>`,
-            `收到无法关联工单的来信：\n发件人：${from || "未知"}\n主题：${subject || "（无）"}\n正文摘要：${cleanReplyText(parsed.text ?? "").slice(0, 500) || "（空）"}`
+            `收到无法关联工单的来信：\n发件人：${from || "未知"}\n主题：${subject || "（无）"}\n正文摘要：${cleanReplyText(parsed.text ?? "").slice(0, 500) || "（空）"}`,
+            { kind: "notify" }
           ).catch(() => {})
         );
       }
@@ -169,7 +170,8 @@ export async function handleEmail(
             `<p><strong>${escapeHtml(ticket.contact)}</strong> 通过邮件补充了工单 ${ticket.id}：</p>
              <div style="padding:16px;background:#f0f9ff;border-radius:8px;margin:16px 0;">${escapeHtml(text).replace(/\n/g, "<br>")}</div>
              <p style="color:#64748b;font-size:13px;">回复：管理页工单标签，或 POST /api/admin/tickets/${ticket.id}/reply</p>`,
-            `${ticket.contact} 通过邮件补充了工单 ${ticket.id}：\n\n${text}\n\n回复：管理页工单标签，或 POST /api/admin/tickets/${ticket.id}/reply`
+            `${ticket.contact} 通过邮件补充了工单 ${ticket.id}：\n\n${text}\n\n回复：管理页工单标签，或 POST /api/admin/tickets/${ticket.id}/reply`,
+            { kind: "notify" }
           );
           if (!notice.ok) console.error(`[email-ticket] 站长通知发送失败 ${ticket.id}: ${notice.error}`);
         }

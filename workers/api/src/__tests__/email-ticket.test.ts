@@ -49,7 +49,7 @@ const readTicket = (store: Map<string, string>): Ticket =>
 const mime = (opts: { from?: string; to?: string; subject?: string; body?: string } = {}) =>
   [
     `From: ${opts.from ?? `用户 <${USER}>`}`,
-    `To: ${opts.to ?? "support@tickets.fastergamer.click"}`,
+    `To: ${opts.to ?? "support@fastergamer.click"}`,
     `Subject: ${opts.subject ?? `Re: [工单 ${TICKET_ID}]【GameBoost】你的反馈已有回复`}`,
     "Content-Type: text/plain; charset=utf-8",
     "",
@@ -58,7 +58,7 @@ const mime = (opts: { from?: string; to?: string; subject?: string; body?: strin
   ].join("\r\n");
 
 /** 构造 ForwardableEmailMessage 形状的最小假对象 */
-const makeMessage = (raw: string, from = USER, to = "support@tickets.fastergamer.click") =>
+const makeMessage = (raw: string, from = USER, to = "support@fastergamer.click") =>
   ({
     from,
     to,
@@ -105,15 +105,15 @@ describe("Email Routing 工单闭环：来信追加", () => {
     expect(htmlAdmin).toContain("换了节点还是不行");
   });
 
-  it("Subject 无标签时走 To plus 段兜底（support+fb_xxx@tickets...）", async () => {
+  it("Subject 无标签时走 To plus 段兜底（support+fb_xxx@fastergamer.click）", async () => {
     const { env, tickets } = makeEnv({ extra: { ADMIN_NOTIFY_EMAIL: ADMIN } });
     seedTicket(tickets.store);
 
     await receive(
       env,
-      mime({ subject: "Re: 你的反馈已有回复", to: `support+${TICKET_ID}@tickets.fastergamer.click` }),
+      mime({ subject: "Re: 你的反馈已有回复", to: `support+${TICKET_ID}@fastergamer.click` }),
       USER,
-      `support+${TICKET_ID}@tickets.fastergamer.click`
+      `support+${TICKET_ID}@fastergamer.click`
     );
 
     expect(readTicket(tickets.store).thread).toHaveLength(1);

@@ -131,7 +131,7 @@ export async function evaluateTravel(
      <p style="color:#64748b;font-size:13px;">本提醒每 7 天最多发送一次，服务不会因此中断。</p>`,
     `检测到你的 Token（${token.id}）的接入位置在 ${timeDesc}内从 ${oldBaseline.locationKey} 跳变到 ${newKey}，超出正常出行可达速度。\n如非本人使用，请尽快登录管理页重新生成订阅链接（旧链接立即失效）：${manageUrl}\n本提醒每 7 天最多一封，服务不会因此中断。`
   );
-  const res = await sendMail(env, token.contact, subject, html, text);
+  const res = await sendMail(env, token.contact, subject, html, text, { kind: "account" });
   if (res.ok) {
     token.notify_log.travel_warn = now;
     await mergeTokenSettlement(env, token.uuid, { notify_log: token.notify_log });

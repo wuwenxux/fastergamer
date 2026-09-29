@@ -154,7 +154,7 @@ async function sendDeviceGuardEmail(
      <p style="color:#64748b;font-size:13px;">管理页：<a href="${manageUrl}" style="color:#0ea5e9;">${manageUrl}</a></p>`,
     `检测到你的 Token（${token.id}）的「${deviceName}」凭证在多个来源 IP 同时在线，新 IP ${newListText} 已被自动拦截。\n${decisionText}\n注意：拦截对 IP 全局生效，共享出口网络下同网络设备会一并无法连接。`
   );
-  const res = await sendMail(env, token.contact, subject, html, text);
+  const res = await sendMail(env, token.contact, subject, html, text, { kind: "account" });
   if (res.ok) {
     token.notify_log.device_guard = now;
     // 用户接入 IP 属敏感信息，日志只记条数不记具体 IP

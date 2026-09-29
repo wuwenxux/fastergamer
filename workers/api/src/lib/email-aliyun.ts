@@ -1,5 +1,5 @@
 import type { Env } from "../types";
-import { sendMailCf } from "./email-cf";
+import { cfSenderFor, sendMailCf } from "./email-cf";
 import { maskEmail } from "./mask-email";
 import { track } from "./telemetry";
 import { siteUrl } from "./site-url";
@@ -79,18 +79,17 @@ export async function sendMail(
 }
 
 /**
- * 通道分发：工单域邮件（kind:"ticket"）且 EMAIL binding 在 → CF Email Service
- * （发件人 support@tickets.fastergamer.click，回信直接进 Email Routing 闭环）；
- * 其余（token 凭证/magic/站长通知等）一律阿里云 DM。
+ * 通道分发：带已知 kind（ticket/order/account/magic/notify，见 lib/email-cf.ts 四桶
+ * 发件人规划）且 EMAIL binding 在 → CF Email Service；kind 缺失/未知保守走阿里云 DM。
  * binding 只能运行时探测，所以通道在发送一刻才定（consumer 消费时/sync 直发时），
- * 入队消息里不写死通道。CF 通道失败回退阿里云 DM——工单邮件不能因单通道故障丢失
+ * 入队消息里不写死通道。CF 通道失败回退阿里云 DM——邮件不能因单通道故障丢失
  * （重复风险可接受：CF 实际已发出但报错返回的窗口极小）。
  */
 export async function sendMailDispatch(
   env: Env,
   msg: MailMessage
 ): Promise<{ ok: boolean; id?: string; error?: string }> {
-  if (msg.kind === "ticket" && env.EMAIL) {
+  if (cfSenderFor(msg.kind) && env.EMAIL) {
     const res = await sendMailCf(env, msg);
     if (res.ok) return res;
     console.error("[email] CF Email Service 失败，回退阿里云 DM:", res.error);
@@ -128,8 +127,8 @@ async function sendMailDirect(
     Subject: subject,
     HtmlBody: html,
     TextBody: text,
-    // true = 回信发到控制台配置的回信地址。工单邮件已优先走 CF Email Service（见
-    // sendMailDispatch），DM 只是回退通道；回信地址统一指向 support@tickets.fastergamer.click
+    // true = 回信发到控制台配置的回信地址。已知 kind 的邮件优先走 CF Email Service（见
+    // sendMailDispatch），DM 只是回退通道；回信地址统一指向 support@fastergamer.click
     ReplyToAddress: "true",
   };
 
@@ -341,5 +340,5 @@ ${ctx.expiresAt ? `有效期至：${new Date(ctx.expiresAt).toLocaleString("zh-C
 ${ctx.upsellNote ? `\n${ctx.upsellNote}` : ""}
   `.trim();
 
-  return sendMail(env, ctx.contact, subject, html, text);
+  return sendMail(env, ctx.contact, subject, html, text, { kind: "order" });
 }

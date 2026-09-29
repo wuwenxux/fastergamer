@@ -66,7 +66,7 @@ ticketsRoutes.post("/feedback", async (c) => {
        <p style="color:#64748b;font-size:13px;">你的问题：${escapeHtml(message.slice(0, 500))}</p>
        <p style="color:#64748b;font-size:13px;">直接回复本邮件即可继续补充问题（请勿修改主题）。</p>`,
         `我们已收到你的问题反馈（工单号 ${ticket.id}），客服会尽快通过本邮箱回复你。\n\n你的问题：${message.slice(0, 500)}\n\n直接回复本邮件即可继续补充问题（请勿修改主题）。`,
-        // kind:ticket = 工单域邮件，生产走 CF Email Service（support@tickets...，回信直接进闭环）
+        // kind:ticket = 工单域邮件，生产走 CF Email Service（support@fastergamer.click，回信直接进闭环）
         { kind: "ticket" }
       );
     })().catch(() => {})
@@ -83,7 +83,8 @@ ticketsRoutes.post("/feedback", async (c) => {
        <p>${escapeHtml(message)}</p>
        ${ticket.token_id ? `<p>Token：${ticket.token_id}</p>` : ""}
        <p style="color:#64748b;font-size:13px;">回复：POST ${site}/api/admin/tickets/${ticket.id}/reply</p>`,
-        `${contact} 提交了反馈（${ticket.id}，分类 ${category}）：\n${message}\n${ticket.token_id ? `Token：${ticket.token_id}\n` : ""}回复接口：POST ${site}/api/admin/tickets/${ticket.id}/reply`
+        `${contact} 提交了反馈（${ticket.id}，分类 ${category}）：\n${message}\n${ticket.token_id ? `Token：${ticket.token_id}\n` : ""}回复接口：POST ${site}/api/admin/tickets/${ticket.id}/reply`,
+        { kind: "notify" }
       ).catch(() => {})
     );
   }

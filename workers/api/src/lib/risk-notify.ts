@@ -69,7 +69,7 @@ async function notifyOnce(
   token.notify_log = token.notify_log ?? {};
   if (token.notify_log[kind]) return false;
   const { subject, html, text } = shell(env, title, bodyHtml, bodyText);
-  const res = await sendMail(env, token.contact, subject, html, text);
+  const res = await sendMail(env, token.contact, subject, html, text, { kind: "account" });
   if (res.ok) {
     token.notify_log[kind] = Date.now();
     console.log(`[risk] notified ${token.id} kind=${kind}`);
@@ -116,7 +116,7 @@ export async function sendTrialConvertEmail(env: Env, token: Token): Promise<boo
     `你的免费体验 Token（${token.id}）的额度已用完或已到期。\n你的邮箱会保留：随时可以用它付费继续用；90 天内原 Token 可直接充值，订阅链接和设备不变。\n现在开通付费套餐，额外赠送一个月（30 天）。${priceListText}\n按钮链接 72 小时内有效；过期后可到找回页面重新获取：${siteUrl(env)}/recover`,
     { url: magicUrl, label: "免登录开通，送一个月" }
   );
-  const res = await sendMail(env, token.contact!, subject, html, text);
+  const res = await sendMail(env, token.contact!, subject, html, text, { kind: "account" });
   if (res.ok) {
     token.notify_log.trial_convert = Date.now();
     console.log(`[risk] notified ${token.id} kind=trial_convert`);
@@ -148,7 +148,7 @@ export async function sendExpire24hEmail(env: Env, token: Token): Promise<boolea
     `你的 Token（${token.id}）将于 ${expiry}（北京时间）到期。\n到期后服务自动停止；免登录进入管理页即可续费，订阅链接和设备不受影响。\n按钮链接 72 小时内有效；过期后可到找回页面重新获取：${siteUrl(env)}/recover`,
     { url: magicUrl, label: "免登录续费" }
   );
-  const res = await sendMail(env, token.contact!, subject, html, text);
+  const res = await sendMail(env, token.contact!, subject, html, text, { kind: "account" });
   if (res.ok) {
     token.notify_log.expire_24h = Date.now();
     console.log(`[risk] notified ${token.id} kind=expire_24h`);
@@ -176,7 +176,7 @@ export async function sendServiceEmail(
     url: magicUrl,
     label: "免登录查看我的 Token",
   });
-  const res = await sendMail(env, token.contact!, subject, html, text);
+  const res = await sendMail(env, token.contact!, subject, html, text, { kind: "account" });
   if (!res.ok) console.error(`[risk] service mail failed ${token.id}: ${res.error}`);
   return res.ok;
 }
@@ -371,7 +371,7 @@ export async function notifyIpChange(
      <p><strong>你可以自己处理：</strong>登录 <a href="${manageUrl}">Token 管理页</a>，在「接入 IP 统计」里点击陌生 IP 旁的「封禁」，该 IP 将在 30 秒内被所有节点拒绝连接；误封可随时解除。</p>`,
     `检测到你的 Token（${token.id}）正在多个不同地点同时在线：${listText}。\n如果是你本人多地/多设备使用可忽略；否则订阅可能泄露。\n处理：登录管理页 ${manageUrl} 在「接入 IP 统计」中封禁陌生 IP（30 秒内全节点生效，可随时解除）。`
   );
-  const res = await sendMail(env, token.contact, subject, html, text);
+  const res = await sendMail(env, token.contact, subject, html, text, { kind: "account" });
   if (res.ok) {
     token.notify_log["ip_change"] = now;
     // 用户接入 IP 属敏感信息，日志只记条数不记具体 IP
@@ -392,7 +392,7 @@ export async function notifyAdmin(
     console.log(`[admin-alert] ${title}（未配置 ADMIN_NOTIFY_EMAIL，仅记日志）`);
     return;
   }
-  const res = await sendMail(env, env.ADMIN_NOTIFY_EMAIL, `【GameBoost 告警】${title}`, bodyHtml, bodyText);
+  const res = await sendMail(env, env.ADMIN_NOTIFY_EMAIL, `【GameBoost 告警】${title}`, bodyHtml, bodyText, { kind: "notify" });
   if (!res.ok) console.error(`[admin-alert] mail failed: ${title}: ${res.error}`);
 }
 
