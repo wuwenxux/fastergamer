@@ -52,6 +52,8 @@ describe("generateTicketDraft", () => {
     // prompt 注入站点事实与工单内容
     const prompt = JSON.stringify(run.mock.calls[0][1]);
     expect(prompt).toContain("VLESS");
+    // 设备管理入口必须写进事实清单（曾因缺失导致 AI 误答"不支持解绑设备"）
+    expect(prompt).toContain("解绑");
     expect(prompt).toContain(TICKET.message);
   });
 
