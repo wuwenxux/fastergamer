@@ -352,16 +352,18 @@ const isOrderLocked = async (env: Env, orderId: string): Promise<boolean> => {
 };
 
 /**
- * 发货后对账：cacheTtl:0 绕过边缘缓存重读订单，核对 token_id 是不是本次发的。
+ * 发货后对账：用最小允许的 cacheTtl 压低边缘缓存重读订单，核对 token_id 是不是本次发的。
  * 指向别的 token 且那个 token 真实存在 → 返回胜者的 token（本次是竞态 loser）；
  * 读不到订单或胜者 token 不存在（对账不可判定）→ 返回 null，按正常发货处理，避免误删。
+ * （曾用 cacheTtl:0 绕过缓存；CF 已收紧下限为 30s，0 会直接 400 报错。竞态对账的读
+ *  发生在同请求刚写入之后，该 PoP 边缘缓存基本不可能已有旧值，30s 下限不影响正确性。）
  */
 const reconcileFulfillment = async (
   env: Env,
   orderId: string,
   issued: Token
 ): Promise<Token | null> => {
-  const raw = await env.ORDERS.get(KV.ORDER + orderId, { cacheTtl: 0 });
+  const raw = await env.ORDERS.get(KV.ORDER + orderId, { cacheTtl: 30 });
   if (!raw) return null;
   const fresh = JSON.parse(raw) as Order;
   if (!fresh.token_id || fresh.token_id === issued.id) return null;
