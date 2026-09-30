@@ -1,0 +1,8 @@
+User-agent: *
+Allow: /
+Disallow: /admin
+Disallow: /tokens
+Disallow: /orders
+Disallow: /auth
+
+Sitemap: https://fastergamer.click/sitemap.xml
