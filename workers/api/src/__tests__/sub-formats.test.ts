@@ -155,7 +155,7 @@ describe("订阅格式路由（format 参数）", () => {
       const info = res.headers.get("subscription-userinfo");
       expect(info).toContain(`download=${Math.round(12.5 * 1024 ** 3)}`);
       expect(info).toContain(`total=${Math.round(100 * 1024 ** 3)}`);
-      expect(res.headers.get("profile-update-interval")).toBe("24");
+      expect(res.headers.get("profile-update-interval")).toBe("720");
     }
   });
 });

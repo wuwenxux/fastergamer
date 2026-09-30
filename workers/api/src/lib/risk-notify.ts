@@ -10,6 +10,8 @@
  *   - trial_convert（试用转化）——试用到期/流量耗尽时发一次性的同 token 充值引导；
  *   - expire_24h（付费 token 到期前 24h 续费提醒，带免登录续费按钮，notify-scan 触发）；
  *   - exhausted / multi_device / 多地并发在线等安全类提醒。
+ * 节点变更通知（node_change.*）不在本文件，见 lib/node-change-notify.ts
+ * （复用本文件的 shell 模板与 notify_log 幂等约定）。
  * 两条 trial_convert 触发路径共用幂等键，只发一次。
  */
 
@@ -30,14 +32,14 @@ const paidPlans = (plans: Plan[]): Plan[] =>
 export function shell(env: Env, title: string, bodyHtml: string, bodyText: string, cta?: { url: string; label: string }) {
   const ctaUrl = cta?.url ?? `${siteUrl(env)}/tokens`;
   const ctaLabel = cta?.label ?? "查看我的 Token";
-  const subject = `【GameBoost】${title}`;
+  const subject = `【FrogLeap】${title}`;
   const html = `
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head><meta charset="UTF-8"><title>${subject}</title></head>
 <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px;">
   <div style="background: #0f172a; color: #f8fafc; padding: 24px; border-radius: 12px; text-align: center;">
-    <h1 style="margin: 0; font-size: 22px;">🎮 GameBoost</h1>
+    <h1 style="margin: 0; font-size: 22px;">🐸 FrogLeap</h1>
     <p style="margin: 8px 0 0; color: #94a3b8;">${title}</p>
   </div>
   <div style="margin-top: 24px; padding: 20px; background: #f8fafc; border-radius: 12px;">
@@ -47,12 +49,12 @@ export function shell(env: Env, title: string, bodyHtml: string, bodyText: strin
     </div>
   </div>
   <p style="margin-top: 24px; font-size: 13px; color: #94a3b8; text-align: center;">
-    本邮件由 GameBoost 自动发送，请勿直接回复。如有疑问请联系售后。
+    本邮件由 FrogLeap 自动发送，请勿直接回复。如有疑问请联系售后。
   </p>
 </body>
 </html>
   `.trim();
-  const text = `${title}\n\n${bodyText}\n\n${ctaLabel}：${ctaUrl}\n\n本邮件由 GameBoost 自动发送，如有疑问请联系售后。`;
+  const text = `${title}\n\n${bodyText}\n\n${ctaLabel}：${ctaUrl}\n\n本邮件由 FrogLeap 自动发送，如有疑问请联系售后。`;
   return { subject, html, text };
 }
 
@@ -392,7 +394,7 @@ export async function notifyAdmin(
     console.log(`[admin-alert] ${title}（未配置 ADMIN_NOTIFY_EMAIL，仅记日志）`);
     return;
   }
-  const res = await sendMail(env, env.ADMIN_NOTIFY_EMAIL, `【GameBoost 告警】${title}`, bodyHtml, bodyText, { kind: "notify" });
+  const res = await sendMail(env, env.ADMIN_NOTIFY_EMAIL, `【FrogLeap 告警】${title}`, bodyHtml, bodyText, { kind: "notify" });
   if (!res.ok) console.error(`[admin-alert] mail failed: ${title}: ${res.error}`);
 }
 

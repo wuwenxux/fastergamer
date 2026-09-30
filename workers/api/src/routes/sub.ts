@@ -213,9 +213,10 @@ subRoutes.get("/", async (c) => {
     "subscription-userinfo",
     `upload=0; download=${usedBytes}; total=${totalBytes}; expire=${expireSec}`
   );
-  // 客户端启动时会检查距上次更新是否超过该间隔（小时），超过才拉取；
-  // 设 24 = 实际效果是每次打开客户端时更新一次，不频繁刷
-  c.header("profile-update-interval", "24");
+  // 客户端启动时会检查距上次更新是否超过该间隔（小时），超过才拉取。
+  // 设 720（30 天）= 站长决策：基本不自动轮询；节点增删/地址变更由
+  // node-change-notify.ts 邮件通知用户，需要新配置时用户在客户端手动点「更新订阅」
+  c.header("profile-update-interval", "720");
   // Clash/Stash 系客户端扫码或添加订阅时用此头做配置文件名，
   // 与 deep link 的 name=fastergamer 保持同名（纯 ASCII 避免 base64 变体兼容问题）
   c.header("profile-title", "fastergamer");

@@ -169,6 +169,11 @@ export interface Token {
   device_guard?: Record<string, DeviceGuardEntry>;
   /** 已发送过的风险提醒（类型 → 发送时间戳），防止重复打扰 */
   notify_log?: Record<string, number>;
+  /** 节点变更通知订阅制（lib/node-change-notify.ts）：true = 用户点了「订阅此类通知」，持续收；
+   *  缺省/false = 未订阅，最多只收第一封样例 */
+  notify_nodes_subscribed?: boolean;
+  /** 第一封节点变更样例邮件发出时间（写过即不再发样例，除非用户订阅） */
+  notify_nodes_sampled_at?: number;
   /** 机房滥用标记：体验 token 被判定为机器（机房/代理 IP 流量为主）后置 true，转每日定额限速，不撤销 */
   abuse_machine?: boolean;
   /** 机器限速的 24h 滚动窗口起点（unix 毫秒） */

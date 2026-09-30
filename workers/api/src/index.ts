@@ -9,6 +9,7 @@ import type { Env } from "./types";
 
 import { agentRoutes } from "./routes/agent";
 import { nodesRoutes } from "./routes/nodes";
+import { notifyPrefRoutes } from "./routes/notify-pref";
 import { referralRoutes } from "./routes/referral";
 import { registerRoutes } from "./routes/register";
 import { ticketsRoutes } from "./routes/tickets";
@@ -76,6 +77,9 @@ app.use("/api/feedback", rateLimit(5, 60_000), turnstile);
 app.use("/api/register", rateLimit(10, 60_000));
 // 二维码生成有少量 CPU 开销且面向公网，限流防刷（正常用户只在打开邮件/页面时加载）
 app.use("/api/sub/qr", rateLimit(20, 60_000));
+// 节点通知订阅/退订：邮件链接落地，GET 只渲染确认页、POST 生效（防预取器误订阅）；
+// 只限流不挂 turnstile——邮件里点链接没法过人机验证
+app.use("/api/notify-pref", rateLimit(10, 60_000));
 
 app.route("/api/plans", plansRoutes);
 app.route("/api/orders", ordersRoutes);
@@ -87,6 +91,7 @@ app.route("/api/admin", adminRoutes);
 app.route("/api/admin/nodes", nodesRoutes);
 app.route("/api/agent", agentRoutes);
 app.route("/api/referral", referralRoutes);
+app.route("/api/notify-pref", notifyPrefRoutes);
 app.route("/api", ticketsRoutes);
 
 app.all("*", (c) => c.json({ ok: false, error: "not found" }, 404));

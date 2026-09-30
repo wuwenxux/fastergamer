@@ -90,7 +90,7 @@ export interface SubBindingCheck {
  * - 新指纹且有存活绑定 → 冲突拒绝。
  * 有效设备数口径与 tokens.ts 加设备处一致：token.max_devices ?? 套餐 max_devices ?? 2。
  * KV 开销：每次拉取 1 次 plans 读（单键，全页共享数据）+ 单设备套餐 1 次 presence 读；
- * 订阅拉取是低频路径（客户端 profile-update-interval=24h），可接受。
+ * 订阅拉取是低频路径（profile-update-interval=720h，基本不自动轮询），可接受。
  */
 export async function checkSubBinding(
   env: Env,

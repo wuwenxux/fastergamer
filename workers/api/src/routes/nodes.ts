@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import { KV, type Node } from "../../../../shared/types";
 import { getNodes, getNodesFresh, saveNodes, saveNodeStat, deleteNodeStat, isNodeOnline } from "../lib/nodes";
 import { pushAuthRefresh } from "../lib/authpush";
+import { notifyNodeAdded, notifyNodeChanged, notifyNodeRemoved } from "../lib/node-change-notify";
 import { invalidateNodeIpsCache } from "./sub";
 import { adminAuth } from "../middleware/admin";
 import type { Env } from "../types";
@@ -84,6 +85,8 @@ nodesRoutes.post("/", async (c) => {
   await saveNodes(c.env, nodes);
   invalidateNodeIpsCache(); // 新节点 host 可能复用旧解析缓存
   c.executionCtx.waitUntil(pushAuthRefresh(c.env)); // 新节点进订阅/快照
+  // 客户端已不自动轮询订阅（720h），节点上线邮件通知活跃用户手动更新
+  if (node.active) notifyNodeAdded(c.env, node, c.executionCtx);
   return c.json({ ok: true, data: { node: { ...node, key: node.key } } });
 });
 
@@ -98,6 +101,7 @@ nodesRoutes.put("/:id", async (c) => {
   if (idx === -1) return c.json({ ok: false, error: "node not found" }, 404);
 
   // 不允许通过此接口修改 id 和 key，防止误操作破坏 Agent 认证
+  const before = nodes[idx];
   const { id: _id, key: _key, ...rest } = body;
   nodes[idx] = { ...nodes[idx], ...rest };
   await saveNodes(c.env, nodes);
@@ -105,6 +109,8 @@ nodesRoutes.put("/:id", async (c) => {
   await saveNodeStat(c.env, nodes[idx]);
   invalidateNodeIpsCache(); // host 复指新 IP（VPS 重建）时清订阅解析缓存
   c.executionCtx.waitUntil(pushAuthRefresh(c.env)); // 节点信息（host/port/active 等）变更进快照
+  // 仅用户可感知的变更（host 变了 / active 翻转）才邮件通知，其他字段变更不发
+  notifyNodeChanged(c.env, before, nodes[idx], c.executionCtx);
   return c.json({ ok: true, data: nodes[idx] });
 });
 
@@ -120,6 +126,9 @@ nodesRoutes.delete("/:id", async (c) => {
   await deleteNodeStat(c.env, id);
   invalidateNodeIpsCache();
   c.executionCtx.waitUntil(pushAuthRefresh(c.env)); // 节点摘除进快照
+  // 邮件通知活跃用户：在用该节点的需尽快更新订阅切换
+  const removed = nodes.find((n) => n.id === id)!;
+  if (removed.active) notifyNodeRemoved(c.env, removed, c.executionCtx);
   return c.json({ ok: true });
 });
 
