@@ -3,9 +3,10 @@
  * 且客户端是 mihomo 系内核时，额外生成对应的 Reality 直连代理（名称加 ⚡ 后缀）；
  * 节点配了 hy2 字段（Hysteria2 UDP 入站）时同样仅对 mihomo 系内核追加 🚀 后缀的
  * hysteria2 条目（序号接在 ⚡ 条目之后），密码固定为 "<uuid>:x"，sni 为节点域名。
- * 三协议条目都进主 select 组与自动分组，自动分组内顺序固定为
- * 🚀Hy2 → ⚡Reality → WS（延迟实测递增，配合 tolerance 粘滞，UDP 异常时
- * 自动落 ⚡/WS 三层兜底）。老内核（Premium）只收 WS 条目。
+ * 三协议条目都进主 select 组与自动分组，另有 ·直连 Reality 备用条目（server 写节点 IP，
+ * 主域被 DNS 污染时的兜底，见 buildRealityBackupEntries）；自动分组内顺序固定为
+ * 🚀Hy2 → ⚡Reality → ·直连 → WS（延迟实测递增，配合 tolerance 粘滞，UDP 异常时
+ * 自动落 ⚡/WS 多层兜底）。老内核（Premium）只收 WS 条目。
  * 节点显示名统一为「区域代码 中文地区名 全局序号」，如 "MY 马来西亚 01"（序号按节点列表顺序全局递增）。
  * 分组结构（按区域）：
  *   🚀 节点选择（select）→ ♻️ 自动选择（全部节点 url-test，测共享域名 ping.fastergamer.click
@@ -118,6 +119,8 @@ export interface ProxyEntry {
   region: string;
   /** 客户端实际连接的地址：nodeIps 命中时是 IP，否则是域名 */
   server: string;
+  /** 节点静态公网 IP（Node.ip）或 DoH 解析结果：Reality 灾备直连备用条目的 server */
+  nodeIp?: string;
   /** 节点域名：TLS servername 与 WS Host 始终用它，不受 server 是否为 IP 影响 */
   host: string;
   port: number;
@@ -150,6 +153,7 @@ export const buildProxyEntries = (
       base,
       region: node.region,
       server: nodeIps?.[node.host] ?? node.host,
+      nodeIp: node.ip ?? nodeIps?.[node.host],
       host: node.host,
       port: node.port,
       tls: node.tls,
@@ -174,6 +178,26 @@ export const buildHy2Entries = (entries: ProxyEntry[], realityEntries: ProxyEntr
     .map((p, i) => ({
       ...p,
       name: `${p.region} ${p.base} 🚀${String(entries.length + realityEntries.length + i + 1).padStart(2, "0")}`,
+    }));
+
+/**
+ * ·直连 Reality 备用条目：server 写节点 IP 而非域名（nodeIp，注册表静态 ip 优先、
+ * DoH 解析结果兜底，都没有则跳过该条目）。主域/节点域名被 DNS 污染时，
+ * 域名条目全部解析失败，这条 IP 直连条目仍能出网——Reality 借用伪装站证书，
+ * 不依赖节点自身域名证书，是唯一能脱离域名存活的协议；WS（域名证书 SNI）
+ * 与 Hy2（节点域名真实证书）都出不了备用条目。序号接在 🚀 条目之后。
+ */
+export const buildRealityBackupEntries = (
+  entries: ProxyEntry[],
+  realityEntries: ProxyEntry[],
+  hy2Entries: ProxyEntry[]
+): ProxyEntry[] =>
+  entries
+    .filter((p) => p.reality && p.nodeIp)
+    .map((p, i) => ({
+      ...p,
+      server: p.nodeIp!,
+      name: `${p.region} ${p.base} ${String(entries.length + realityEntries.length + hy2Entries.length + i + 1).padStart(2, "0")}·直连`,
     }));
 
 export const buildClashConfig = ({ uuid, nodes, regions, userAgent, nodeIps, isp }: BuildConfigInput): string => {
@@ -338,7 +362,11 @@ export const buildClashConfig = ({ uuid, nodes, regions, userAgent, nodeIps, isp
   // 一层握手、无域名/解析依赖，url-test 实测更快会自动选中；异常时自动落回 WS 兜底。
   const modern = supportsModernProtocols(userAgent);
   const realityProxies = modern ? buildRealityEntries(proxies) : [];
-  for (const p of realityProxies) {
+  // Hysteria2 / ·直连备用条目的序号都要接在前一类之后，先统一算好再渲染
+  const hy2Proxies = modern ? buildHy2Entries(proxies, realityProxies) : [];
+  // ·直连备用条目：同 Reality 渲染，仅 server 换成节点 IP（灾备，见 buildRealityBackupEntries 注释）
+  const backupProxies = modern ? buildRealityBackupEntries(proxies, realityProxies, hy2Proxies) : [];
+  for (const p of [...realityProxies, ...backupProxies]) {
     const r = p.reality!;
     lines.push(
       `  - name: "${p.name}"`,
@@ -362,7 +390,6 @@ export const buildClashConfig = ({ uuid, nodes, regions, userAgent, nodeIps, isp
   // Hysteria2 条目（🚀 后缀）：同 Reality 的新协议门控，序号接在 ⚡ 条目之后。
   // 节点跑 hysteria2 服务端（UDP，TLS 用节点域名的真实证书），auth userpass 为
   // {uuid: "x"}，客户端 password 固定 "<uuid>:x"，sni 必须是节点域名
-  const hy2Proxies = modern ? buildHy2Entries(proxies, realityProxies) : [];
   for (const p of hy2Proxies) {
     lines.push(
       `  - name: "${p.name}"`,
@@ -374,11 +401,12 @@ export const buildClashConfig = ({ uuid, nodes, regions, userAgent, nodeIps, isp
       `    sni: ${p.host}`
     );
   }
-  // 自动分组协议池：三协议全放，顺序 🚀Hy2 → ⚡Reality → WS。
+  // 自动分组协议池：四协议全放，顺序 🚀Hy2 → ⚡Reality → ·直连备用 → WS。
   // 依据实测（杭州→HK 稳态延迟 Hy2 ~141ms / Reality ~184ms / WS ~232ms）：
   // 排最前的协议配合 tolerance 粘滞成为默认链路；UDP 被 QoS 时 url-test
-  // 自动落 Reality，Reality 端口异常再落 WS，三层兜底
-  const autoPool = [...hy2Proxies, ...realityProxies, ...proxies];
+  // 自动落 Reality，Reality 端口异常再落 WS，三层兜底。·直连与 ⚡ 同端口同协议
+  // （仅 server 是 IP），排在 ⚡ 后让域名条目优先，DNS 污染时 ⚡ 测速失败自然落 ·直连
+  const autoPool = [...hy2Proxies, ...realityProxies, ...backupProxies, ...proxies];
 
   // 按区域归类：区域顺序跟随 CLASH_REGIONS，未登记的区域排在最后
   const byRegion = new Map<string, string[]>(); // region code -> proxy names

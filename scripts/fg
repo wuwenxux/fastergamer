@@ -12,6 +12,7 @@
  *   node scripts/fg rm <关键词> --yes              删除 token（不可恢复）
  *   node scripts/fg purge <邮箱> --yes             抹掉该邮箱全部数据（token + KV 残留，不可恢复）
  *   node scripts/fg nodes                          节点列表：名称/域名/地区/在线
+ *   node scripts/fg emergency-sub                  灾备：向全部活跃用户群发备用订阅地址邮件（主站被墙时用；同日幂等）
  *   node scripts/fg ssh <节点名|域名|IP|id>        SSH 到节点（wafer 用户 + 运维密钥）
  *   node scripts/fg stats [天数=14]                用户增长与流量分析（转发 user-stats.mjs）
  *   node scripts/fg audit [天数=30|--all]          接入审计：逐用户 IP/接入点/流量画像 + 异常标记（转发 user-audit.mjs）
@@ -213,6 +214,12 @@ switch (cmd) {
     }
     console.log(`→ ${label}`);
     run("ssh", ["-i", SSH_KEY, "-o", "StrictHostKeyChecking=no", "-o", "ConnectTimeout=10", `wafer@${ip}`, ...args.slice(1)]);
+    break;
+  }
+  case "emergency-sub": {
+    // 灾备：主站域名被 DNS 污染时群发备用订阅地址（同日幂等，跨天可再发）
+    const r = await api("POST", "/emergency/backup-sub");
+    console.log(`✓ 备用订阅地址群发完成：发送 ${r.sent} 封，跳过 ${r.skipped} 个（同日重复触发自动幂等跳过）`);
     break;
   }
   case "stats":

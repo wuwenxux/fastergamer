@@ -382,6 +382,10 @@ export interface Node {
   region: string;
   /** 客户端连接目标（域名或 IP） */
   host: string;
+  /** 节点公网 IP（可选）：Reality 灾备直连备用条目的 server。
+   *  主域/节点域名被 DNS 污染时客户端无需解析即可直连（Reality 不依赖域名证书）。
+   *  缺省时订阅生成回退用 nodeIps（DoH 解析结果），仍无则不出备用条目 */
+  ip?: string;
   /** 端口，如 443 / 8443 */
   port: number;
   /** 是否启用 TLS（wss） */

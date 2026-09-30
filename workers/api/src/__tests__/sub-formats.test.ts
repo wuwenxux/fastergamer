@@ -524,3 +524,93 @@ describe("GET /api/sub/qr 订阅二维码", () => {
     expect(notFound.status).toBe(404);
   });
 });
+
+describe("·直连 Reality 备用条目（灾备，server=节点 IP）", () => {
+  const NODES_WITH_IP: Node[] = NODES.map((n) =>
+    n.id === "n1" ? { ...n, ip: "203.0.113.7" } : n
+  );
+
+  const setupNodes = async (nodes: Node[]): Promise<Env> => {
+    const tokens = fakeNs();
+    const nodesNs = fakeNs();
+    await nodesNs.ns.put(KV.NODES, JSON.stringify(nodes));
+    const token = makeToken();
+    await tokens.ns.put(KV.TOKEN + token.uuid, JSON.stringify(token));
+    await tokens.ns.put(KV.TOKEN_BY_ID + token.id, JSON.stringify({ uuid: token.uuid }));
+    invalidateNodesCache();
+    return makeEnv(tokens.ns, nodesNs.ns);
+  };
+
+  it("vless：有 ip 的 Reality 节点多出 ·直连 条目（server=IP，端口/SNI 同 ⚡），无 ip 节点不出", async () => {
+    const env = await setupNodes(NODES_WITH_IP);
+    const res = await getSub(env, UUID, { format: "vless" });
+    const lines = decodeB64(await res.text()).split("\n");
+    expect(lines).toHaveLength(6); // WS ×3 + ⚡ + 🚀 + ·直连
+    const backup = lines[5];
+    expect(backup).toContain(`vless://${UUID}@203.0.113.7:8444?`);
+    expect(backup).toContain(encodeURIComponent("HK 香港 CN2 06·直连"));
+    const q = new URLSearchParams(backup.split("?")[1].split("#")[0]);
+    expect(q.get("security")).toBe("reality");
+    expect(q.get("pbk")).toBe("PUBKEY");
+    expect(q.get("sid")).toBe("abcd1234");
+    expect(q.get("sni")).toBe("gateway.icloud.com");
+    expect(lines.join("\n")).not.toContain("JP 日本 BGP 05·直连"); // 非 Reality 节点不出备用
+  });
+
+  it("无 ip 且 DoH 无结果：不出 ·直连 条目（默认桩即无解析结果）", async () => {
+    const env = await setupNodes(NODES);
+    const res = await getSub(env, UUID, { format: "vless" });
+    const text = decodeB64(await res.text());
+    expect(text).not.toContain("·直连");
+  });
+
+  it("无 ip 但 DoH 解析命中：回退用解析结果出 ·直连 条目", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({ json: async () => ({ Answer: [{ type: 1, data: "198.51.100.9" }] }) }) as unknown as typeof fetch)
+    );
+    const { invalidateNodeIpsCache } = await import("../routes/sub");
+    invalidateNodeIpsCache();
+    const env = await setupNodes(NODES);
+    const res = await getSub(env, UUID, { format: "vless" });
+    const lines = decodeB64(await res.text()).split("\n");
+    expect(lines).toHaveLength(6);
+    expect(lines[5]).toContain(`vless://${UUID}@198.51.100.9:8444?`);
+    expect(lines[5]).toContain(encodeURIComponent("·直连"));
+  });
+
+  it("clash（mihomo UA）：·直连 条目进 YAML 与 ♻️ 自动选择组；Premium 老内核不下发", async () => {
+    const env = await setupNodes(NODES_WITH_IP);
+    const res = await getSub(env, UUID, { format: "clash", ua: "clash-verge/v2.0" });
+    const yaml = await res.text();
+    expect(yaml).toContain('name: "HK 香港 CN2 06·直连"');
+    expect(yaml).toContain("server: 203.0.113.7");
+    expect(yaml).toContain("servername: gateway.icloud.com");
+    // 进 url-test 自动组参与兜底（组内条目行均为 `- "名称"` 缩进格式）
+    const autoSection = yaml.split('name: "♻️ 自动选择"')[1].split("proxy-groups")[0] ?? "";
+    expect(autoSection).toContain('"HK 香港 CN2 06·直连"');
+
+    const env2 = await setupNodes(NODES_WITH_IP);
+    const premium = await getSub(env2, UUID, { format: "clash", ua: "ClashforWindows/0.20.39" });
+    expect(await premium.text()).not.toContain("·直连");
+  });
+
+  it("sing-box：·直连 outbound 与 ⚡ 同构（server=IP），进 urltest 池", async () => {
+    const env = await setupNodes(NODES_WITH_IP);
+    const res = await getSub(env, UUID, { format: "singbox" });
+    const cfg = JSON.parse(await res.text()) as { outbounds: Record<string, unknown>[] };
+    const byTag = new Map(cfg.outbounds.map((o) => [o.tag as string, o]));
+    const backup = byTag.get("HK 香港 CN2 06·直连")!;
+    expect(backup.type).toBe("vless");
+    expect(backup.server).toBe("203.0.113.7");
+    expect(backup.server_port).toBe(8444);
+    expect(backup.flow).toBe("xtls-rprx-vision");
+    expect(backup.tls).toMatchObject({
+      enabled: true,
+      server_name: "gateway.icloud.com",
+      reality: { enabled: true, public_key: "PUBKEY", short_id: "abcd1234" },
+    });
+    const urltest = cfg.outbounds.find((o) => o.type === "urltest")!;
+    expect(urltest.outbounds).toContain("HK 香港 CN2 06·直连");
+  });
+});

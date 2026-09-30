@@ -9,6 +9,7 @@ import { fulfillOrder } from "../lib/issue-token";
 import { buildGeoStats } from "../lib/geo-stats";
 import { generateTicketDraftVerbose } from "../lib/ticket-ai";
 import { escapeHtml } from "../lib/escape-html";
+import { broadcastBackupSub } from "../lib/emergency-notify";
 import type { Env } from "../types";
 import { adminPlansRoutes } from "./admin/plans";
 import { adminTokensRoutes } from "./admin/tokens";
@@ -83,6 +84,17 @@ adminRoutes.post("/notify-user", async (c) => {
   const sent = await sendServiceEmail(c.env, token, title, html, text);
   if (!sent) return c.json({ ok: false, error: "邮件发送失败" }, 502);
   return c.json({ ok: true, data: { sent: true } });
+});
+
+/**
+ * POST /api/admin/emergency/backup-sub —— 灾备群发：主站域名被 DNS 污染时，
+ * 向全部 active 未过期且有邮箱的用户（含试用）邮件下发各自的备用订阅地址
+ * （uluw.kdns.fr）。幂等键 notify_log.emergency_sub:<UTC日期>，同日重复触发不重发。
+ * 同步跑完返回计数；鉴权走 adminAuth（x-admin-key + ADMIN_IPS 白名单，随 adminRoutes 全局挂载）。
+ */
+adminRoutes.post("/emergency/backup-sub", async (c) => {
+  const r = await broadcastBackupSub(c.env);
+  return c.json({ ok: true, data: r });
 });
 
 /**

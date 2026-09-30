@@ -4,7 +4,7 @@
  *
  * 节点条目命名/排序与 Clash 共用 clash.ts 的 buildProxyEntries 系列
  * （「区域代码 基名 全局序号」、nodeIps 命中写 IP），条目顺序固定
- * WS 兜底 → ⚡Reality → 🚀Hysteria2。
+ * WS 兜底 → ⚡Reality → 🚀Hysteria2 → ·直连备用（server=节点 IP，灾备）。
  * 与 Clash 输出不同：不按 UA 裁剪 ⚡/🚀 条目——这三类客户端内核都支持
  * Reality 与 Hysteria2，全部下发由用户自己选用，WS 行始终是兜底。
  */
@@ -12,6 +12,7 @@ import type { Node } from "../../../../shared/types";
 import {
   buildHy2Entries,
   buildProxyEntries,
+  buildRealityBackupEntries,
   buildRealityEntries,
   parseRegions,
   type ClashRegion,
@@ -39,6 +40,8 @@ export const buildVlessSubscription = ({ uuid, nodes, regions, nodeIps }: BuildS
   const wsEntries = buildProxyEntries(nodes, regions ?? parseRegions(undefined), nodeIps);
   const realityEntries = buildRealityEntries(wsEntries);
   const hy2Entries = buildHy2Entries(wsEntries, realityEntries);
+  // ·直连备用条目排在最后：客户端列表里域名条目在前，污染时用户手选/自动兜底都可
+  const backupEntries = buildRealityBackupEntries(wsEntries, realityEntries, hy2Entries);
 
   const lines: string[] = [];
   for (const p of wsEntries) {
@@ -73,6 +76,21 @@ export const buildVlessSubscription = ({ uuid, nodes, regions, nodeIps }: BuildS
     // hysteria2 密码固定 "<uuid>:x"（与服务端 auth userpass 对应），sni 必须是节点域名（真实证书）
     const q = new URLSearchParams({ sni: p.host });
     lines.push(`hysteria2://${uuid}:x@${p.server}:${p.hy2!.port}?${q.toString()}#${encodeURIComponent(p.name)}`);
+  }
+  for (const p of backupEntries) {
+    // ·直连备用条目：与 ⚡ 条目同协议参数，仅 server 是节点 IP（灾备，见 clash.ts 注释）
+    const r = p.reality!;
+    const q = new URLSearchParams({
+      encryption: "none",
+      security: "reality",
+      flow: "xtls-rprx-vision",
+      pbk: r.password,
+      sid: r.short_id,
+      sni: r.server_name,
+      fp: "chrome",
+      type: "tcp",
+    });
+    lines.push(`vless://${uuid}@${p.server}:${r.port}?${q.toString()}#${encodeURIComponent(p.name)}`);
   }
   return toBase64(lines.join("\n"));
 };

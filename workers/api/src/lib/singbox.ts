@@ -20,6 +20,7 @@ import {
   AI_SERVICE_DOMAINS,
   buildHy2Entries,
   buildProxyEntries,
+  buildRealityBackupEntries,
   buildRealityEntries,
   parseRegions,
   regionDisplayName,
@@ -51,8 +52,10 @@ export const buildSingboxConfig = ({ uuid, nodes, regions, nodeIps }: BuildSingb
   const wsEntries = buildProxyEntries(nodes, regionMeta, nodeIps);
   const realityEntries = buildRealityEntries(wsEntries);
   const hy2Entries = buildHy2Entries(wsEntries, realityEntries);
-  // 测速池顺序与 clash 自动组同口径：🚀Hy2 → ⚡Reality → WS（延迟实测递增 + tolerance 粘滞）
-  const autoPool = [...hy2Entries, ...realityEntries, ...wsEntries];
+  // ·直连备用条目（server=节点 IP，主域被 DNS 污染时的灾备，见 clash.ts 注释）
+  const backupEntries = buildRealityBackupEntries(wsEntries, realityEntries, hy2Entries);
+  // 测速池顺序与 clash 自动组同口径：🚀Hy2 → ⚡Reality → ·直连 → WS（延迟实测递增 + tolerance 粘滞）
+  const autoPool = [...hy2Entries, ...realityEntries, ...backupEntries, ...wsEntries];
 
   // 日本区域 urltest 组：OpenAI/Claude 域名定向出口（原因见 clash.ts AI_SERVICE_DOMAINS
   // 注释——两家均封香港，必须钉到 JP）。组名与 clash 区域组同口径（如「🇯🇵 日本」）。
@@ -117,6 +120,24 @@ export const buildSingboxConfig = ({ uuid, nodes, regions, nodeIps }: BuildSingb
       // 与服务端 auth userpass {uuid: "x"} 对应；TLS 证书是节点域名的真实证书
       password: `${uuid}:x`,
       tls: { enabled: true, server_name: p.host },
+    });
+  }
+  for (const p of backupEntries) {
+    // ·直连备用条目：与 ⚡  outbound 同构，仅 server 是节点 IP（见 clash.ts 注释）
+    const r = p.reality!;
+    nodeOutbounds.push({
+      type: "vless",
+      tag: p.name,
+      server: p.server,
+      server_port: r.port,
+      uuid,
+      flow: "xtls-rprx-vision",
+      tls: {
+        enabled: true,
+        server_name: r.server_name,
+        utls: { enabled: true, fingerprint: "chrome" },
+        reality: { enabled: true, public_key: r.password, short_id: r.short_id },
+      },
     });
   }
 
