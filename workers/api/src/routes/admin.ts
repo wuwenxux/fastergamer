@@ -197,7 +197,7 @@ adminRoutes.post("/tickets/:id/reply", async (c) => {
     c.env,
     ticket.contact,
     // 主题带 [工单 {id}] 标签：用户直接回复本邮件可串线回工单（Email Routing 闭环）
-    `[工单 ${ticket.id}]【GameBoost】你的反馈已有回复`,
+    `[工单 ${ticket.id}]【FrogLeap】你的反馈已有回复`,
     `<p>你好，你之前反馈的问题已有回复：</p>
      <div style="padding:16px;background:#f0f9ff;border-radius:8px;margin:16px 0;">${escapeHtml(reply).replace(/\n/g, "<br>")}</div>
      <p style="color:#64748b;font-size:13px;">你的原始问题：${escapeHtml(ticket.message.slice(0, 500))}</p>

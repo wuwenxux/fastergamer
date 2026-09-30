@@ -62,7 +62,7 @@ describe("sendMailDispatch 通道选择", () => {
     stubDmOk();
     const env = { ...CREDS, EMAIL: binding } as Env;
 
-    const res = await sendMail(env, "u@example.com", "[工单 fb_a1b2c3]【GameBoost】你的反馈已有回复", "<p>h</p>", "t", {
+    const res = await sendMail(env, "u@example.com", "[工单 fb_a1b2c3]【FrogLeap】你的反馈已有回复", "<p>h</p>", "t", {
       kind: "ticket",
     });
 
@@ -114,7 +114,7 @@ describe("sendMailDispatch 通道选择", () => {
     stubDmOk();
     const env = { ...CREDS, EMAIL: binding } as Env;
 
-    const res = await sendMail(env, "u@example.com", "【GameBoost】你的加速 Token 已生成", "<p>h</p>", "t", { kind });
+    const res = await sendMail(env, "u@example.com", "【FrogLeap】你的加速 Token 已生成", "<p>h</p>", "t", { kind });
 
     expect(res.ok).toBe(true);
     expect(send).not.toHaveBeenCalled();

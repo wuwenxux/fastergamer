@@ -1,42 +1,20 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
   <defs>
-    <!-- 天空：明亮浅色，与深色井盖拉开反差 -->
-    <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#e0f2fe"/>
-      <stop offset="0.55" stop-color="#7dd3fc"/>
-      <stop offset="1" stop-color="#0ea5e9"/>
-    </linearGradient>
     <linearGradient id="frogBody" x1="0" y1="0" x2="0" y2="1">
       <stop offset="0" stop-color="#4ade80"/>
       <stop offset="1" stop-color="#16a34a"/>
     </linearGradient>
   </defs>
 
-  <!-- app icon 圆角底板 -->
-  <rect width="512" height="512" rx="115" fill="url(#sky)"/>
+  <!-- app icon 圆角底板：纯黑 -->
+  <rect width="512" height="512" rx="115" fill="#05070c"/>
 
-  <!-- 星星：井外的世界 -->
-  <g fill="#fef9c3">
-    <path d="M104 96 l7 16 16 7 -16 7 -7 16 -7 -16 -16 -7 16 -7 z"/>
-    <path d="M180 62 l5 12 12 5 -12 5 -5 12 -5 -12 -12 -5 12 -5 z"/>
-    <path d="M70 190 l4 10 10 4 -10 4 -4 10 -4 -10 -10 -4 10 -4 z"/>
-  </g>
+  <g transform="translate(0 -80) translate(256 371) scale(1.25) translate(-256 -371)">
+  <!-- 井：后沿砖圈（深灰勾边，黑底上显形）+ 黑洞 -->
+  <ellipse cx="256" cy="404" rx="172" ry="58" fill="#232d3d"/>
+  <ellipse cx="256" cy="396" rx="144" ry="44" fill="#000000"/>
 
-  <!-- 地球：看到的「世界」 -->
-  <g>
-    <circle cx="392" cy="128" r="56" fill="#3b82f6"/>
-    <path d="M356 108 q14 -18 34 -12 q10 3 8 14 q-3 12 -16 12 q-18 2 -26 -14 z" fill="#22c55e"/>
-    <path d="M404 140 q18 -4 24 10 q4 14 -10 20 q-16 6 -24 -6 q-6 -14 10 -24 z" fill="#22c55e"/>
-    <path d="M352 150 q10 -6 18 2 q6 10 -4 16 q-12 4 -18 -4 q-4 -10 4 -14 z" fill="#22c55e"/>
-    <circle cx="392" cy="128" r="56" fill="none" stroke="#bfdbfe" stroke-width="5" opacity="0.7"/>
-    <ellipse cx="392" cy="128" rx="78" ry="26" fill="none" stroke="#e0f2fe" stroke-width="4" opacity="0.5" transform="rotate(-18 392 128)"/>
-  </g>
-
-  <!-- 井：后沿砖圈 + 黑洞（深色系，与浅天空强反差） -->
-  <ellipse cx="256" cy="404" rx="172" ry="58" fill="#334155"/>
-  <ellipse cx="256" cy="396" rx="144" ry="44" fill="#020617"/>
-
-  <!-- 青蛙：从井里探出来（整体缩小，井盖更显大） -->
+  <!-- 青蛙：从井里探出来 -->
   <g transform="translate(256 400) scale(0.8) translate(-256 -400)">
     <!-- 身体 -->
     <ellipse cx="256" cy="372" rx="98" ry="66" fill="url(#frogBody)"/>
@@ -59,17 +37,18 @@
   </g>
 
   <!-- 井前沿：压住青蛙下半身，形成「爬出来」的层次 -->
-  <path d="M84 404 a172 58 0 0 0 344 0 l0 26 a172 58 0 0 1 -344 0 z" fill="#1e293b"/>
+  <path d="M84 404 a172 58 0 0 0 344 0 l0 26 a172 58 0 0 1 -344 0 z" fill="#161e2a"/>
   <!-- 前沿砖缝 -->
-  <g stroke="#0f172a" stroke-width="5" stroke-linecap="round">
+  <g stroke="#2f3d52" stroke-width="5" stroke-linecap="round">
     <path d="M150 428 l0 16"/>
     <path d="M256 440 l0 18"/>
     <path d="M362 428 l0 16"/>
   </g>
 
-  <!-- 前爪搭在井沿上（与青蛙同比例缩小，画在井前沿之上） -->
+  <!-- 前爪搭在井沿上 -->
   <g transform="translate(256 400) scale(0.8) translate(-256 -400)">
     <ellipse cx="163" cy="404" rx="30" ry="18" fill="#22c55e" transform="rotate(-14 163 404)"/>
     <ellipse cx="349" cy="404" rx="30" ry="18" fill="#22c55e" transform="rotate(14 349 404)"/>
+  </g>
   </g>
 </svg>

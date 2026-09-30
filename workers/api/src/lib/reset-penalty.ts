@@ -56,7 +56,7 @@ export const sendPenaltyNoticeEmail = async (
   const res = await sendMail(
     env,
     token.contact,
-    "【GameBoost】你的流量额度已重置",
+    "【FrogLeap】你的流量额度已重置",
     `<p>你好，你的 Token（<strong>${token.id}</strong>）流量已重置为满额 <strong>${token.traffic_limit_gb} GB</strong>，服务已恢复。</p>
      <p>本次重置后有效期至 <strong>${token.expires_at ? new Date(token.expires_at).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" }) : "未知"}</strong>（提前 ${daysPenalty} 天）。</p>
      <p>如流量消耗异常，请登录管理页检查设备列表。</p>`,

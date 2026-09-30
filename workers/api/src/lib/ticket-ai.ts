@@ -29,7 +29,7 @@ const DRAFT_CATEGORIES = new Set(["install", "connect", "speed", "other"]);
 /** 站点事实清单（写死在 prompt：防模型编造不存在的能力/入口；逐条以 routes/tokens.ts、
  *  pages 前端页面与 README「限制与注意」为准核实过，改产品能力时同步更新） */
 const SITE_FACTS = `
-- 服务形态：token 制 VPN（品牌 GameBoost），免注册；购买 token（VLESS UUID）后激活即用
+- 服务形态：token 制 VPN（品牌 FrogLeap），免注册；购买 token（VLESS UUID）后激活即用
 - 协议：VLESS + WebSocket + TLS，端口 443，节点域名 *.fastergamer.click
 - 客户端：Clash 系（Clash Verge / mihomo / Stash）与 sing-box，订阅链接一键导入
 - 用户入口：官网「我的 Token」页输入 token ID 可查状态概要；输入购买邮箱则发送一键登录链接（72 小时有效）到邮箱，点邮件链接进管理页（「找回 Token」页同效，发货/提醒邮件里也带免登录链接）
@@ -58,7 +58,7 @@ const loadFaqContext = async (env: Env): Promise<string> => {
 const buildMessages = (ticket: Ticket, faqContext: string) => [
   {
     role: "system" as const,
-    content: `你是 GameBoost 客服的草稿助手。根据用户工单写一份回复草稿，供人工客服参考修改后发出。
+    content: `你是 FrogLeap 客服的草稿助手。根据用户工单写一份回复草稿，供人工客服参考修改后发出。
 
 【站点事实（只能依据这些回答，不许编造）】
 ${SITE_FACTS}

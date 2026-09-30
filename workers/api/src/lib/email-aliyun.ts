@@ -243,7 +243,7 @@ export async function sendTokenEmail(
   const qrUrl = `${site}/api/sub/qr?uuid=${encodeURIComponent(ctx.uuid)}`;
   const mainBtnLabel = ctx.magicUrl ? "一键进入管理页（免登录）" : "查看 Token 与订阅链接";
 
-  const subject = "【GameBoost】你的加速 Token 已生成";
+  const subject = "【FrogLeap】你的加速 Token 已生成";
   const html = `
 <!DOCTYPE html>
 <html lang="zh-CN">
@@ -254,7 +254,7 @@ export async function sendTokenEmail(
 </head>
 <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px;">
   <div style="background: #0f172a; color: #f8fafc; padding: 24px; border-radius: 12px; text-align: center;">
-    <h1 style="margin: 0; font-size: 22px;">🎮 GameBoost</h1>
+    <h1 style="margin: 0; font-size: 22px;">🐸 FrogLeap</h1>
     <p style="margin: 8px 0 0; color: #94a3b8;">Token 制游戏加速器</p>
   </div>
 
@@ -314,14 +314,14 @@ export async function sendTokenEmail(
   ${ctx.upsellNote ? `<p style="margin-top: 16px; font-size: 14px; color: #64748b; text-align: center;">${ctx.upsellNote}</p>` : ""}
 
   <p style="margin-top: 24px; font-size: 13px; color: #94a3b8; text-align: center;">
-    本邮件由 GameBoost 自动发送，请勿直接回复。
+    本邮件由 FrogLeap 自动发送，请勿直接回复。
   </p>
 </body>
 </html>
   `.trim();
 
   const text = `
-GameBoost Token 凭证
+FrogLeap Token 凭证
 
 你购买的 ${ctx.planName} 已生成 Token。
 

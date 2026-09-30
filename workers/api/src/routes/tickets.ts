@@ -75,7 +75,7 @@ ticketsRoutes.post("/feedback", async (c) => {
         c.env,
         contact,
         // 主题带 [工单 {id}] 标签：用户直接回复本邮件时客户端保留标签，Email Routing 收件侧据此串线
-        `[工单 ${ticket.id}]【GameBoost】我们已收到你的问题反馈`,
+        `[工单 ${ticket.id}]【FrogLeap】我们已收到你的问题反馈`,
         `<p>你好，我们已收到你的问题反馈（工单号 <strong>${ticket.id}</strong>），客服会尽快通过本邮箱回复你。</p>
        <p style="color:#64748b;font-size:13px;">你的问题：${escapeHtml(message.slice(0, 500))}</p>
        <p style="color:#64748b;font-size:13px;">直接回复本邮件即可继续补充问题（请勿修改主题）。</p>`,
@@ -92,7 +92,7 @@ ticketsRoutes.post("/feedback", async (c) => {
       sendMail(
         c.env,
         c.env.ADMIN_NOTIFY_EMAIL,
-        `【GameBoost】新反馈工单 ${ticket.id}（${category}）`,
+        `【FrogLeap】新反馈工单 ${ticket.id}（${category}）`,
         `<p><strong>${escapeHtml(contact)}</strong> 提交了反馈（${ticket.id}，分类 ${category}）：</p>
        <p>${escapeHtml(message)}</p>
        ${ticket.token_id ? `<p>Token：${ticket.token_id}</p>` : ""}

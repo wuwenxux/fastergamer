@@ -99,7 +99,7 @@ adminRefundRoutes.post("/orders/:id/refund", async (c) => {
     const res = await sendMail(
       c.env,
       order.contact,
-      "【GameBoost】订单退款成功",
+      "【FrogLeap】订单退款成功",
       `<p>你好，订单 <strong>${order.id}</strong> 已退款 <strong>${money} 元</strong>（${breakdown}），原路退回支付账户。</p>
        <p>对应服务已停用。如有疑问请回复本邮件联系售后。</p>`,
       `订单 ${order.id} 已退款 ${money} 元（${breakdown}），原路退回。对应服务已停用。`,

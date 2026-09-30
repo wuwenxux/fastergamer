@@ -50,7 +50,7 @@ const mime = (opts: { from?: string; to?: string; subject?: string; body?: strin
   [
     `From: ${opts.from ?? `用户 <${USER}>`}`,
     `To: ${opts.to ?? "support@fastergamer.click"}`,
-    `Subject: ${opts.subject ?? `Re: [工单 ${TICKET_ID}]【GameBoost】你的反馈已有回复`}`,
+    `Subject: ${opts.subject ?? `Re: [工单 ${TICKET_ID}]【FrogLeap】你的反馈已有回复`}`,
     "Content-Type: text/plain; charset=utf-8",
     "",
     opts.body ?? "换了节点还是不行",

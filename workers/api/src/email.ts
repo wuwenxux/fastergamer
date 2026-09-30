@@ -95,7 +95,7 @@ export async function handleEmail(
           sendMail(
             env,
             env.ADMIN_NOTIFY_EMAIL,
-            `【GameBoost】收到无法识别的工单来信（${from || "未知发件人"}）`,
+            `【FrogLeap】收到无法识别的工单来信（${from || "未知发件人"}）`,
             `<p>收到一封无法关联工单的来信（主题不含 [工单 fb_xxx] 标签）：</p>
              <p>发件人：${escapeHtml(from || "未知")}<br>主题：${escapeHtml(subject || "（无）")}</p>
              <p style="color:#64748b;font-size:13px;">正文摘要：${escapeHtml(cleanReplyText(parsed.text ?? "").slice(0, 500)) || "（空）"}</p>`,
@@ -166,7 +166,7 @@ export async function handleEmail(
           const notice = await sendMail(
             env,
             env.ADMIN_NOTIFY_EMAIL,
-            `【GameBoost】工单 ${ticket.id} 有新补充（${ticket.contact}）`,
+            `【FrogLeap】工单 ${ticket.id} 有新补充（${ticket.contact}）`,
             `<p><strong>${escapeHtml(ticket.contact)}</strong> 通过邮件补充了工单 ${ticket.id}：</p>
              <div style="padding:16px;background:#f0f9ff;border-radius:8px;margin:16px 0;">${escapeHtml(text).replace(/\n/g, "<br>")}</div>
              <p style="color:#64748b;font-size:13px;">回复：管理页工单标签，或 POST /api/admin/tickets/${ticket.id}/reply</p>`,

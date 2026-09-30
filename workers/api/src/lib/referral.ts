@@ -147,7 +147,7 @@ export const rewardReferrerOnPayment = async (env: Env, inviteeEmail: string, pl
   const res = await sendMail(
     env,
     referrer,
-    "【GameBoost】你邀请的用户已完成付费",
+    "【FrogLeap】你邀请的用户已完成付费",
     `<p>你好，你邀请的用户（${inviteeEmail}）已成功付费开通。</p>
      <p>你的推广余额 <strong>+${DISCOUNT_PER_CREDIT} 元</strong>，当前余额 <strong>${balance} 元</strong>。</p>
      <p>余额满 <strong>120 元</strong>（累计 24 人付费）：已开通套餐的自动<strong>续期一年</strong>；未开通的直接<strong>送一年年付套餐</strong>，也可在下单时抵扣。</p>`,
@@ -164,7 +164,7 @@ export const rewardReferrerOnPayment = async (env: Env, inviteeEmail: string, pl
     const renewRes = await sendMail(
       env,
       referrer,
-      "【GameBoost】推广余额已为你续期一年",
+      "【FrogLeap】推广余额已为你续期一年",
       `<p>你好，你的推广余额已满 <strong>${renew.renewCostCny} 元</strong>，已自动为你的套餐（${renew.tokenId}）<strong>续期一年</strong>。</p>
        <p>新的到期时间：<strong>${expiry}</strong>。继续邀请可继续累积余额，满 ${renew.renewCostCny} 元再次自动续期。</p>`,
       `你的推广余额已满 ${renew.renewCostCny} 元，已自动为套餐（${renew.tokenId}）续期一年，新到期时间：${expiry}。`,
