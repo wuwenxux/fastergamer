@@ -70,6 +70,15 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   });
   const body = (await res.json().catch(() => null)) as Envelope<T> | null;
   if (!res.ok || !body?.ok) {
+    // 边缘 WAF 规则「非中国 IP 的匿名 POST → managed_challenge」对浏览器 fetch 直接
+    // 返回 403 挑战 HTML（fetch 展示不了挑战页），特征是没有本站 JSON 错误体；
+    // 翻成用户能懂的提示。本站 API 自己的 403（管理 IP 白名单等）带 error 字段，原样透传
+    if (res.status === 403 && !body?.error) {
+      throw new ApiError(
+        "请求被拦截：检测到当前是海外网络环境，本站服务面向中国大陆网络，请断开代理/VPN 后刷新重试",
+        res.status
+      );
+    }
     throw new ApiError(body?.error ?? `请求失败 (${res.status})`, res.status);
   }
   return body.data as T;
