@@ -27,7 +27,7 @@ export default function App() {
       <nav className="border-b border-slate-800 bg-slate-900/60 px-6 py-4 flex items-center justify-between">
         <Link to="/" className="font-bold text-xl sm:text-lg tracking-wide flex items-center gap-2">
           <img src="/favicon.svg" alt="FrogLeap" className="h-7 w-7 sm:h-6 sm:w-6 rounded-md" />
-          FrogLeap <span className="text-sky-400 text-base sm:text-sm font-semibold">蛙跃</span>
+          FrogLeap
         </Link>
         <div className="space-x-4 sm:space-x-5 text-[15px] sm:text-sm">
           <Link to="/" className="hover:text-sky-400 transition-colors">
