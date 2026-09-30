@@ -103,9 +103,13 @@ EOF
   # 可能有 103 Early Hints 等多行状态，取最后一行
   CODE=$(echo "$HDR" | grep -oE "^HTTP/[0-9.]+ [0-9]{3}" | tail -1 | grep -oE "[0-9]{3}")
   LOC=$(echo "$HDR" | grep -i "^location:" || true)
+  # 403 + cf-mitigated: challenge 是 CF 人机挑战页：curl 永远过不去，但住宅/低信誉
+  # 以外的 IP 在真浏览器里通常能过，不算封锁，标 ⚠ 待浏览器验证，不计入失败
   if [[ "$CODE" =~ ^(200|301|302|303)$ ]] && ! echo "$LOC" | grep -qi "unavailable"; then
     echo "   ✓ Claude  ($CODE)"
     PASS_TOTAL=$((PASS_TOTAL + 1))
+  elif [ "$CODE" = "403" ] && echo "$HDR" | grep -qi "^cf-mitigated: *challenge"; then
+    echo "   ⚠ Claude  (403 挑战页，浏览器待验证)"
   else
     echo "   ✗ Claude  (${CODE:-超时/重置} ${LOC:+→ 区域受限})"
     FAIL_TOTAL=$((FAIL_TOTAL + 1))
