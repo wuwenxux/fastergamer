@@ -114,7 +114,7 @@ describe("sendMailDispatch 通道选择", () => {
     stubDmOk();
     const env = { ...CREDS, EMAIL: binding } as Env;
 
-    const res = await sendMail(env, "u@example.com", "【FrogLeap】你的加速 Token 已生成", "<p>h</p>", "t", { kind });
+    const res = await sendMail(env, "u@example.com", "【FrogLeap】你的 Token 已生成", "<p>h</p>", "t", { kind });
 
     expect(res.ok).toBe(true);
     expect(send).not.toHaveBeenCalled();

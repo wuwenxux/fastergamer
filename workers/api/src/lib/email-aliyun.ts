@@ -243,7 +243,7 @@ export async function sendTokenEmail(
   const qrUrl = `${site}/api/sub/qr?uuid=${encodeURIComponent(ctx.uuid)}`;
   const mainBtnLabel = ctx.magicUrl ? "一键进入管理页（免登录）" : "查看 Token 与订阅链接";
 
-  const subject = "【FrogLeap】你的加速 Token 已生成";
+  const subject = "【FrogLeap】你的 Token 已生成";
   const html = `
 <!DOCTYPE html>
 <html lang="zh-CN">
@@ -255,7 +255,7 @@ export async function sendTokenEmail(
 <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px;">
   <div style="background: #0f172a; color: #f8fafc; padding: 24px; border-radius: 12px; text-align: center;">
     <h1 style="margin: 0; font-size: 22px;">🐸 FrogLeap</h1>
-    <p style="margin: 8px 0 0; color: #94a3b8;">Token 制游戏加速器</p>
+    <p style="margin: 8px 0 0; color: #94a3b8;">Token 制网络加速服务</p>
   </div>
 
   <div style="margin-top: 24px; padding: 20px; background: #f8fafc; border-radius: 12px;">

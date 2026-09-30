@@ -44,7 +44,7 @@ export default function Home() {
   return (
     <div className="space-y-12">
       <section className="text-center py-8 space-y-4">
-        <h1 className="text-4xl font-bold">游戏加速，先免费体验 7 天</h1>
+        <h1 className="text-4xl font-bold">全球网络加速，先免费体验 7 天</h1>
         <p className="text-slate-400 max-w-xl mx-auto">
           无需注册，输入邮箱即可领取体验 Token，导入客户端立即加速；好用再付费。
         </p>

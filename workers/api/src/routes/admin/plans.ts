@@ -98,7 +98,7 @@ const DEFAULT_PLANS: Plan[] = [
     monthly_quota_gb: 20,
     max_devices: 3,
     tag: "个人常用",
-    description: "90 天有效，每月 20GB（用超预支下月，有效期提前），3 台设备",
+    description: "90 天有效，每月 20GB（当月用完暂停，次月自动恢复；可提前重置，有效期 -30 天），3 台设备",
     features: [
         "每月 20 GB",
         "3 台设备",
@@ -116,7 +116,7 @@ const DEFAULT_PLANS: Plan[] = [
     monthly_quota_gb: 20,
     max_devices: 3,
     tag: "家庭多设备",
-    description: "首购 13 个月（买一年送一月，每邮箱限一次），续费 12 个月；每月 20GB（用超预支下月，有效期提前），3 台设备；连续续费专享价，断缴超 30 天失去资格，需回 ¥120 年付",
+    description: "首购 13 个月（买一年送一月，每邮箱限一次），续费 12 个月；每月 20GB（当月用完暂停，次月自动恢复；可提前重置，有效期 -30 天），3 台设备；连续续费专享价，断缴超 30 天失去资格，需回 ¥120 年付",
     features: [
         "每月 20 GB",
         "3 台设备",
@@ -133,7 +133,7 @@ const DEFAULT_PLANS: Plan[] = [
     monthly_quota_gb: 20,
     max_devices: 3,
     tag: "灵活年付",
-    description: "一年有效，每月 20GB（用超预支下月，有效期提前），3 台设备；随时可买无门槛，连续续费从第二年起每年送 1 个月",
+    description: "一年有效，每月 20GB（当月用完暂停，次月自动恢复；可提前重置，有效期 -30 天），3 台设备；随时可买无门槛，连续续费从第二年起每年送 1 个月",
     features: [
         "每月 20 GB",
         "3 台设备",
@@ -151,7 +151,7 @@ const DEFAULT_PLANS: Plan[] = [
     monthly_quota_gb: 20,
     max_devices: 3,
     tag: "长期超值",
-    description: "首购 26 个月（买两年送 2 个月，每邮箱限一次），续费 24 个月；每月 20GB（用超预支下月，有效期提前），3 台设备",
+    description: "首购 26 个月（买两年送 2 个月，每邮箱限一次），续费 24 个月；每月 20GB（当月用完暂停，次月自动恢复；可提前重置，有效期 -30 天），3 台设备",
     features: [
         "每月 20 GB",
         "3 台设备",
@@ -168,7 +168,7 @@ const DEFAULT_PLANS: Plan[] = [
     monthly_quota_gb: 40,
     max_devices: 5,
     tag: "大流量多设备",
-    description: "一年有效，每月 40GB（用超预支下月，有效期提前），5 台设备",
+    description: "一年有效，每月 40GB（当月用完暂停，次月自动恢复；可提前重置，有效期 -30 天），5 台设备",
     features: [
         "每月 40 GB",
         "5 台设备",
