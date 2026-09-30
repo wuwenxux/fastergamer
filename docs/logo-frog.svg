@@ -1,10 +1,10 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
   <defs>
-    <!-- 天空：井底深蓝 → 井口亮蓝，隐喻从封闭到开阔 -->
+    <!-- 天空：明亮浅色，与深色井盖拉开反差 -->
     <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#38bdf8"/>
-      <stop offset="0.55" stop-color="#60a5fa"/>
-      <stop offset="1" stop-color="#1e3a8a"/>
+      <stop offset="0" stop-color="#e0f2fe"/>
+      <stop offset="0.55" stop-color="#7dd3fc"/>
+      <stop offset="1" stop-color="#0ea5e9"/>
     </linearGradient>
     <linearGradient id="frogBody" x1="0" y1="0" x2="0" y2="1">
       <stop offset="0" stop-color="#4ade80"/>
@@ -32,12 +32,12 @@
     <ellipse cx="392" cy="128" rx="78" ry="26" fill="none" stroke="#e0f2fe" stroke-width="4" opacity="0.5" transform="rotate(-18 392 128)"/>
   </g>
 
-  <!-- 井：后沿砖圈 + 黑洞 -->
-  <ellipse cx="256" cy="404" rx="172" ry="58" fill="#64748b"/>
-  <ellipse cx="256" cy="396" rx="144" ry="44" fill="#0f172a"/>
+  <!-- 井：后沿砖圈 + 黑洞（深色系，与浅天空强反差） -->
+  <ellipse cx="256" cy="404" rx="172" ry="58" fill="#334155"/>
+  <ellipse cx="256" cy="396" rx="144" ry="44" fill="#020617"/>
 
-  <!-- 青蛙：从井里探出来 -->
-  <g>
+  <!-- 青蛙：从井里探出来（整体缩小，井盖更显大） -->
+  <g transform="translate(256 400) scale(0.8) translate(-256 -400)">
     <!-- 身体 -->
     <ellipse cx="256" cy="372" rx="98" ry="66" fill="url(#frogBody)"/>
     <!-- 眼睛凸包 -->
@@ -59,15 +59,17 @@
   </g>
 
   <!-- 井前沿：压住青蛙下半身，形成「爬出来」的层次 -->
-  <path d="M84 404 a172 58 0 0 0 344 0 l0 26 a172 58 0 0 1 -344 0 z" fill="#475569"/>
+  <path d="M84 404 a172 58 0 0 0 344 0 l0 26 a172 58 0 0 1 -344 0 z" fill="#1e293b"/>
   <!-- 前沿砖缝 -->
-  <g stroke="#334155" stroke-width="5" stroke-linecap="round">
+  <g stroke="#0f172a" stroke-width="5" stroke-linecap="round">
     <path d="M150 428 l0 16"/>
     <path d="M256 440 l0 18"/>
     <path d="M362 428 l0 16"/>
   </g>
 
-  <!-- 前爪搭在井沿上 -->
-  <ellipse cx="163" cy="404" rx="30" ry="18" fill="#22c55e" transform="rotate(-14 163 404)"/>
-  <ellipse cx="349" cy="404" rx="30" ry="18" fill="#22c55e" transform="rotate(14 349 404)"/>
+  <!-- 前爪搭在井沿上（与青蛙同比例缩小，画在井前沿之上） -->
+  <g transform="translate(256 400) scale(0.8) translate(-256 -400)">
+    <ellipse cx="163" cy="404" rx="30" ry="18" fill="#22c55e" transform="rotate(-14 163 404)"/>
+    <ellipse cx="349" cy="404" rx="30" ry="18" fill="#22c55e" transform="rotate(14 349 404)"/>
+  </g>
 </svg>
