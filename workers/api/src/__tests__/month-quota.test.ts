@@ -1,50 +1,53 @@
 import { describe, expect, it } from "vitest";
-import { currentMonthKey, monthAccounting } from "../lib/nodes";
+import { currentMonthKey, isMonthCapped, monthAccounting } from "../lib/nodes";
 
 const GB = 1024 ** 3;
 
-describe("monthAccounting 月度配额记账", () => {
-  it("常规：当月累计，用超配额产生预支", () => {
+/**
+ * 月度配额新语义（硬顶，替代旧「静默预支」）：
+ * 触顶只标记 capped=true（授权快照侧摘除断网），不累加 months_borrowed、不动 expires_at；
+ * 次月账期翻转自动恢复（isMonthCapped 按 month_key 比对，无需回写）。
+ */
+describe("monthAccounting 月度配额记账（硬顶语义）", () => {
+  it("当月累计：触顶 capped=true，未触顶 capped=false", () => {
     const mk = currentMonthKey();
-    // 已用 21 GB（20 GB 配额）：预支 1 个月
-    const acc = monthAccounting({ month_key: mk, month_used_bytes: 20.5 * GB }, 1 * GB, 20);
-    expect(acc.month_used_bytes).toBe(21.5 * GB);
-    expect(acc.borrowed).toBe(1);
-    expect(acc.months_borrowed).toBe(0); // 未跨月不锁定
+    const under = monthAccounting({ month_key: mk, month_used_bytes: 19 * GB }, 0.5 * GB, 20);
+    expect(under.month_used_bytes).toBe(19.5 * GB);
+    expect(under.capped).toBe(false);
+
+    const over = monthAccounting({ month_key: mk, month_used_bytes: 20.5 * GB }, 1 * GB, 20);
+    expect(over.month_used_bytes).toBe(21.5 * GB); // 触顶后照常累计（审计用）
+    expect(over.capped).toBe(true);
   });
 
-  it("跨月：锁定当月预支，月度计数归零", () => {
-    const acc = monthAccounting(
-      { month_key: "2020-01", month_used_bytes: 45 * GB, months_borrowed: 1 },
-      1 * GB,
-      20
-    );
-    expect(acc.months_borrowed).toBe(3); // 1 + floor(45/20)=2
+  it("跨月：账期翻转计数归零重计，不触碰 months_borrowed（函数不再管它）", () => {
+    const acc = monthAccounting({ month_key: "2020-01", month_used_bytes: 45 * GB }, 1 * GB, 20);
     expect(acc.month_used_bytes).toBe(1 * GB);
-    expect(acc.borrowed).toBe(3);
+    expect(acc.month_key).toBe(currentMonthKey());
+    expect(acc.capped).toBe(false);
+    expect("months_borrowed" in acc).toBe(false); // 新语义：记账不产出预支字段
   });
 
-  it("负值防御（脏数据/历史遗留）：不产生负预支，负额被后续用量冲抵", () => {
+  it("触顶后当月继续超：capped 保持 true，用量继续累计", () => {
     const mk = currentMonthKey();
-    // 假设出现 -15 GB 的脏数据：先用 5 GB
-    const acc = monthAccounting({ month_key: mk, month_used_bytes: -15 * GB }, 5 * GB, 20);
-    expect(acc.month_used_bytes).toBe(-10 * GB);
-    expect(acc.borrowed).toBe(0); // floor(-10/20)=-1 被钳制为 0，不会意外延长有效期
+    const acc = monthAccounting({ month_key: mk, month_used_bytes: 25 * GB }, 5 * GB, 20);
+    expect(acc.month_used_bytes).toBe(30 * GB);
+    expect(acc.capped).toBe(true);
+  });
+});
 
-    // 继续用 25 GB：冲抵负额后净 15 GB，仍未超配额
-    const acc2 = monthAccounting({ month_key: mk, month_used_bytes: -10 * GB }, 25 * GB, 20);
-    expect(acc2.month_used_bytes).toBe(15 * GB);
-    expect(acc2.borrowed).toBe(0);
-
-    // 再用 6 GB：净 21 GB，超配额预支 1 个月
-    const acc3 = monthAccounting({ month_key: mk, month_used_bytes: 15 * GB }, 6 * GB, 20);
-    expect(acc3.borrowed).toBe(1);
+describe("isMonthCapped 触顶判定（快照摘除/展示共用口径）", () => {
+  it("当月用量 ≥ 配额 → true；账期非本月 → false（次月自动恢复）", () => {
+    const mk = currentMonthKey();
+    expect(isMonthCapped({ month_key: mk, month_used_bytes: 20 * GB }, 20)).toBe(true);
+    expect(isMonthCapped({ month_key: mk, month_used_bytes: 19.9 * GB }, 20)).toBe(false);
+    // 上月触顶但未回写：账期比对直接视为未触顶，次月无需任何写操作即恢复
+    expect(isMonthCapped({ month_key: "2020-01", month_used_bytes: 45 * GB }, 20)).toBe(false);
   });
 
-  it("负值跨月不锁定、计数归零", () => {
-    const acc = monthAccounting({ month_key: "2020-01", month_used_bytes: -8 * GB }, 2 * GB, 20);
-    expect(acc.months_borrowed).toBe(0); // 负额不抵扣已锁定预支
-    expect(acc.month_used_bytes).toBe(2 * GB); // 负额跨月作废
-    expect(acc.borrowed).toBe(0);
+  it("无配额（quotaGb=0）/ 无账期数据 → false", () => {
+    const mk = currentMonthKey();
+    expect(isMonthCapped({ month_key: mk, month_used_bytes: 999 * GB }, 0)).toBe(false);
+    expect(isMonthCapped({}, 20)).toBe(false);
   });
 });

@@ -72,11 +72,19 @@ async function findToken(kw) {
   return hits[0];
 }
 
-function showToken(t) {
+function showToken(t, plans = []) {
   const p = t.presence ?? {};
+  const quotaGb = plans.find((pl) => pl.id === t.plan_id)?.monthly_quota_gb ?? 0;
   console.log(`token:    ${t.id}  (${t.status})`);
   console.log(`联系:     ${t.contact ?? "-"}`);
   console.log(`套餐:     ${t.plan_id}   流量 ${fmtGB(t.traffic_used_gb)} / ${t.traffic_limit_gb === 0 ? "不限量" : fmtGB(t.traffic_limit_gb)}`);
+  // 月度配额套餐：硬顶语义下总量无意义，展示本月用量 / 月额度（账期非本月视为未用，与后端口径一致）
+  if (quotaGb > 0) {
+    const d = new Date();
+    const mk = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
+    const usedGb = t.month_key === mk ? (t.month_used_bytes ?? 0) / 1024 ** 3 : 0;
+    console.log(`本月:     ${fmtGB(usedGb)} / ${quotaGb} GB${usedGb >= quotaGb ? "（已触顶暂停，可 reset-month 或等次月恢复）" : ""}${t.months_borrowed ? `   已提前重置 ${t.months_borrowed} 次` : ""}`);
+  }
   console.log(`设备:     ${(t.devices ?? []).length} / ${t.max_devices ?? "套餐默认"}`);
   for (const d of t.devices ?? []) {
     console.log(`          ${d.id}  ${d.name || "-"}  ${fmtGB(d.traffic_used_gb)}  最近活跃 ${fmtTime(d.last_active_at)}`);
@@ -104,7 +112,8 @@ const [cmd, ...args] = process.argv.slice(2);
 switch (cmd) {
   case "user": {
     if (!args[0]) { console.error("用法: fg user <邮箱|token id|uuid>"); process.exit(1); }
-    showToken(await findToken(args[0]));
+    const plans = await api("GET", "/plans").catch(() => []);
+    showToken(await findToken(args[0]), plans);
     break;
   }
   case "extend": {

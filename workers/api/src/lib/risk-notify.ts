@@ -161,6 +161,40 @@ export async function sendExpire24hEmail(env: Env, token: Token): Promise<boolea
 }
 
 /**
+ * 月额度触顶通知（硬顶断网）：结算路径发现当月用量触顶时调用。
+ * 幂等键 month_cap:<month_key>——同月只发一次；用户手动 reset-month 会把该键清零，
+ * 同月再次触顶可再收到通知。与 checkTokenRisks 同一约定：改 notify_log，
+ * 调用方负责键级合并写回。
+ */
+export async function sendMonthCapEmail(env: Env, token: Token, quotaGb: number): Promise<boolean> {
+  if (!shouldSendEmail(token.contact)) return false;
+  const mk = token.month_key ?? "";
+  const key = `month_cap:${mk}`;
+  token.notify_log = token.notify_log ?? {};
+  if (token.notify_log[key]) return false;
+  const usedGb = ((token.month_used_bytes ?? 0) / 1024 ** 3).toFixed(1);
+  const { subject, html, text } = shell(
+    env,
+    "本月额度已用完",
+    `<p>你好，你的 Token（<strong>${token.id}</strong>）本月额度 <strong>${quotaGb} GB</strong> 已用完（已用 ${usedGb} GB），服务已暂停。</p>
+     <p>你有两个选择：</p>
+     <ul style="margin:0;padding-left:20px;color:#334155;">
+       <li><strong>等自动恢复</strong>：次月 1 日（UTC）额度自动清零，服务自动恢复，不影响到期时间；</li>
+       <li><strong>立即恢复</strong>：到管理页点「提前重置」，马上恢复使用，代价是有效期提前 30 天。</li>
+     </ul>`,
+    `你的 Token（${token.id}）本月额度 ${quotaGb} GB 已用完（已用 ${usedGb} GB），服务已暂停。\n两个选择：1) 等次月 1 日自动恢复，不影响到期时间；2) 到管理页点「提前重置」立即恢复，代价是有效期提前 30 天。`
+  );
+  const res = await sendMail(env, token.contact!, subject, html, text, { kind: "account" });
+  if (res.ok) {
+    token.notify_log[key] = Date.now();
+    console.log(`[risk] notified ${token.id} kind=${key}`);
+  } else {
+    console.error(`[risk] notify failed ${token.id} kind=${key}: ${res.error}`);
+  }
+  return res.ok;
+}
+
+/**
  * 管理员主动触达用户的服务邮件（公告/售后；人工触发，无幂等键）：
  * 带 72h 免登录链接直达管理页。bodyHtml 由调用方负责转义拼接。
  */

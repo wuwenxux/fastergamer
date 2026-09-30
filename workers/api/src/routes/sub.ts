@@ -1,10 +1,10 @@
 import { Hono } from "hono";
-import { getTokenByAnyUuid, recordSubFetch } from "../lib/kv";
+import { getTokenByAnyUuid, getPlans, recordSubFetch } from "../lib/kv";
 import { activatePaidToken } from "../lib/activate";
 import { buildClashConfig, parseRegions } from "../lib/clash";
 import { buildVlessSubscription } from "../lib/sub-links";
 import { buildSingboxConfig } from "../lib/singbox";
-import { getNodes, isBudgetExhausted } from "../lib/nodes";
+import { currentMonthKey, getNodes, isBudgetExhausted } from "../lib/nodes";
 import { ispFromAsn, orderNodesForIsp } from "../lib/isp";
 import { pushAuthRefresh } from "../lib/authpush";
 import { qrPng } from "../lib/qr-png";
@@ -205,9 +205,16 @@ subRoutes.get("/", async (c) => {
 
   // subscription-userinfo：Clash/Stash 客户端可直接显示已用流量与到期时间
   // （不区分上下行，已用量统一计入 download）；三种格式都发——Shadowrocket 等
-  // 非 Clash 客户端同样读这个头展示流量
-  const usedBytes = Math.round(token.traffic_used_gb * 1024 ** 3);
-  const totalBytes = Math.round(token.traffic_limit_gb * 1024 ** 3);
+  // 非 Clash 客户端同样读这个头展示流量。
+  // 月度配额套餐：total/used 改用月口径（本月用量 / 月额度），客户端进度条显示的是
+  // 当月剩余——硬顶语义下总量对用户无意义；非月度套餐保持总口径不变
+  const quotaGb = (await getPlans(c.env)).find((p) => p.id === token.plan_id)?.monthly_quota_gb ?? 0;
+  const monthUsedBytes =
+    quotaGb > 0 && token.month_key === currentMonthKey() ? Math.max(0, token.month_used_bytes ?? 0) : 0;
+  const usedBytes =
+    quotaGb > 0 ? monthUsedBytes : Math.round(token.traffic_used_gb * 1024 ** 3);
+  const totalBytes =
+    quotaGb > 0 ? Math.round(quotaGb * 1024 ** 3) : Math.round(token.traffic_limit_gb * 1024 ** 3);
   const expireSec = token.expires_at ? Math.floor(token.expires_at / 1000) : 0;
   c.header(
     "subscription-userinfo",

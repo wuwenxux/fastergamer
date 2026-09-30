@@ -7,7 +7,8 @@
  * 授权变更点（激活/撤销/设备/节点注册表等）会主动推送节点立即刷新（见 lib/authpush）。
  */
 import { KV, type Token } from "../../../../shared/types";
-import { listKeys, mapBatched } from "./kv";
+import { listKeys, mapBatched, getPlans } from "./kv";
+import { isMonthCapped } from "./nodes";
 import type { Env } from "../types";
 
 /**
@@ -63,6 +64,9 @@ export async function computeAuthSnapshot(env: Env) {
   const blockedIps = new Set<string>();
   const usage: AuthSnapshot["usage"] = {};
   const keys = await listKeys(env.TOKENS, KV.TOKEN);
+  // 月度配额在套餐上：重建时读一次 plans（单键），月额度硬顶的 token 从名单摘除
+  const plans = await getPlans(env);
+  const quotaByPlan = new Map(plans.map((p) => [p.id, p.monthly_quota_gb ?? 0]));
   // 逐键串行 get 是全量重建的主要延迟来源：分批并发读回（只读操作，任意并发安全），
   // 解析与汇总仍在单线程内按原顺序进行，结果与串行完全一致
   const raws = await mapBatched(keys, (k) => env.TOKENS.get(k.name));
@@ -77,7 +81,10 @@ export async function computeAuthSnapshot(env: Env) {
       // 共享检测暂停：无自动到期，续费或管理端清除 share_suspended_at 后才恢复
       !token.share_suspended_at &&
       (token.expires_at ?? 0) > now &&
-      withinTrafficAllowance(token, now)
+      withinTrafficAllowance(token, now) &&
+      // 月额度硬顶：当月用量触顶即摘除；次月账期翻转（isMonthCapped 按 month_key 比对）自动恢复，
+      // 或用户手动 reset-month（清 month_used_bytes）后立即恢复
+      !isMonthCapped(token, quotaByPlan.get(token.plan_id) ?? 0)
     ) {
       uuids.push(token.uuid);
       for (const d of token.devices ?? []) uuids.push(d.uuid);

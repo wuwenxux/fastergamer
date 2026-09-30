@@ -227,6 +227,20 @@ export const api = {
       headers: sessionHeaders(),
     }),
 
+  /** 月度配额提前重置：本月用量清零立即恢复，有效期 -30 天。
+   *  changed=false 表示本月未触顶、幂等返回当前状态（未扣期）；需本人登录，否则 401 */
+  resetMonth: (tokenId: string) =>
+    request<{
+      changed: boolean;
+      month_used_bytes: number;
+      month_quota_gb: number;
+      months_borrowed: number;
+      expires_at?: number;
+    }>(`/api/tokens/${tokenId}/reset-month`, {
+      method: "POST",
+      headers: sessionHeaders(),
+    }),
+
   /** 升级套餐（补差价）：返回升级订单；差价 ≤0 时 paid=true 且 token 为升级后的完整数据 */
   upgradeToken: (tokenId: string, target_plan_id: string) =>
     request<{ order: Order; token?: TokenView; paid: boolean }>(`/api/tokens/${tokenId}/upgrade`, {

@@ -158,6 +158,38 @@ describe("订阅格式路由（format 参数）", () => {
       expect(res.headers.get("profile-update-interval")).toBe("720");
     }
   });
+
+  it("月度配额套餐：userinfo 走月口径（本月用量 / 月额度），账期非本月视为 0", async () => {
+    // 套餐带 monthly_quota_gb=20：total=20GB，download=当月用量而非总量
+    const tokens = fakeNs();
+    const nodes = fakeNs();
+    await nodes.ns.put(KV.NODES, JSON.stringify(NODES));
+    const mk = `${new Date().getUTCFullYear()}-${String(new Date().getUTCMonth() + 1).padStart(2, "0")}`;
+    const token = makeToken({
+      month_key: mk,
+      month_used_bytes: 8 * 1024 ** 3,
+      traffic_limit_gb: 260,
+      traffic_used_gb: 150,
+    });
+    await tokens.ns.put(KV.TOKEN + token.uuid, JSON.stringify(token));
+    await tokens.ns.put(KV.TOKEN_BY_ID + token.id, JSON.stringify({ uuid: token.uuid }));
+    invalidateNodesCache();
+    const env = {
+      ...makeEnv(tokens.ns, nodes.ns),
+      DEFAULT_PLANS: JSON.stringify([
+        { id: "plan_monthly", name: "年付", duration_days: 365, price_cny: 120, description: "", monthly_quota_gb: 20 },
+      ]),
+    } as unknown as Env;
+    const res = await getSub(env, UUID);
+    const info = res.headers.get("subscription-userinfo")!;
+    expect(info).toContain(`download=${8 * 1024 ** 3}`);
+    expect(info).toContain(`total=${Math.round(20 * 1024 ** 3)}`);
+    // 账期非本月：download 归零（次月自动恢复口径）
+    const token2 = makeToken({ month_key: "2020-01", month_used_bytes: 25 * 1024 ** 3 });
+    await tokens.ns.put(KV.TOKEN + token2.uuid, JSON.stringify(token2));
+    const res2 = await getSub(env, UUID);
+    expect(res2.headers.get("subscription-userinfo")).toContain("download=0");
+  });
 });
 
 describe("vless 通用订阅内容", () => {

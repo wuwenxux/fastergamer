@@ -14,6 +14,7 @@ import { newOrderId, newTokenId } from "../lib/ids";
 import { activatePaidToken } from "../lib/activate";
 import { fulfillOrder } from "../lib/issue-token";
 import { resetPenalty, sendPenaltyNoticeEmail } from "../lib/reset-penalty";
+import { currentMonthKey } from "../lib/nodes";
 import { allowGuardedIp, denyGuardedIp } from "../lib/device-guard";
 import { pushAuthRefresh } from "../lib/authpush";
 import { siteUrl } from "../lib/site-url";
@@ -555,6 +556,56 @@ tokensRoutes.post("/:id/reset-penalty", async (c) => {
   await sendPenaltyNoticeEmail(c.env, token, daysPenalty);
 
   return c.json({ ok: true, data: token });
+});
+
+/**
+ * POST /api/tokens/:id/reset-month —— 月度配额「提前重置」：本月用量清零立即恢复，
+ * 代价是有效期 -30 天（months_borrowed +1）。仅本人可操作。
+ * 仅月度配额套餐、且当前自然月已触顶才可用；未触顶时幂等返回当前状态（不扣期），
+ * 前端据此处理用户重复点击。触顶后同月可再次重置（再次烧满再次扣 30 天）。
+ */
+tokensRoutes.post("/:id/reset-month", async (c) => {
+  const token = await getTokenById(c.env, c.req.param("id"));
+  if (!token) return c.json({ ok: false, error: "token not found" }, 404);
+  if (!(await isOwner(c.env, c.req.header("authorization"), token))) {
+    return c.json({ ok: false, error: "请先通过邮箱登录链接进入后再操作" }, 401);
+  }
+
+  const plans = await getPlans(c.env);
+  const quotaGb = plans.find((p) => p.id === token.plan_id)?.monthly_quota_gb ?? 0;
+  if (quotaGb <= 0) {
+    return c.json({ ok: false, error: "当前套餐没有月度配额，无需提前重置" }, 400);
+  }
+
+  const mk = currentMonthKey();
+  const usedBytes = token.month_key === mk ? (token.month_used_bytes ?? 0) : 0;
+  const state = {
+    month_used_bytes: usedBytes,
+    month_quota_gb: quotaGb,
+    expires_at: token.expires_at,
+    months_borrowed: token.months_borrowed ?? 0,
+  };
+  // 未触顶：幂等返回当前状态，不扣期（前端重复点击/误触安全）
+  if (usedBytes < quotaGb * 1024 ** 3) {
+    return c.json({ ok: true, data: { changed: false, ...state } });
+  }
+
+  const expiresAt = (token.expires_at ?? Date.now()) - 30 * 86_400_000;
+  // 重读-合并写：只覆盖月账期与有效期字段，不碰结算路径并发更新的其他字段；
+  // month_cap 幂等键清零——同月再次触顶时通知邮件可再发
+  await mergeTokenSettlement(c.env, token.uuid, {
+    month_used_bytes: 0,
+    month_key: mk,
+    months_borrowed: (token.months_borrowed ?? 0) + 1,
+    expires_at: expiresAt,
+    notify_log: { [`month_cap:${mk}`]: 0 },
+  });
+  c.executionCtx.waitUntil(pushAuthRefresh(c.env)); // 快照重新生成后该 uuid 立即恢复授权
+
+  return c.json({
+    ok: true,
+    data: { ...state, changed: true, month_used_bytes: 0, months_borrowed: (token.months_borrowed ?? 0) + 1, expires_at: expiresAt },
+  });
 });
 
 /**

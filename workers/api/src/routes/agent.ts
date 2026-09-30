@@ -10,7 +10,7 @@ import {
   mergeTokenSettlement,
   type TokenSettlementPatch,
 } from "../lib/kv";
-import { checkNodeBudget, checkTokenRisks, updateSpikeWindow, sendSpikeAlert, notifyIpChange, resolveConcurrentGeoConflict, resolveIpLocationChange } from "../lib/risk-notify";
+import { checkNodeBudget, checkTokenRisks, updateSpikeWindow, sendSpikeAlert, sendMonthCapEmail, notifyIpChange, resolveConcurrentGeoConflict, resolveIpLocationChange } from "../lib/risk-notify";
 import { evaluateTravel } from "../lib/travel-guard";
 import { checkTrialAbuse, applyAbuseWindow } from "../lib/abuse";
 import { getAuthSnapshot, TRAFFIC_GRACE_MS } from "../lib/authsnapshot";
@@ -252,24 +252,17 @@ async function applyTrafficDelta(
   token.traffic_used_gb = totalBytes / 1024 / 1024 / 1024;
   presence.last_active_at = now;
 
-  // 月度配额：当月用超自动预支下月额度，有效期永久提前一个月（每档邮件通知一次）
+  // 月度配额（硬顶语义）：当月用量触顶即从授权快照摘除断网，次月 1 日自动恢复；
+  // 不再自动预支（months_borrowed/expires_at 不由结算改动），提前恢复靠用户手动
+  // reset-month（有效期 -30 天）。触顶通知邮件在下方通知段发（幂等键 month_cap:<月>）
   const quotaGb = plansById.get(token.plan_id)?.monthly_quota_gb;
-  let borrowed = 0;
+  let monthCapped = false;
   if (quotaGb && quotaGb > 0) {
     const acc = monthAccounting(token, delta, quotaGb);
-    token.months_borrowed = acc.months_borrowed;
     token.month_used_bytes = acc.month_used_bytes;
     token.month_key = acc.month_key;
-    borrowed = acc.borrowed;
-    const base = token.base_expires_at ?? token.expires_at;
-    if (base) {
-      token.base_expires_at = base;
-      token.expires_at = base - borrowed * 30 * 86_400_000;
-      if (token.status === "active" && token.expires_at <= now) {
-        token.status = "expired";
-        authChanged = true; // 预支耗尽提前到期：从授权名单摘除
-      }
-    }
+    monthCapped = acc.capped;
+    if (monthCapped) authChanged = true; // 推送节点立即刷新，快照生成侧把触顶 uuid 摘除
   }
 
   // 不限量套餐（上限 ≤ 0）不参与耗尽判断；流量仍照常累计供审计
@@ -314,10 +307,10 @@ async function applyTrafficDelta(
     traffic_exhausted_at: token.traffic_exhausted_at,
     status: token.status,
     expires_at: token.expires_at,
-    base_expires_at: token.base_expires_at,
+    // months_borrowed / base_expires_at 已不在结算路径改动（月额度硬顶新语义），
+    // 有意不进 patch：避免结算的过期副本覆盖 reset-month 的并发扣减
     month_used_bytes: token.month_used_bytes,
     month_key: token.month_key,
-    months_borrowed: token.months_borrowed,
     rate_window_start: token.rate_window_start,
     rate_window_bytes: token.rate_window_bytes,
     abuse_window_start: token.abuse_window_start,
@@ -366,6 +359,9 @@ async function applyTrafficDelta(
   await savePresenceIfChanged(env, token.uuid, presenceBase, presence);
   if (dgBlocked) authChanged = true; // 新增阻断：推送全节点刷新，blocked_ips 随快照下发
   // 客户要求只保留交易/安全类邮件：月度配额 80% 预警（month80）与预支提醒（borrow_N）已下线
+  // 月额度触顶：硬顶断网通知（幂等键 month_cap:<月>，reset-month 会清零该键，同月再触顶可再发）；
+  // 放在 checkTokenRisks 之前，notify_log 变更随下方同一次合并写回
+  if (monthCapped && quotaGb) await sendMonthCapEmail(env, token, quotaGb);
   // 风险检测：流量耗尽 / 多设备时提醒客户（幂等，每类只发一次）
   await checkTokenRisks(env, token);
   // 通知产生的 notify_log 变更按键级合并写回（不覆盖并发路径新增的记录）

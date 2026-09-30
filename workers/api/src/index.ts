@@ -69,6 +69,7 @@ app.use("/api/tokens/trial", rateLimit(3, 60_000), turnstile);
 app.use("/api/tokens/login-link", rateLimit(5, 60_000), turnstile);
 app.use("/api/tokens/magic/consume", rateLimit(10, 60_000));
 app.use("/api/tokens/*/reset-penalty", rateLimit(5, 60_000));
+app.use("/api/tokens/*/reset-month", rateLimit(5, 60_000));
 app.use("/api/tokens/*/upgrade", rateLimit(10, 60_000));
 app.use("/api/orders", rateLimit(20, 60_000), turnstile);
 // 「我已支付」是公开接口且会触发站长邮件，限流防刷（订单级 6h 节流之外的第二道防线）

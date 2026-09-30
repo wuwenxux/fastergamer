@@ -134,13 +134,15 @@ export interface Token {
   billing_by_node?: Record<string, string>;
   /** 流量记账基准偏移（bytes）：惩罚性重置后从该值起算，总量 = sum(traffic_by_node) - offset */
   traffic_offset_bytes?: number;
-  /** 当月已用流量（bytes，自然月重置）；仅套餐设了 monthly_quota_gb 时参与限额 */
+  /** 当月已用流量（bytes，自然月重置）；仅套餐设了 monthly_quota_gb 时参与限额。
+   *  达月额度即硬顶断网（授权快照摘除），自然月翻转自动恢复；用户也可手动「提前重置」 */
   month_used_bytes?: number;
   /** 当前月度账期标识，如 "2026-08" */
   month_key?: string;
-  /** 已锁定的预支月数（跨月不归还；当月新预支 = floor(month_used/quota)） */
+  /** 历史遗留 + 手动提前重置的累计月数：旧「静默预支」语义已废（结算不再累加），
+   *  现在只有用户手动 reset-month（每次有效期 -30 天）会 +1；存量值原样保留 */
   months_borrowed?: number;
-  /** 原始到期时间（激活时设定）；实际 expires_at = base - 预支月数*30天 */
+  /** 原始到期时间（激活时设定）；旧预支语义的计算基准，新语义下不再被结算重算，仅存量数据保留 */
   base_expires_at?: number;
   /** 流量耗尽时间 */
   traffic_exhausted_at?: number;

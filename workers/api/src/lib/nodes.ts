@@ -139,28 +139,36 @@ export const currentMonthKey = (now = new Date()): string =>
   `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, "0")}`;
 
 /**
- * 月度配额记账（纯函数）：返回记账后的账期字段与累计预支月数。
- * floor 结果用 max(0,…) 钳制：防御负的 month_used_bytes（脏数据/历史遗留）产生
- * 负预支而意外延长有效期；正常业务路径不会产生负值。
+ * 月度配额记账（纯函数）：自然月翻转则清零重计，返回记账后的账期字段与是否触顶。
+ * 新语义（替代旧「静默预支」）：触顶即硬顶断网（授权快照侧摘除），不再累加
+ * months_borrowed、不再改 expires_at；month_used 照常累计供审计。
+ * 提前恢复只有两条路：等次月 1 日自动清零，或用户手动 reset-month（有效期 -30 天）。
  */
 export const monthAccounting = (
-  state: { months_borrowed?: number; month_used_bytes?: number; month_key?: string },
+  state: { month_used_bytes?: number; month_key?: string },
   delta: number,
   quotaGb: number,
   now = new Date()
-): { months_borrowed: number; month_used_bytes: number; month_key: string; borrowed: number } => {
+): { month_used_bytes: number; month_key: string; capped: boolean } => {
   const quotaBytes = quotaGb * 1024 ** 3;
   const mk = currentMonthKey(now);
-  let monthsBorrowed = state.months_borrowed ?? 0;
-  let monthUsed = state.month_used_bytes ?? 0;
-  if (state.month_key !== mk) {
-    monthsBorrowed += Math.max(0, Math.floor(monthUsed / quotaBytes));
-    monthUsed = 0;
-  }
-  monthUsed += delta;
-  const borrowed = monthsBorrowed + Math.max(0, Math.floor(monthUsed / quotaBytes));
-  return { months_borrowed: monthsBorrowed, month_used_bytes: monthUsed, month_key: mk, borrowed };
+  const monthUsed = (state.month_key === mk ? (state.month_used_bytes ?? 0) : 0) + delta;
+  return { month_used_bytes: monthUsed, month_key: mk, capped: monthUsed >= quotaBytes };
 };
+
+/**
+ * 月度配额是否触顶（授权快照/展示共用口径）：账期不是当前自然月时视为未用
+ * （触顶 token 被快照摘除后不再有结算写入，靠这里的账期比对实现次月自动恢复，
+ * 无需任何定时任务回写）
+ */
+export const isMonthCapped = (
+  token: { month_used_bytes?: number; month_key?: string },
+  quotaGb: number,
+  now = new Date()
+): boolean =>
+  quotaGb > 0 &&
+  token.month_key === currentMonthKey(now) &&
+  (token.month_used_bytes ?? 0) >= quotaGb * 1024 ** 3;
 
 /**
  * 节点在线判定。优先用中心主动探测结果（probe-nodes.sh 从国内 ping 节点，

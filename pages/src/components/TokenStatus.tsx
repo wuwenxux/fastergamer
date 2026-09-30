@@ -55,6 +55,7 @@ export default function TokenStatus({ token }: { token: TokenView }) {
   const [activatedRestricted, setActivatedRestricted] = useState(false);
   const [rotating, setRotating] = useState(false);
   const [resetting, setResetting] = useState(false);
+  const [resettingMonth, setResettingMonth] = useState(false);
 
   // 套餐带月度配额时拉取配额值用于展示
   useEffect(() => {
@@ -91,6 +92,11 @@ export default function TokenStatus({ token }: { token: TokenView }) {
   const remainingGb = Math.max(0, limitGb - usedGb);
   const trafficPercent = limitGb > 0 ? Math.min(100, (usedGb / limitGb) * 100) : 0;
   const trafficExhausted = limitGb > 0 && usedGb >= limitGb;
+
+  // 月度口径与后端一致（UTC 自然月）：账期不是本月时视为未用（次月自动恢复，无需等回写）
+  const utcMonthKey = `${new Date().getUTCFullYear()}-${String(new Date().getUTCMonth() + 1).padStart(2, "0")}`;
+  const monthUsedBytes = current.month_key === utcMonthKey ? (current.month_used_bytes ?? 0) : 0;
+  const monthCapped = monthlyQuotaGb !== null && monthUsedBytes >= monthlyQuotaGb * 1024 ** 3;
 
   const isOnline =
     current.online === true &&
@@ -197,6 +203,32 @@ export default function TokenStatus({ token }: { token: TokenView }) {
     }
   };
 
+  // 月度配额提前重置：本月清零立即恢复，有效期 -30 天；changed=false（未触顶）时不扣期只提示
+  const onResetMonth = async () => {
+    if (!window.confirm("确认提前重置本月额度？\n本月用量立即清零、服务恢复，代价是有效期提前 30 天。")) return;
+    setResettingMonth(true);
+    try {
+      const r = await api.resetMonth(current.id);
+      if (!r.changed) {
+        alert("本月额度尚未用完，无需提前重置。");
+        return;
+      }
+      setCurrent({
+        ...current,
+        month_used_bytes: 0,
+        months_borrowed: r.months_borrowed,
+        expires_at: r.expires_at ?? current.expires_at,
+      });
+      alert(
+        `已重置：本月额度恢复 ${r.month_quota_gb} GB。\n新到期时间：${r.expires_at ? new Date(r.expires_at).toLocaleString() : "未知"}（有效期 -30 天）`
+      );
+    } catch (e) {
+      alert((e as Error).message);
+    } finally {
+      setResettingMonth(false);
+    }
+  };
+
   // 去续费：购买页从 localStorage 的 fg_contact 预填邮箱，先把 token 的联系方式带过去（同口径参考 Tokens 页下单流程）
   const goRenew = () => {
     if (current.contact) {
@@ -289,12 +321,28 @@ export default function TokenStatus({ token }: { token: TokenView }) {
           <div className="text-sm sm:text-xs text-slate-400">
             剩余 {remainingGb.toFixed(2)} GB{monthlyQuotaGb ? "（总流量）" : "（总额度，不限月）"}
           </div>
-          {monthlyQuotaGb && (
-            <div className="text-sm sm:text-xs text-slate-400">
-              本月已用 {((current.month_used_bytes ?? 0) / 1024 ** 3).toFixed(2)} / {monthlyQuotaGb} GB
-              <span className="text-slate-500">
-                （当月用超将预支下月额度，有效期提前一个月；次月 1 日恢复新额度）
-              </span>
+          {monthlyQuotaGb !== null && (
+            <div className="space-y-2">
+              <div className="text-sm sm:text-xs text-slate-400">
+                本月已用 {(monthUsedBytes / 1024 ** 3).toFixed(2)} / {monthlyQuotaGb} GB
+                <span className="text-slate-500">
+                  （当月用完即暂停，次月 1 日自动恢复）
+                </span>
+              </div>
+              {monthCapped && (
+                <div className="space-y-2">
+                  <p className="text-sm leading-relaxed sm:text-xs text-rose-400">
+                    本月额度已用完，服务已暂停。等次月 1 日自动恢复，或提前重置立即恢复。
+                  </p>
+                  <button
+                    onClick={onResetMonth}
+                    disabled={resettingMonth}
+                    className="w-full rounded-lg border border-amber-500/50 bg-amber-500/10 py-3 sm:py-2 text-sm sm:text-xs font-medium text-amber-400 hover:bg-amber-500/20 transition-colors disabled:opacity-60"
+                  >
+                    {resettingMonth ? "重置中…" : "提前重置（用下月额度，有效期 -30 天）"}
+                  </button>
+                </div>
+              )}
             </div>
           )}
           {trafficExhausted && (
