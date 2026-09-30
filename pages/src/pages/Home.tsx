@@ -54,7 +54,7 @@ export default function Home() {
 
       {/* 优势 / 信任：新用户决策「要不要试」最需要的信息 */}
       <section className="max-w-3xl mx-auto space-y-5">
-        <h2 className="text-2xl sm:text-xl font-semibold text-center">为什么选 GameBoost</h2>
+        <h2 className="text-2xl sm:text-xl font-semibold text-center">为什么选 FrogLeap</h2>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           <Feature
             title="免注册，邮箱即账号"

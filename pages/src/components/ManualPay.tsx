@@ -173,7 +173,7 @@ function PayProductVisual({ plan }: { plan?: Plan }) {
         {name}
       </text>
       <text x="150" y="94" fill="#64748b" fontSize="10">
-        GameBoost · 游戏加速
+        FrogLeap · 蛙跃加速
       </text>
 
       {/* 规格 chips */}
