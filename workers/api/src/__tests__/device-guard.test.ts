@@ -15,7 +15,8 @@ import type { Env } from "../types";
 
 vi.mock("../lib/email-aliyun", async (importOriginal) => {
   const orig = await importOriginal<typeof import("../lib/email-aliyun")>();
-  return { ...orig, sendMail: vi.fn(async () => ({ ok: true })) };
+  const { dedupAwareSendMailMock } = await import("./helpers");
+  return { ...orig, sendMail: dedupAwareSendMailMock() };
 });
 import { sendMail } from "../lib/email-aliyun";
 
@@ -53,12 +54,19 @@ const NODE = {
   active: true,
 };
 
-const makeEnv = () =>
-  baseEnv({
+// 当前测试 env 的认领存储（fakeShareGuard.claims）：seedToken 默认占用 ip_change 键，
+// 压掉多地并发提醒——本文件多数用例只关心 device_guard 邮件
+let claimStore: Map<string, number>;
+
+const makeEnv = () => {
+  const r = baseEnv({
     nodes: [NODE],
     defaultPlans: [MONTHLY_PLAN, TRIAL_PLAN],
     extra: { SITE_URL: "https://fastergamer.click", ADMIN_NOTIFY_EMAIL: "admin@test.com" },
   });
+  claimStore = r.shareGuard.claims;
+  return r;
+};
 
 let seq = 0;
 const seedToken = (store: Map<string, string>, over: Partial<Token> = {}): Token => {
@@ -73,13 +81,12 @@ const seedToken = (store: Map<string, string>, over: Partial<Token> = {}): Token
     purchased_at: Date.now(),
     contact: `user${seq}@example.com`,
     expires_at: Date.now() + 30 * 86_400_000,
-    // 默认压掉多地并发提醒（ip_change）：本文件多数用例只关心 device_guard 邮件；
-    // 需要验证 ip_change 行为（抑制用例）时由测试显式覆盖 notify_log
-    notify_log: { ip_change: Date.now() },
     ...over,
   };
   store.set(KV.TOKEN + token.uuid, JSON.stringify(token));
   store.set(KV.TOKEN_BY_ID + token.id, JSON.stringify({ uuid: token.uuid }));
+  // 默认占用 ip_change 认领键（12h 窗口内）：等价于 ip_change 提醒刚发过，不再打扰
+  claimStore?.set(`ip_change:${token.id}`, Date.now());
   return token;
 };
 
@@ -212,9 +219,12 @@ describe("设备级防护：判定与自动阻断", () => {
   it("持续 2 个周期并发：阻断新 IP（老 IP 不动），台账 pending + 邮件机主", async () => {
     const { env, tokens } = makeEnv();
     stubFetch();
+    // 两个 IP 同城（无 geo 冲突）：ip_change 提醒本身不会触发，其认领键只能来自 device-guard 行动
     seedGeo(tokens.store, IP_A);
-    seedGeo(tokens.store, IP_B, "广东", "广州");
+    seedGeo(tokens.store, IP_B);
     const t = seedToken(tokens.store);
+    // 撤掉默认的 ip_change 占用：验证 device-guard 行动会自己占用它（抑制 12h 内的 ip_change）
+    claimStore.delete(`ip_change:${t.id}`);
 
     await report(env, t.uuid, { [IP_A]: 2 });
     await report(env, t.uuid, { [IP_A]: 1, [IP_B]: 2 });
@@ -224,10 +234,10 @@ describe("设备级防护：判定与自动阻断", () => {
     const saved = readToken(tokens.store, t.uuid);
     expect(saved.blocked_ips).toEqual([IP_B]); // 只阻断新 IP，老 IP 不动
     expect(saved.device_guard?.[IP_B]).toMatchObject({ uuid: t.uuid, status: "pending" });
-    expect(saved.device_guard?.[IP_B]?.geo).toContain("广州");
+    expect(saved.device_guard?.[IP_B]?.geo).toContain("成都");
     // pending 已清
     expect(readPresence(tokens.store, t.uuid).dg_pending ?? {}).toEqual({});
-    // 邮件机主（节流键已打）
+    // 邮件机主：device_guard 一封；行动已占用 ip_change 键，并发在线提醒被抑制
     expect(sendMail).toHaveBeenCalledTimes(1);
     const [, to, subject, html] = vi.mocked(sendMail).mock.calls[0];
     expect(to).toBe(t.contact);
@@ -236,7 +246,9 @@ describe("设备级防护：判定与自动阻断", () => {
     // 多设备口径：引导建槽迁移，不出现单设备文案
     expect(html).toContain("独立槽位");
     expect(html).not.toContain("仅支持 1 台设备");
-    expect(saved.notify_log?.device_guard).toBeGreaterThan(0);
+    // 认领存储：device_guard 键已占用（12h 节流），ip_change 键被行动占用（抑制并发提醒）
+    expect(claimStore.has(`device_guard:${t.id}`)).toBe(true);
+    expect(claimStore.has(`ip_change:${t.id}`)).toBe(true);
   });
 
   it("可疑 IP 下周期已离线（只是一次网络切换）：重新记 pending，不阻断", async () => {
@@ -333,12 +345,12 @@ describe("设备级防护：判定与自动阻断", () => {
     errSpy.mockRestore();
   });
 
-  it("device_guard 邮件 12h 节流：节流键在窗口内时阻断照做、邮件不发", async () => {
+  it("device_guard 邮件 12h 节流：认领键在窗口内时阻断照做、邮件不发", async () => {
     const { env, tokens } = makeEnv();
     stubFetch();
-    const t = seedToken(tokens.store, {
-      notify_log: { ip_change: Date.now(), device_guard: Date.now() - 60_000 },
-    });
+    const t = seedToken(tokens.store);
+    // device_guard 认领键在 12h 窗口内（等价于 1 分钟前刚发过机主邮件）
+    claimStore.set(`device_guard:${t.id}`, Date.now() - 60_000);
 
     await report(env, t.uuid, { [IP_A]: 2 });
     await report(env, t.uuid, { [IP_A]: 1, [IP_B]: 2 });
@@ -354,8 +366,9 @@ describe("设备级防护：判定与自动阻断", () => {
     const { env, tokens } = makeEnv();
     // ip-api 批量接口：IP_A 成都 / IP_B 广州，跨城并发本应收 ip_change 邮件
     stubFetch({ [IP_A]: { region: "四川", city: "成都" }, [IP_B]: { region: "广东", city: "广州" } });
-    // notify_log.device_guard 在 12h 内（等价于 device-guard 刚行动过）：ip_change 被抑制
-    const t = seedToken(tokens.store, { notify_log: { device_guard: Date.now() - 60_000 } });
+    // ip_change 认领键 1 分钟前被占用（等价于 device-guard 刚行动过：行动会占用该键 12h）
+    const t = seedToken(tokens.store);
+    claimStore.set(`ip_change:${t.id}`, Date.now() - 60_000);
 
     await report(env, t.uuid, { [IP_A]: 2 });
     await report(env, t.uuid, { [IP_A]: 1, [IP_B]: 2 });

@@ -33,20 +33,21 @@
  *    仍由 token 级 share-guard / 多地并发在线提醒覆盖，本功能不重复造。
  *
  * 写库纪律：结算路径的字段写必须走 mergeDeviceGuardFields 重读-合并补丁（与
- * mergeTokenSettlement 并发互不覆盖）；邮件 await 在写库之后；notify_log 原地改，
- * 由调用方（applyTrafficDelta 通知段末尾的集中比对）键级合并收走。
+ * mergeTokenSettlement 并发互不覆盖）；邮件 await 在写库之后，幂等由队列消费者
+ * 认领（dedup 键 device_guard:{token.id} + 12h ttlMs），本模块不碰 notify_log。
  * 用户操作端点（允许/拒绝）走整 JSON 写先例（tokens.ts 设备改名同款，低频无并发问题）。
  */
 import type { Device, DeviceGuardEntry, Plan, Presence, Token } from "../../../../shared/types";
 import { sendMail, shouldSendEmail } from "./email-aliyun";
 import { getPlans, getTokenByUuid, saveDeviceIndex, saveToken, saveTokenValue } from "./kv";
+import { claimNotification } from "./notify-dedup";
 import { lookupIpGeo, shell } from "./risk-notify";
 import { siteUrl } from "./site-url";
 import type { Env } from "../types";
 
 /** 确认窗口：首周期记下可疑新 IP 后，隔这么久再看下周期（结算周期约 90s，3 分钟覆盖 2 个周期） */
 export const DG_CONFIRM_MS = 3 * 60_000;
-/** 机主通知邮件节流：同一 token 12h 最多一封（与 notifyIpChange 的 ip_change 节流同口径） */
+/** 机主通知邮件节流：同一 token 12h 最多一封（dedup 键 ttlMs，与 notifyIpChange 的 ip_change 同口径） */
 export const DG_NOTIFY_THROTTLE_MS = 12 * 3_600_000;
 /** 迁移过渡时长：「允许」后被拦 IP 视同白名单的时间，期内新设备应导入专属槽位链接 */
 export const TRANSITION_MS = 7 * 86_400_000;
@@ -113,7 +114,7 @@ const geoDisplayOf = async (env: Env, ip: string): Promise<string | undefined> =
   return g ? [g.country, g.region, g.city, g.isp].filter(Boolean).join(" / ") : undefined;
 };
 
-/** 机主通知邮件：新 IP 已自动阻断，引导到管理页决策。节流 12h。
+/** 机主通知邮件：新 IP 已自动阻断，引导到管理页决策。节流 12h（dedup 键 ttlMs，消费者认领）。
  *  文案按有效设备数分支：单设备套餐（试用/流量包，maxDevices=1）没有建槽空间，
  *  「允许」只是临时解封，文案必须明说「仅支持 1 台设备、链接不可分享」，别承诺建槽。
  *  导出供 DO 实时裁决路径（src/do/share-guard.ts）复用，与结算路径同一文案同一节流键 */
@@ -127,8 +128,6 @@ export async function sendDeviceGuardEmail(
   maxDevices: number
 ): Promise<void> {
   if (!shouldSendEmail(token.contact)) return;
-  token.notify_log = token.notify_log ?? {};
-  if (now - (token.notify_log.device_guard ?? 0) < DG_NOTIFY_THROTTLE_MS) return;
   const fmt = (ip: string, geo?: string) => `${ip}${geo ? `（${geo}）` : ""}`;
   const oldLines = await Promise.all(prevIps.map(async (ip) => fmt(ip, await geoDisplayOf(env, ip))));
   const newListHtml = blocked.map((b) => `<li>${fmt(b.ip, b.geo)}</li>`).join("\n       ");
@@ -155,9 +154,11 @@ export async function sendDeviceGuardEmail(
      <p style="color:#64748b;font-size:13px;">管理页：<a href="${manageUrl}" style="color:#0ea5e9;">${manageUrl}</a></p>`,
     `检测到你的 Token（${token.id}）的「${deviceName}」凭证在多个来源 IP 同时在线，新 IP ${newListText} 已被自动拦截。\n${decisionText}\n注意：拦截对 IP 全局生效，共享出口网络下同网络设备会一并无法连接。`
   );
-  const res = await sendMail(env, token.contact, subject, html, text, { kind: "account" });
+  const res = await sendMail(env, token.contact, subject, html, text, {
+    kind: "account",
+    dedup: { key: `device_guard:${token.id}`, ttlMs: DG_NOTIFY_THROTTLE_MS },
+  });
   if (res.ok) {
-    token.notify_log.device_guard = now;
     // 用户接入 IP 属敏感信息，日志只记条数不记具体 IP
     console.log(`[device-guard] notified ${token.id} blocked=${blocked.length}`);
   } else {
@@ -262,7 +263,11 @@ export async function evaluateDeviceConns(
   clearPending();
   if (!written) return false; // 封禁列表已满：已记日志，不发邮件（没有实际阻断）
 
-  // 邮件机主决策（await 在写库之后；notify_log 原地改由调用方集中比对收走）。
+  // 阻断已另有专函（device_guard 邮件），12h 内压掉多地并发在线提醒（ip_change）：
+  // 直接占用其认领键（旧语义是 notify_log.device_guard 时间戳抑制，现迁到认领存储）
+  await claimNotification(env, `ip_change:${token.id}`, DG_NOTIFY_THROTTLE_MS);
+
+  // 邮件机主决策（await 在写库之后；幂等由消费者认领，本层不管）。
   // 文案按有效设备数分支：单设备套餐不承诺建槽（口径与 allowGuardedIp/加设备端点一致）
   const deviceName = device?.name ?? "主设备";
   const maxDevices = token.max_devices ?? plansById.get(token.plan_id)?.max_devices ?? 2;

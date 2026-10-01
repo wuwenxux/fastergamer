@@ -11,9 +11,15 @@
  *     → 候选凭证（单节点 ≥2 IP / 全局并发 ≥2）按 60s 节拍反查 token KV
  *     → evaluateGlobalConns（纯函数）产出裁决 → 复用现有 lib 执行 → pushAuthRefresh
  *
- * 状态全内存（不用 storage/alarm）：DO 被逐出后由后续心跳数分钟内重建，pending 计时
- * 重置可容忍——所有处置副作用都落在 KV 且幂等（blocked_ips 并集、notify_log 节流键、
+ * 心跳状态全内存（不用 storage/alarm）：DO 被逐出后由后续心跳数分钟内重建，pending
+ * 计时重置可容忍——所有处置副作用都落在 KV 且幂等（blocked_ips 并集、
  * share_suspended_at 存在即跳过），DO 不另建去重状态。
+ *
+ * 例外：本 DO 同时托管「通知邮件认领存储」（/notify-claim /notify-release，用
+ * ctx.storage 持久化）——全站一次性/节流邮件的幂等唯一权威（替代旧 notify_log
+ * 口头约定，后者在「并发请求拿同一旧快照 + KV 边缘缓存整写抹掉标记」下会重复发信）。
+ * DO 单线程串行 + 持久化存储，认领天然原子。键量级 = token 数 × 几种 kind，
+ * 可忽略，不做清理任务（200 天硬过期兜底防无限残留）。
  *
  * 与结算路径的关系：两条路径跑同一套状态机语义（阈值常量直接复用 lib 导出），
  * 结算路径保留作老 agent 未升级时的兜底；撞车时的幂等同样靠上述 KV 字段。
@@ -23,7 +29,7 @@
  */
 import { DurableObject } from "cloudflare:workers";
 import type { Device, DeviceGuardEntry, Plan, Token } from "../../../../shared/types";
-import { getPlans, getTokenByAnyUuid, mapBatched, mergeTokenSettlement } from "../lib/kv";
+import { getPlans, getTokenByAnyUuid, mapBatched } from "../lib/kv";
 import { DG_CONFIRM_MS, mergeDeviceGuardFields, sendDeviceGuardEmail } from "../lib/device-guard";
 import { CONN_OBSERVE_THRESHOLD, evaluateShareConns } from "../lib/share-guard";
 import { lookupIpGeo } from "../lib/risk-notify";
@@ -202,6 +208,15 @@ interface HeartbeatBody {
   ips?: Record<string, string[]>;
 }
 
+/** POST /notify-claim 的请求体：key 唯一标识一封通知（如 `trial_convert:{tokenId}`），ttlMs 供节流类键过期重领 */
+interface NotifyClaimBody {
+  key?: string;
+  ttlMs?: number;
+}
+
+/** 认领键的硬过期兜底：200 天前的记录视为可重领（防一次性键永久残留，量级本就可忽略） */
+export const NOTIFY_CLAIM_HARD_EXPIRE_MS = 200 * 86_400_000;
+
 export class ShareGuardDO extends DurableObject<Env> {
   private nodes = new Map<string, NodeEntry>();
   private dgMem = new Map<string, DgMemEntry>();
@@ -209,6 +224,8 @@ export class ShareGuardDO extends DurableObject<Env> {
 
   async fetch(request: Request): Promise<Response> {
     if (request.method !== "POST") return Response.json({ ok: false, error: "method not allowed" }, { status: 405 });
+    const path = new URL(request.url).pathname;
+    if (path === "/notify-claim" || path === "/notify-release") return this.handleNotifyClaim(request, path);
     const body = (await request.json().catch(() => null)) as HeartbeatBody | null;
     if (!body?.nodeId) return Response.json({ ok: false, error: "missing nodeId" }, { status: 400 });
     const now = Date.now();
@@ -216,6 +233,31 @@ export class ShareGuardDO extends DurableObject<Env> {
     // 裁决含 KV 读/邮件/推送，不拖慢心跳应答；失败静默降级回结算路径兜底
     this.ctx.waitUntil(this.evaluate(now));
     return Response.json({ ok: true });
+  }
+
+  /**
+   * 通知认领端点（邮件幂等的唯一权威，见文件头注释）：
+   * - claim：键不存在 / 带 ttlMs 且已到期 / 老于 200 天硬过期 → put(now) 返回 claimed:true；
+   *   否则 claimed:false。DO 单线程串行，读-判-写天然原子。
+   * - release：删除认领键（重置类操作让同类通知可再发，如 reset-month 后月触顶可再通知）。
+   */
+  private async handleNotifyClaim(request: Request, path: string): Promise<Response> {
+    const body = (await request.json().catch(() => null)) as NotifyClaimBody | null;
+    if (!body?.key) return Response.json({ ok: false, error: "missing key" }, { status: 400 });
+    const storeKey = `notify:${body.key}`;
+    if (path === "/notify-release") {
+      await this.ctx.storage.delete(storeKey);
+      return Response.json({ ok: true });
+    }
+    const now = Date.now();
+    const ts = await this.ctx.storage.get<number>(storeKey);
+    const expired = body.ttlMs !== undefined && ts !== undefined && now - ts >= body.ttlMs;
+    const hardExpired = ts !== undefined && now - ts >= NOTIFY_CLAIM_HARD_EXPIRE_MS;
+    if (ts === undefined || expired || hardExpired) {
+      await this.ctx.storage.put(storeKey, now);
+      return Response.json({ ok: true, claimed: true });
+    }
+    return Response.json({ ok: true, claimed: false });
   }
 
   /** 心跳落内存：先 prune 过期节点，再整快照替换本节点条目（uuid 级不做 TTL，随快照全量覆盖） */
@@ -308,13 +350,13 @@ export class ShareGuardDO extends DurableObject<Env> {
     });
     if (!written) return false; // 封禁列表已满：mergeDeviceGuardFields 已记日志
 
-    // 邮件节流/文案/notify_log 键与结算路径完全一致；notify_log 原地改后键级合并收走
-    const notifyBase = JSON.stringify(token.notify_log ?? {});
+    // 12h 内压掉 ip_change 提醒（阻断另有专函）。直接写认领存储而非走 /notify-claim HTTP：
+    // 本对象正是 SHARE_GUARD 的 "global" 实例，handler 内 fetch 自身 stub 会卡输入门死锁
+    await this.ctx.storage.put(`notify:ip_change:${token.id}`, now);
+
+    // 邮件经队列消费者认领去重（dedup key），本路径不再碰 notify_log 节流键
     const maxDevices = token.max_devices ?? plansById.get(token.plan_id)?.max_devices ?? 2;
     await sendDeviceGuardEmail(this.env, token, device?.name ?? "主设备", blocked, v.prevIps, now, maxDevices);
-    if (JSON.stringify(token.notify_log ?? {}) !== notifyBase) {
-      await mergeTokenSettlement(this.env, token.uuid, { notify_log: token.notify_log });
-    }
     console.log(`[share-guard-do] dg blocked ${token.id} uuid=${v.uuid.slice(0, 8)}… ips=${v.ips.length}`);
     return true; // 新增阻断：推送全节点刷新，blocked_ips 随快照下发 iptables
   }

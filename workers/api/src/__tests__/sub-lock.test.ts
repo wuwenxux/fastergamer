@@ -10,7 +10,7 @@ import {
   SUB_UNBIND_COOLDOWN_MS,
 } from "../lib/sub-lock";
 import type { Env } from "../types";
-import { collectCtx, fakeNs } from "./helpers";
+import { collectCtx, fakeNs, fakeShareGuard } from "./helpers";
 
 /**
  * 订阅设备锁 + 自助解绑：
@@ -26,7 +26,8 @@ import { collectCtx, fakeNs } from "./helpers";
 
 vi.mock("../lib/email-aliyun", async (importOriginal) => {
   const orig = await importOriginal<typeof import("../lib/email-aliyun")>();
-  return { ...orig, sendMail: vi.fn(async () => ({ ok: true })) };
+  const { dedupAwareSendMailMock } = await import("./helpers");
+  return { ...orig, sendMail: dedupAwareSendMailMock() };
 });
 import { sendMail } from "../lib/email-aliyun";
 
@@ -58,6 +59,8 @@ const makeEnv = (tokens: KVNamespace, nodes: KVNamespace) =>
     PLANS: fakeNs().ns,
     ORDERS: fakeNs().ns,
     TICKETS: fakeNs().ns,
+    // 冲突邮件 24h 节流的认领存储（fakeShareGuard，语义同 DO）
+    SHARE_GUARD: fakeShareGuard().ns,
     DEFAULT_PLANS: JSON.stringify([
       { id: "plan_monthly", name: "月付", duration_days: 30, price_cny: 15, description: "", max_devices: 3 },
       { id: "plan_pack_5g", name: "5G 流量包", duration_days: 90, price_cny: 8, description: "", max_devices: 1 },

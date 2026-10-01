@@ -4,6 +4,7 @@
  */
 import { KV, type Device, type Order, type Plan, type Presence, type Ticket, type Token } from "../../../../shared/types";
 import { isEmail } from "./email-aliyun";
+import { releaseNotification } from "./notify-dedup";
 import type { Env } from "../types";
 
 /**
@@ -97,7 +98,8 @@ export const rotateTokenUuid = async (env: Env, token: Token): Promise<void> => 
   delete token.multi_device_detected_at;
   delete token.online_by_node;
   token.online = false;
-  delete token.notify_log?.multi_device;
+  // 释放多设备提醒的认领键：新凭证下的多处使用应重新提醒一次（幂等权威在 ShareGuardDO）
+  await releaseNotification(env, `multi_device:${token.id}`);
   await deleteTokenByUuid(env, oldUuid);
   // 在线状态存 presence:{uuid}（按旧 uuid 索引），随旧凭证一并清理
   await env.TOKENS.delete(KV.PRESENCE + oldUuid);
@@ -174,7 +176,8 @@ export interface TokenSettlementPatch extends Partial<Token> {
 /**
  * 结算字段的「重读-合并」写：重新读取 token 最新副本，只把补丁里的结算字段覆盖上去再写回，
  * 并发用户操作（加设备/封 IP 等）改过的其他字段不丢。
- * - notify_log 按键级合并：并发路径（结算/notify-scan）各自新增的提醒记录互不覆盖；
+ * - notify_log 按键级合并：仅服务 traffic_spike / abuse_machine 两个业务状态键
+ *   （邮件幂等已全部迁到 ShareGuardDO 认领存储，见 lib/notify-dedup.ts）；
  * - traffic_by_node / traffic_total_by_node / billing_by_node 同样按键级合并：
  *   每个结算写者只动自己节点的键，整 map 覆盖会让并发跨节点结算互相顶回旧值
  *   （丢量 + 基线回滚导致下轮重复计）；这些字段不存在"清空"语义（重置走

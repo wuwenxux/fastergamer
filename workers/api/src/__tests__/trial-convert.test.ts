@@ -3,10 +3,10 @@ import { Hono } from "hono";
 import { KV, type Token } from "../../../../shared/types";
 import { adminRoutes } from "../routes/admin";
 import type { Env } from "../types";
-import { mockNs, noopCtx } from "./helpers";
+import { mockNs, noopCtx, fakeShareGuard } from "./helpers";
 
-
-const makeEnv = (tokens: KVNamespace, tickets: KVNamespace) => {
+// 认领存储（ShareGuardDO fake）：邮件幂等键的权威；同一测试内多次扫描要共享同一实例
+const makeEnv = (tokens: KVNamespace, tickets: KVNamespace, guard = fakeShareGuard()) => {
   // 转化邮件会读套餐表列价格，mock 里给一份最小在售套餐
   const plans = mockNs();
   void plans.ns.put(
@@ -22,6 +22,7 @@ const makeEnv = (tokens: KVNamespace, tickets: KVNamespace) => {
     PLANS: plans.ns,
     NODES: mockNs().ns, // notify-scan 翻转过期后会 pushAuthRefresh，需要 NODES 命名空间
     ORDERS: mockNs().ns, // notify-scan 顺带自动取消超 3 天 pending 订单，需要 ORDERS 命名空间
+    SHARE_GUARD: guard.ns,
     ADMIN_KEY: "secret-key",
     ALIYUN_ACCESS_KEY_ID: "test-id",
     ALIYUN_ACCESS_KEY_SECRET: "test-secret",
@@ -67,13 +68,14 @@ describe("notify-scan 试用到期转化邮件", () => {
     return fetchMock;
   };
 
-  it("试用到期翻转 expired 时发一次性转化邮件（含免登录链接），幂等键落库", async () => {
+  it("试用到期翻转 expired 时发一次性转化邮件（含免登录链接），认领键落 DO 存储", async () => {
     const tokens = mockNs();
     const tickets = mockNs();
+    const guard = fakeShareGuard();
     seedToken(tokens.store, makeTrial());
     const fetchMock = stubMailOk();
 
-    const res = await runScan(app, makeEnv(tokens.ns, tickets.ns));
+    const res = await runScan(app, makeEnv(tokens.ns, tickets.ns, guard));
     expect(res.status).toBe(200);
     expect(fetchMock).toHaveBeenCalledTimes(1);
     // 邮件正文含免登录充值链接与套餐价格引导（首页弱化付费，价格锚点在邮件里）
@@ -84,19 +86,20 @@ describe("notify-scan 试用到期转化邮件", () => {
 
     const saved = JSON.parse(tokens.store.get(KV.TOKEN + "uuid-trial")!) as Token;
     expect(saved.status).toBe("expired");
-    expect(saved.notify_log?.trial_convert).toBeGreaterThan(0);
+    expect(guard.claims.get("trial_convert:tk_trial")).toBeGreaterThan(0);
     // magic ticket 已签发
     expect([...tokens.store.keys()].some((k) => k.startsWith(KV.MAGIC))).toBe(true);
   });
 
-  it("二次扫描不重复发（幂等键已存在）", async () => {
+  it("二次扫描不重复发（认领键已存在）", async () => {
     const tokens = mockNs();
     const tickets = mockNs();
+    const guard = fakeShareGuard();
     seedToken(tokens.store, makeTrial());
     const fetchMock = stubMailOk();
 
-    await runScan(app, makeEnv(tokens.ns, tickets.ns));
-    await runScan(app, makeEnv(tokens.ns, tickets.ns));
+    await runScan(app, makeEnv(tokens.ns, tickets.ns, guard));
+    await runScan(app, makeEnv(tokens.ns, tickets.ns, guard));
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
@@ -122,7 +125,8 @@ describe("notify-scan 试用到期转化邮件", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const saved = JSON.parse(tokens.store.get(KV.TOKEN + "uuid-trial")!) as Token;
     expect(saved.status).toBe("expired");
-    expect(saved.notify_log?.trial_convert).toBeGreaterThan(0);
+    // 转化邮件幂等键在认领存储（token.id 与 plan_id 无关，历史 id 同口径）
+    expect(saved.notify_log?.trial_convert).toBeUndefined();
   });
 
   it("付费 token 到期只翻转状态，不发邮件", async () => {

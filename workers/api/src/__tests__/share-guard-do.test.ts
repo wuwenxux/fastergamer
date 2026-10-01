@@ -283,10 +283,17 @@ describe("evaluateGlobalConns 纯函数：device-guard 实时版", () => {
 describe("ShareGuardDO 类：心跳与裁决执行", () => {
   const makeDo = (env: Env) => {
     const pending: Promise<unknown>[] = [];
+    const store = new Map<string, number>();
     const ctx = {
       waitUntil: (p: Promise<unknown>) => void pending.push(Promise.resolve(p).catch(() => {})),
+      // /notify-claim /notify-release 与 device-guard 行动的 ip_change 抑制都走 ctx.storage
+      storage: {
+        get: async (k: string) => store.get(k),
+        put: async (k: string, v: number) => void store.set(k, v),
+        delete: async (k: string) => void store.delete(k),
+      },
     } as unknown as DurableObjectState;
-    return { do: new ShareGuardDO(ctx, env), pending };
+    return { do: new ShareGuardDO(ctx, env), pending, store };
   };
   const beat = (d: ShareGuardDO, nodeId: string, conns: Record<string, number>, ips: Record<string, string[]>) =>
     d.fetch(new Request("https://share-guard.do/heartbeat", { method: "POST", body: JSON.stringify({ nodeId, conns, ips }) }));
@@ -299,6 +306,52 @@ describe("ShareGuardDO 类：心跳与裁决执行", () => {
     expect((await d.fetch(new Request("https://x/heartbeat"))).status).toBe(405);
     expect((await d.fetch(new Request("https://x/heartbeat", { method: "POST", body: "{}" }))).status).toBe(400);
     expect((await beat(d, "n1", {}, {})).status).toBe(200);
+  });
+
+  it("通知认领：同键二次 claim 拒绝；release 后可再认领；缺 key 400", async () => {
+    const { env } = makeDoEnv();
+    const { do: d } = makeDo(env);
+    const claim = (key?: string, ttlMs?: number) =>
+      d.fetch(
+        new Request("https://share-guard.do/notify-claim", {
+          method: "POST",
+          body: JSON.stringify({ ...(key ? { key } : {}), ...(ttlMs ? { ttlMs } : {}) }),
+        })
+      );
+    const claimed = async (r: Response) => ((await r.json()) as { claimed: boolean }).claimed;
+
+    expect((await claim()).status).toBe(400); // 缺 key
+    expect(await claimed(await claim("trial_convert:tk_1"))).toBe(true);
+    expect(await claimed(await claim("trial_convert:tk_1"))).toBe(false); // 同键不重领
+    expect(await claimed(await claim("trial_convert:tk_2"))).toBe(true); // 不同键互不影响
+
+    // release 后可再认领（reset-month 等重置类操作的配套）
+    await d.fetch(
+      new Request("https://share-guard.do/notify-release", { method: "POST", body: JSON.stringify({ key: "trial_convert:tk_1" }) })
+    );
+    expect(await claimed(await claim("trial_convert:tk_1"))).toBe(true);
+  });
+
+  it("通知认领：ttlMs 节流键到期可再领，未到期拒绝且不刷新时间戳", async () => {
+    const { env } = makeDoEnv();
+    const { do: d, store } = makeDo(env);
+    const claim = (ttlMs?: number) =>
+      d.fetch(
+        new Request("https://share-guard.do/notify-claim", {
+          method: "POST",
+          body: JSON.stringify({ key: "ip_change:tk_1", ...(ttlMs ? { ttlMs } : {}) }),
+        })
+      );
+    const claimed = async (r: Response) => ((await r.json()) as { claimed: boolean }).claimed;
+
+    expect(await claim(3_600_000)).toBeTruthy();
+    const at = store.get("notify:ip_change:tk_1");
+    vi.setSystemTime(T0 + 1_000); // 窗口内：拒绝且不刷新
+    expect(await claimed(await claim(3_600_000))).toBe(false);
+    expect(store.get("notify:ip_change:tk_1")).toBe(at);
+    vi.setSystemTime(T0 + 3_600_000 + 1); // 到期：可再领，时间戳刷新
+    expect(await claimed(await claim(3_600_000))).toBe(true);
+    expect(store.get("notify:ip_change:tk_1")).toBe(T0 + 3_600_000 + 1);
   });
 
   it("device-guard 端到端：心跳发现单节点多 IP → 3min 确认 → blocked_ips + 台账落 KV + 邮件", async () => {
@@ -454,7 +507,8 @@ describe("POST /api/agent/presence 端点", () => {
   });
 
   it("SHARE_GUARD 未绑定（本地 dev/老部署）：直接 ack 不报错，防共享退回结算路径兜底", async () => {
-    const { env } = baseEnv({ nodes: [NODE] });
+    // makeEnv 默认挂 fakeShareGuard（邮件认领存储）；显式置 undefined 模拟未绑定
+    const { env } = baseEnv({ nodes: [NODE], extra: { SHARE_GUARD: undefined } });
     const res = await call(env, "node-key-1");
     expect(res.status).toBe(200);
     expect(((await res.json()) as { data: { forwarded: boolean } }).data.forwarded).toBe(false);

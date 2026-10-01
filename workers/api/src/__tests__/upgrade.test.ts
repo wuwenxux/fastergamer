@@ -3,7 +3,7 @@ import { KV, type Order, type Plan, type Token } from "../../../../shared/types"
 import { fulfillOrder, type WaitUntilCtx } from "../lib/issue-token";
 import { resetPenalty } from "../lib/reset-penalty";
 import type { Env } from "../types";
-import { mockNs, stubCtx, makeEnv as baseEnv } from "./helpers";
+import { mockNs, stubCtx, makeEnv as baseEnv, fakeShareGuard } from "./helpers";
 
 /** waitUntil 收集但不阻塞断言；吞掉副作用（邮件/推送）在测试环境里的预期失败 */
 const mockCtx = (): WaitUntilCtx => stubCtx();
@@ -37,12 +37,14 @@ const seedToken = (tokens: ReturnType<typeof baseEnv>["tokens"], token: Token) =
 
 describe("fulfillOrder · 升级订单（upgrade_token_id）", () => {
   it("支付成功后升级既有 token：uuid/设备保留，套餐/流量/有效期换新", async () => {
-    const { env, tokens, orders } = mockEnv();
+    const { env, tokens, orders, shareGuard } = mockEnv();
+    // exhausted 提醒的认领键已占用（流量清零后应释放，让再次触顶可再通知）
+    shareGuard.claims.set("exhausted:tk_upg", Date.now());
     const token = makeToken({
       devices: [{ id: "dv_1", uuid: "uuid-dev1", name: "iPhone", traffic_used_gb: 1, created_at: 1 }],
       traffic_by_node: { "node-hk": 18 * 1024 ** 3 },
       traffic_exhausted_at: Date.now(),
-      notify_log: { traffic_80: 1, exhausted: 2, expiry_3d: 3 },
+      notify_log: { traffic_spike: 1, expiry_3d: 3 },
     });
     seedToken(tokens, token);
     const order: Order = {
@@ -80,10 +82,10 @@ describe("fulfillOrder · 升级订单（upgrade_token_id）", () => {
     expect(upgraded.traffic_used_gb).toBe(0);
     expect(upgraded.traffic_offset_bytes).toBe(18 * 1024 ** 3);
     expect(upgraded.traffic_exhausted_at).toBeUndefined();
-    // 流量类提醒清除，到期提醒保留
-    expect(upgraded.notify_log?.traffic_80).toBeUndefined();
-    expect(upgraded.notify_log?.exhausted).toBeUndefined();
+    // 流量暴增业务状态清除，到期提醒记录保留；exhausted 认领键已释放（升级后可再通知）
+    expect(upgraded.notify_log?.traffic_spike).toBeUndefined();
     expect(upgraded.notify_log?.expiry_3d).toBe(3);
+    expect(shareGuard.claims.has("exhausted:tk_upg")).toBe(false);
 
     // 订单落库为 paid 且指向同一 token
     const savedOrder = JSON.parse(orders.store.get(KV.ORDER + order.id)!) as Order;
@@ -239,7 +241,9 @@ describe("试用转正充值（plan_trial → 付费套餐，同一 token）", (
 describe("resetPenalty", () => {
   it("用量清零、有效期 -30 天（含 base_expires_at 同步），恢复 active", async () => {
     const tokens = mockNs();
-    const env = { TOKENS: tokens.ns } as unknown as Env;
+    const guard = fakeShareGuard();
+    const env = { TOKENS: tokens.ns, SHARE_GUARD: guard.ns } as unknown as Env;
+    guard.claims.set("exhausted:tk_upg", Date.now()); // 触顶提醒已发过：清零后应释放认领键
     const base = Date.now() + 90 * 86_400_000;
     const token = makeToken({
       traffic_by_node: { "node-hk": 20 * 1024 ** 3 },
@@ -249,7 +253,7 @@ describe("resetPenalty", () => {
       traffic_exhausted_at: Date.now(),
       rate_window_start: 1,
       rate_window_bytes: 2,
-      notify_log: { traffic_80: 1, exhausted: 2, expiry_3d: 3 },
+      notify_log: { traffic_spike: 1, expiry_3d: 3 },
     });
     seedToken(tokens, token);
 
@@ -264,8 +268,9 @@ describe("resetPenalty", () => {
     expect(saved.expires_at).toBe(base - 60 * 86_400_000);
     expect(saved.base_expires_at).toBe(base - 30 * 86_400_000);
     expect(saved.status).toBe("active");
-    expect(saved.notify_log?.traffic_80).toBeUndefined();
+    expect(saved.notify_log?.traffic_spike).toBeUndefined(); // 暴增业务状态清零
     expect(saved.notify_log?.expiry_3d).toBe(3);
+    expect(guard.claims.has("exhausted:tk_upg")).toBe(false); // 认领键释放，再次触顶可再通知
   });
 
   it("撤销的 token 不恢复状态", async () => {

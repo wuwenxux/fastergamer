@@ -7,8 +7,8 @@ import type { Env } from "../types";
  * 灾备群发（lib/emergency-notify.ts + POST /api/admin/emergency/backup-sub）：
  * - 收件人：active 未过期且有有效邮箱（试用也发）；未激活/过期/吊销/无邮箱跳过
  * - 邮件含该用户自己的备用订阅链接（uluw.kdns.fr/api/sub?uuid=<主 uuid>），service 桶
- * - 幂等：notify_log.emergency_sub:<UTC日期>，同日重复触发不重发
- * 邮件 mock 掉；KV 用内存假实现。
+ * - 幂等：`emergency_sub:{UTC日期}:{tokenId}` 由 ShareGuardDO 认领存储裁决，同日重复触发不重发
+ * 邮件 mock 掉；KV 用内存假实现；认领存储走 makeEnv 默认挂的 fakeShareGuard。
  */
 
 vi.mock("../lib/email-aliyun", async (importOriginal) => {
@@ -99,8 +99,8 @@ describe("灾备群发备用订阅地址", () => {
     expect(mails().map((m) => m.to)).toEqual(["trial@example.com"]);
   });
 
-  it("幂等：同一天重复触发不重发（返回 skipped），写回 notify_log 键", async () => {
-    const { env } = makeEnv({ adminKey: ADMIN_KEY });
+  it("幂等：同一天重复触发不重发（返回 skipped），认领键落 DO 存储", async () => {
+    const { env, shareGuard } = makeEnv({ adminKey: ADMIN_KEY });
     const t = makeToken();
     seedTokens(env, [t]);
 
@@ -109,8 +109,7 @@ describe("灾备群发备用订阅地址", () => {
     expect(sendMailMock).toHaveBeenCalledTimes(1);
 
     const day = new Date().toISOString().slice(0, 10).replace(/-/g, "");
-    const stored = JSON.parse((await env.TOKENS.get(KV.TOKEN + t.uuid))!) as Token;
-    expect(stored.notify_log?.[`emergency_sub:${day}`]).toBeGreaterThan(0);
+    expect(shareGuard.claims.get(`emergency_sub:${day}:${t.id}`)).toBeGreaterThan(0);
 
     const second = (await (await callApi(env)).json()) as { data: { sent: number; skipped: number } };
     expect(second.data).toEqual({ sent: 0, skipped: 1 });

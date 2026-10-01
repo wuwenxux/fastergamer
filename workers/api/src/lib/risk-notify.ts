@@ -2,17 +2,20 @@
  * 风险检测与客户提醒
  *
  * 触发点：/api/agent/traffic（结算事件）
- * 幂等：token.notify_log 记录每类提醒的发送时间，同类提醒不重复发送
- *   - exhausted / multi_device：每个 token 只发一次
+ * 幂等：不再用 token.notify_log——全部一次性/节流通知在 sendMail 时传 dedup 键，
+ *   由队列消费者经 ShareGuardDO 原子认领（见 lib/notify-dedup.ts）；
+ *   - exhausted / multi_device：每个 token 只发一次（键 `{kind}:{token.id}`）
+ *   - ip_change：12h 节流（ttlMs）
  *
  * 提醒类邮件现状：traffic_80（流量 80%）、month80（月度配额预警）、borrow_N（预支提醒）
  * 等预警类邮件已全部下线；保留的交易/安全类触达：
  *   - trial_convert（试用转化）——试用到期/流量耗尽时发一次性的同 token 充值引导；
  *   - expire_24h（付费 token 到期前 24h 续费提醒，带免登录续费按钮，notify-scan 触发）；
+ *   - month_cap（月度配额触顶，同月一次；reset-month 释放认领键后同月可再发）；
  *   - exhausted / multi_device / 多地并发在线等安全类提醒。
  * 节点变更通知（node_change.*）不在本文件，见 lib/node-change-notify.ts
- * （复用本文件的 shell 模板与 notify_log 幂等约定）。
- * 两条 trial_convert 触发路径共用幂等键，只发一次。
+ * （复用本文件的 shell 模板，幂等同样走 dedup 认领）。
+ * 两条 trial_convert 触发路径共用 dedup 键 `trial_convert:{token.id}`，只发一次。
  */
 
 import { isTrialPlan, type IpGeo, type Node, type Plan, type Presence, type Token } from "../../../../shared/types";
@@ -58,7 +61,10 @@ export function shell(env: Env, title: string, bodyHtml: string, bodyText: strin
   return { subject, html, text };
 }
 
-/** 发送一次某类提醒（已发过则跳过），返回是否实际发送 */
+/**
+ * 发送一次某类提醒（dedup 键 `{kind}:{token.id}`，每 token 每类只发一次），返回是否已受理。
+ * 幂等由队列消费者认领兜住（lib/notify-dedup.ts），本函数只负责组装 + 发送。
+ */
 async function notifyOnce(
   env: Env,
   token: Token,
@@ -68,12 +74,12 @@ async function notifyOnce(
   bodyText: string
 ): Promise<boolean> {
   if (!shouldSendEmail(token.contact)) return false;
-  token.notify_log = token.notify_log ?? {};
-  if (token.notify_log[kind]) return false;
   const { subject, html, text } = shell(env, title, bodyHtml, bodyText);
-  const res = await sendMail(env, token.contact, subject, html, text, { kind: "account" });
+  const res = await sendMail(env, token.contact, subject, html, text, {
+    kind: "account",
+    dedup: { key: `${kind}:${token.id}` },
+  });
   if (res.ok) {
-    token.notify_log[kind] = Date.now();
     console.log(`[risk] notified ${token.id} kind=${kind}`);
   } else {
     console.error(`[risk] notify failed ${token.id} kind=${kind}: ${res.error}`);
@@ -85,13 +91,10 @@ async function notifyOnce(
  * 试用转化邮件（一次性）：试用到期（notify-scan 翻转 expired）或试用流量提前耗尽时发送。
  * 此刻剩余额度本就为零，不谈结转，只讲三件事：邮箱保留（token 可失效，邮箱永是续用凭证）、
  * 随时可用它付费继续用、现在开通送一个月。免登录链接直达管理页。
- * 两条触发路径共用幂等键 notify_log.trial_convert，不重复打扰；
- * 调用方负责在返回后把 notify_log 变更键级合并写回（与 checkTokenRisks 同一约定）。
+ * 两条触发路径共用 dedup 键 `trial_convert:{token.id}`（消费者认领），不重复打扰。
  */
 export async function sendTrialConvertEmail(env: Env, token: Token): Promise<boolean> {
   if (!shouldSendEmail(token.contact)) return false;
-  token.notify_log = token.notify_log ?? {};
-  if (token.notify_log.trial_convert) return false;
   const ticket = await createMagicTicket(env, token.contact!, token.id, "login");
   const magicUrl = `${siteUrl(env)}/auth/magic?ticket=${ticket}`;
   // 首页已弱化付费，价格决策信息直接带进邮件，用户不用回站找
@@ -118,9 +121,11 @@ export async function sendTrialConvertEmail(env: Env, token: Token): Promise<boo
     `你的免费体验 Token（${token.id}）的额度已用完或已到期。\n你的邮箱会保留：随时可以用它付费继续用；90 天内原 Token 可直接充值，订阅链接和设备不变。\n现在开通付费套餐，额外赠送一个月（30 天）。${priceListText}\n按钮链接 72 小时内有效；过期后可到找回页面重新获取：${siteUrl(env)}/recover`,
     { url: magicUrl, label: "免登录开通，送一个月" }
   );
-  const res = await sendMail(env, token.contact!, subject, html, text, { kind: "account" });
+  const res = await sendMail(env, token.contact!, subject, html, text, {
+    kind: "account",
+    dedup: { key: `trial_convert:${token.id}` },
+  });
   if (res.ok) {
-    token.notify_log.trial_convert = Date.now();
     console.log(`[risk] notified ${token.id} kind=trial_convert`);
   } else {
     console.error(`[risk] notify failed ${token.id} kind=trial_convert: ${res.error}`);
@@ -129,15 +134,12 @@ export async function sendTrialConvertEmail(env: Env, token: Token): Promise<boo
 }
 
 /**
- * 付费 token 到期前 24 小时续费提醒（一次性，幂等键 expire_24h）：
+ * 付费 token 到期前 24 小时续费提醒（一次性，dedup 键 `expire_24h:{token.id}`）：
  * notify-scan 每 15 分钟扫到 active 付费 token 进入最后 24 小时窗口时发送。
  * 带 72h 免登录链接直达管理页续费；过期后仍可凭邮箱从找回页重新进入。
- * 调用方负责在返回后把 notify_log 变更键级合并写回（与 checkTokenRisks 同一约定）。
  */
 export async function sendExpire24hEmail(env: Env, token: Token): Promise<boolean> {
   if (!shouldSendEmail(token.contact)) return false;
-  token.notify_log = token.notify_log ?? {};
-  if (token.notify_log.expire_24h) return false;
   const ticket = await createMagicTicket(env, token.contact!, token.id, "login");
   const magicUrl = `${siteUrl(env)}/auth/magic?ticket=${ticket}`;
   const expiry = new Date(token.expires_at!).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" });
@@ -150,9 +152,11 @@ export async function sendExpire24hEmail(env: Env, token: Token): Promise<boolea
     `你的 Token（${token.id}）将于 ${expiry}（北京时间）到期。\n到期后服务自动停止；免登录进入管理页即可续费，订阅链接和设备不受影响。\n按钮链接 72 小时内有效；过期后可到找回页面重新获取：${siteUrl(env)}/recover`,
     { url: magicUrl, label: "免登录续费" }
   );
-  const res = await sendMail(env, token.contact!, subject, html, text, { kind: "account" });
+  const res = await sendMail(env, token.contact!, subject, html, text, {
+    kind: "account",
+    dedup: { key: `expire_24h:${token.id}` },
+  });
   if (res.ok) {
-    token.notify_log.expire_24h = Date.now();
     console.log(`[risk] notified ${token.id} kind=expire_24h`);
   } else {
     console.error(`[risk] notify failed ${token.id} kind=expire_24h: ${res.error}`);
@@ -162,16 +166,13 @@ export async function sendExpire24hEmail(env: Env, token: Token): Promise<boolea
 
 /**
  * 月额度触顶通知（硬顶断网）：结算路径发现当月用量触顶时调用。
- * 幂等键 month_cap:<month_key>——同月只发一次；用户手动 reset-month 会把该键清零，
- * 同月再次触顶可再收到通知。与 checkTokenRisks 同一约定：改 notify_log，
- * 调用方负责键级合并写回。
+ * dedup 键 `month_cap:{token.id}:{month_key}`——同月只发一次；用户手动 reset-month
+ * 会 releaseNotification 释放该键，同月再次触顶可再收到通知。
  */
 export async function sendMonthCapEmail(env: Env, token: Token, quotaGb: number): Promise<boolean> {
   if (!shouldSendEmail(token.contact)) return false;
   const mk = token.month_key ?? "";
-  const key = `month_cap:${mk}`;
-  token.notify_log = token.notify_log ?? {};
-  if (token.notify_log[key]) return false;
+  const key = `month_cap:${token.id}:${mk}`;
   const usedGb = ((token.month_used_bytes ?? 0) / 1024 ** 3).toFixed(1);
   const { subject, html, text } = shell(
     env,
@@ -184,9 +185,8 @@ export async function sendMonthCapEmail(env: Env, token: Token, quotaGb: number)
      </ul>`,
     `你的 Token（${token.id}）本月额度 ${quotaGb} GB 已用完（已用 ${usedGb} GB），服务已暂停。\n两个选择：1) 等次月 1 日自动恢复，不影响到期时间；2) 到管理页点「提前重置」立即恢复，代价是有效期提前 30 天。`
   );
-  const res = await sendMail(env, token.contact!, subject, html, text, { kind: "account" });
+  const res = await sendMail(env, token.contact!, subject, html, text, { kind: "account", dedup: { key } });
   if (res.ok) {
-    token.notify_log[key] = Date.now();
     console.log(`[risk] notified ${token.id} kind=${key}`);
   } else {
     console.error(`[risk] notify failed ${token.id} kind=${key}: ${res.error}`);
@@ -219,8 +219,7 @@ export async function sendServiceEmail(
 
 /**
  * 在 token 数据更新后调用：检查流量耗尽与多设备风险，必要时提醒客户。
- * 注意：本函数可能修改 notify_log；调用方负责在此函数返回后把 notify_log 变更
- * 键级合并写回（mergeTokenSettlement），且必须在结算字段写库之后调用。
+ * 幂等不在本层：通知邮件带 dedup 键由队列消费者认领去重（lib/notify-dedup.ts）。
  */
 export async function checkTokenRisks(env: Env, token: Token): Promise<void> {
   const limit = token.traffic_limit_gb ?? 0;
@@ -381,7 +380,7 @@ export async function resolveConcurrentGeoConflict(env: Env, ips: string[]): Pro
  * 多地并发在线安全提醒：同 token 出现 ≥2 个不同地点的接入源时邮件通知本人。
  * 单链接换城市（出差/漫游）由 resolveIpLocationChange 静默更新基线，不会走到这里；
  * 同城多设备（本人新设备）由 resolveConcurrentGeoConflict 拦下。
- * 限流：每个 token 12 小时最多一封。调用方负责把 notify_log 变更键级合并写回（mergeTokenSettlement）。
+ * 限流：每个 token 12 小时最多一封（dedup 键 `ip_change:{token.id}` + ttlMs，消费者认领）。
  */
 export async function notifyIpChange(
   env: Env,
@@ -389,9 +388,6 @@ export async function notifyIpChange(
   result: ConcurrentGeoConflict
 ): Promise<void> {
   if (!result.conflict || result.sources.length === 0 || !shouldSendEmail(token.contact)) return;
-  token.notify_log = token.notify_log ?? {};
-  const now = Date.now();
-  if (now - (token.notify_log["ip_change"] ?? 0) < 12 * 3_600_000) return;
 
   const listHtml = result.sources.map((s) => `<li>${s.ip}（${s.display}）</li>`).join("\n       ");
   const listText = result.sources.map((s) => `${s.ip}（${s.display}）`).join("；");
@@ -407,9 +403,11 @@ export async function notifyIpChange(
      <p><strong>你可以自己处理：</strong>登录 <a href="${manageUrl}">Token 管理页</a>，在「接入 IP 统计」里点击陌生 IP 旁的「封禁」，该 IP 将在 30 秒内被所有节点拒绝连接；误封可随时解除。</p>`,
     `检测到你的 Token（${token.id}）正在多个不同地点同时在线：${listText}。\n如果是你本人多地/多设备使用可忽略；否则订阅可能泄露。\n处理：登录管理页 ${manageUrl} 在「接入 IP 统计」中封禁陌生 IP（30 秒内全节点生效，可随时解除）。`
   );
-  const res = await sendMail(env, token.contact, subject, html, text, { kind: "account" });
+  const res = await sendMail(env, token.contact, subject, html, text, {
+    kind: "account",
+    dedup: { key: `ip_change:${token.id}`, ttlMs: 12 * 3_600_000 },
+  });
   if (res.ok) {
-    token.notify_log["ip_change"] = now;
     // 用户接入 IP 属敏感信息，日志只记条数不记具体 IP
     console.log(`[risk] ip-change notified ${token.id} ip_count=${result.sources.length}`);
   } else {

@@ -25,7 +25,7 @@
  */
 import { KV, type SubFetch, type Token } from "../../../../shared/types";
 import { sendMail, shouldSendEmail } from "./email-aliyun";
-import { getPlans, getPresence, mergeTokenSettlement } from "./kv";
+import { getPlans, getPresence } from "./kv";
 import { shell } from "./risk-notify";
 import { siteUrl } from "./site-url";
 import type { Env } from "../types";
@@ -161,14 +161,13 @@ export async function clearSubBindings(env: Env, tokenUuid: string): Promise<boo
 
 /**
  * 绑定冲突时机主邮件：哪个链接、对方客户端家族/来源 IP/时间，引导登录管理页
- * 查看（订阅客户端卡片）或自助解绑。节流 notify_log.sub_bind_conflict 24h，
- * 发送成功才记录（mergeTokenSettlement 键级合并写回，与结算路径互不覆盖）。
+ * 查看（订阅客户端卡片）或自助解绑。节流 24h：dedup 键 `sub_bind_conflict:{token.id}`
+ * + ttlMs，消费者认领（lib/notify-dedup.ts），本函数不再碰 notify_log。
  *
  * 只对单设备套餐发送：max_devices > 1 的套餐出现多客户端家族是正常用法
  * （用户本就有多台设备各拉同一链接的场景），通知是噪音——403 拒绝照常吃，
  * 只是不打扰机主。有效设备数口径与 tokens.ts 加设备处一致：
  * token.max_devices ?? 套餐 max_devices ?? 2（缺省 2 = 不发，保守不打扰）。
- * plans 读取放在节流检查之后：被节流的冲突连这一次 KV 读都省掉。
  */
 export async function notifyBindConflict(
   env: Env,
@@ -176,8 +175,6 @@ export async function notifyBindConflict(
   info: { subLabel: string; fp: string; conflictWith?: string; ip?: string; now: number }
 ): Promise<void> {
   if (!shouldSendEmail(token.contact)) return;
-  token.notify_log = token.notify_log ?? {};
-  if (info.now - (token.notify_log.sub_bind_conflict ?? 0) < SUB_BIND_NOTIFY_COOLDOWN_MS) return;
   const plans = await getPlans(env);
   const maxDevices = token.max_devices ?? plans.find((p) => p.id === token.plan_id)?.max_devices ?? 2;
   if (maxDevices > 1) return;
@@ -198,10 +195,11 @@ export async function notifyBindConflict(
      <p>如果都不是本人操作，说明订阅链接已泄露：解绑后请重新生成订阅链接（旧链接立即失效）。</p>`,
     `检测到你的 Token（${token.id}）的订阅链接（${info.subLabel}）被陌生客户端（${fpLabel}，IP ${info.ip ?? "未知"}，${when}）尝试拉取，已拒绝下发。\n该链接已绑定 ${boundLabel}。换手机/换客户端：登录管理页「订阅客户端」卡片解除订阅绑定后重新导入。你的套餐仅支持 1 台设备；多设备需求请购买多设备套餐。\n如非本人操作：解绑后重新生成订阅链接（旧链接立即失效）。\n管理页：${manageUrl}`
   );
-  const res = await sendMail(env, token.contact, subject, html, text, { kind: "account" });
+  const res = await sendMail(env, token.contact, subject, html, text, {
+    kind: "account",
+    dedup: { key: `sub_bind_conflict:${token.id}`, ttlMs: SUB_BIND_NOTIFY_COOLDOWN_MS },
+  });
   if (res.ok) {
-    token.notify_log.sub_bind_conflict = info.now;
-    await mergeTokenSettlement(env, token.uuid, { notify_log: token.notify_log });
     console.log(`[sub-lock] bind conflict notified ${token.id} fp=${info.fp}`);
   } else {
     console.error(`[sub-lock] bind conflict mail failed ${token.id}: ${res.error}`);

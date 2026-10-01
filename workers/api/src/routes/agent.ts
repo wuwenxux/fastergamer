@@ -16,7 +16,7 @@ import { checkTrialAbuse, applyAbuseWindow } from "../lib/abuse";
 import { getAuthSnapshot, TRAFFIC_GRACE_MS } from "../lib/authsnapshot";
 import { pushAuthRefresh } from "../lib/authpush";
 import { evaluateShareConns } from "../lib/share-guard";
-import { DG_NOTIFY_THROTTLE_MS, evaluateDeviceConns } from "../lib/device-guard";
+import { evaluateDeviceConns } from "../lib/device-guard";
 import { track } from "../lib/telemetry";
 import type { Env } from "../types";
 
@@ -170,7 +170,8 @@ agentRoutes.get("/config", async (c) => {
  * 1. 纯计算段先把全部新值在首次读取的副本上算好（不穿插任何 await）；
  * 2. 写库用 mergeTokenSettlement 重读-合并，只覆盖结算字段，用户并发改的其他字段不丢；
  *    在线/IP 等高频动态状态写独立的 presence:{uuid} 键，有变化才写；
- * 3. 邮件等 await 全部挪到写库之后；通知产生的 notify_log 变更再走一次键级合并写。
+ * 3. 邮件等 await 全部挪到写库之后；通知幂等不在本层——邮件带 dedup 键，
+ *    由队列消费者经 ShareGuardDO 原子认领（见 lib/notify-dedup.ts）。
  *
  * 返回 true 表示发生了授权相关变更（新耗尽/宽限期结束过期），调用方应推送节点刷新。
  */
@@ -330,7 +331,7 @@ async function applyTrafficDelta(
   await savePresenceIfChanged(env, token.uuid, presenceBase, presence);
 
   // ---------- 通知段（邮件 await 全部在写库之后） ----------
-  const notifyBase = JSON.stringify(token.notify_log ?? {});
+  // 通知幂等全部在队列消费者侧认领（dedup 键），本路径不再做 notify_log 比对/合并写
   if (spike) await sendSpikeAlert(env, token);
   if (changedIps.length > 0) {
     // 接入地址变更只更新 active_geo 基线（同城漂移/出差漫游都不打扰客户）；
@@ -354,20 +355,15 @@ async function applyTrafficDelta(
   }
   // 设备级防护：单凭证多地并发持续 2 周期确认后自动阻断新 IP（lib/device-guard.ts）。
   // 不能收进上方 changedIps 分支——持续并发时 IP 无变更（prev=curr）也要推进确认；
-  // dg_pending 原地维护，补一次「有变化才写」；notify_log 原地改由下方集中比对收走
+  // dg_pending 原地维护，补一次「有变化才写」
   const dgBlocked = await evaluateDeviceConns(env, token, device, uuid, currIps, prevIps, presence, plansById, now);
   await savePresenceIfChanged(env, token.uuid, presenceBase, presence);
   if (dgBlocked) authChanged = true; // 新增阻断：推送全节点刷新，blocked_ips 随快照下发
   // 客户要求只保留交易/安全类邮件：月度配额 80% 预警（month80）与预支提醒（borrow_N）已下线
-  // 月额度触顶：硬顶断网通知（幂等键 month_cap:<月>，reset-month 会清零该键，同月再触顶可再发）；
-  // 放在 checkTokenRisks 之前，notify_log 变更随下方同一次合并写回
+  // 月额度触顶：硬顶断网通知（dedup 键 month_cap:{token.id}:{月}，reset-month 释放后同月可再发）
   if (monthCapped && quotaGb) await sendMonthCapEmail(env, token, quotaGb);
-  // 风险检测：流量耗尽 / 多设备时提醒客户（幂等，每类只发一次）
+  // 风险检测：流量耗尽 / 多设备时提醒客户（dedup 键一次性）
   await checkTokenRisks(env, token);
-  // 通知产生的 notify_log 变更按键级合并写回（不覆盖并发路径新增的记录）
-  if (JSON.stringify(token.notify_log ?? {}) !== notifyBase) {
-    await mergeTokenSettlement(env, token.uuid, { notify_log: token.notify_log });
-  }
   // 机房 IP 滥用检查（仅体验 token，内部先过 plan/status/幂等/总量阈值等廉价闸口再查 IP 分类）：
   // 放在结算与通知写库之后（含 ip-api/邮件 await，标记走独立重读-合并写，不与结算合并写打架）；
   // 命中只打 abuse_machine 限速标记（不改变授权状态），无需推送节点刷新
@@ -536,15 +532,11 @@ agentRoutes.post("/traffic", async (c) => {
       ipChangePending.set(found.token.uuid, found.token);
     }
     // 设备级防护（同 applyTrafficDelta 挂载）：有连接但无流量增量的 uuid 同样是并发证据。
-    // 该循环无通知段集中比对，notify_log 变更这里自行键级合并收走
-    const dgNotifyBase = JSON.stringify(found.token.notify_log ?? {});
+    // 邮件幂等由消费者认领兜住，本路径不再做 notify_log 比对/合并写
     if (await evaluateDeviceConns(c.env, found.token, found.device, uuid, currIps, prevIps, presence, plansById, now)) {
       authChanged = true;
     }
     await savePresenceIfChanged(c.env, found.token.uuid, presenceBase, presence);
-    if (JSON.stringify(found.token.notify_log ?? {}) !== dgNotifyBase) {
-      await mergeTokenSettlement(c.env, found.token.uuid, { notify_log: found.token.notify_log });
-    }
   });
 
   // 多地并发在线安全提醒：本周期该 token 出现 ≥2 个不同地点的接入源才发邮件（盗用特征）；
@@ -557,17 +549,10 @@ agentRoutes.post("/traffic", async (c) => {
       .map(([ip]) => ip);
     const ips = new Set([...(cycleIps.get(token.uuid) ?? []), ...recentIps]);
     if (ips.size < 2) continue;
-    // device-guard 12h 内已就该 token 行动（自动阻断 + 邮件）：同一事件不再发多地并发邮件，
-    // 避免重复打扰（省一次 geo 批量查询，放在 conflict 判定前）
-    if (now - (token.notify_log?.device_guard ?? 0) < DG_NOTIFY_THROTTLE_MS) continue;
     const result = await resolveConcurrentGeoConflict(c.env, [...ips]);
     if (!result.conflict) continue;
-    // 邮件 await 在 presence 写库之后；notify_log 变更按键级合并写回
-    const notifyBase = JSON.stringify(token.notify_log ?? {});
+    // 邮件 await 在 presence 写库之后；12h 节流由 dedup 键（ip_change:{token.id}）在消费者侧认领
     await notifyIpChange(c.env, token, result);
-    if (JSON.stringify(token.notify_log ?? {}) !== notifyBase) {
-      await mergeTokenSettlement(c.env, token.uuid, { notify_log: token.notify_log });
-    }
   }
 
   // 更新用户在线状态与设备数（只有 active token 才更新）
@@ -607,12 +592,8 @@ agentRoutes.post("/traffic", async (c) => {
       }
       await savePresenceIfChanged(c.env, token.uuid, presenceBase, presence);
 
-      // 多设备标记产生时提醒客户（幂等）；邮件 await 在写库之后
-      const notifyBase = JSON.stringify(token.notify_log ?? {});
+      // 多设备标记产生时提醒客户（dedup 键一次性）；邮件 await 在写库之后
       await checkTokenRisks(c.env, token);
-      if (JSON.stringify(token.notify_log ?? {}) !== notifyBase) {
-        await mergeTokenSettlement(c.env, token.uuid, { notify_log: token.notify_log });
-      }
     } else {
       // 离线：清除该节点的在线记录；窗口内无其他节点在线则判定下线
       if (presence.online_by_node[node.id] === undefined && !presence.online) return;

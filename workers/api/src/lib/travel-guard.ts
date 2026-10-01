@@ -10,8 +10,8 @@
  *   可达的距离有限，宁可宽松漏判也不误伤）。
  *
  * 处置：只提醒不处置——累积 token.travel_strikes（仿 share_conn_strikes，
- * 30 分钟未再犯重计）+ 节流邮件（notify_log.travel_warn，7 天）。后续要升级
- * 自动处置再单开任务。
+ * 30 分钟未再犯重计）+ 节流邮件（dedup 键 `travel_warn:{token.id}` + 7 天 ttlMs，
+ * 消费者认领）。后续要升级自动处置再单开任务。
  *
  * 触发点：/api/agent/traffic 的 IP 变更管线（routes/agent.ts），
  * resolveIpLocationChange 判定跨城市变更后调用；全部写库走重读-合并补丁，
@@ -73,8 +73,7 @@ async function lookupOldGeo(env: Env, ips: string[]): Promise<IpGeo | null> {
 /**
  * 不可能旅行判定与提醒。命中时：
  * 1. 重读-合并写 travel_strikes（先写库）；
- * 2. 发节流邮件（7 天，内容 = 两城市 + 时间差 + 引导重置订阅）；
- * 3. 发送成功才把 notify_log.travel_warn 键级合并写回。
+ * 2. 发节流邮件（7 天，内容 = 两城市 + 时间差 + 引导重置订阅；幂等在消费者认领）。
  * 不命中/无法判定（无 oldAt、同城）时完全不写库、不发邮件。
  */
 export async function evaluateTravel(
@@ -117,8 +116,6 @@ export async function evaluateTravel(
   token.travel_strikes = { at: now, count };
 
   if (!shouldSendEmail(token.contact)) return;
-  token.notify_log = token.notify_log ?? {};
-  if (now - (token.notify_log.travel_warn ?? 0) < TRAVEL_WARN_COOLDOWN_MS) return;
   const manageUrl = `${siteUrl(env)}/tokens?id=${token.id}`;
   const minutes = Math.max(1, Math.round(elapsedMs / 60_000));
   const timeDesc = minutes >= 60 ? `${Math.floor(minutes / 60)} 小时 ${minutes % 60} 分钟` : `${minutes} 分钟`;
@@ -131,11 +128,9 @@ export async function evaluateTravel(
      <p style="color:#64748b;font-size:13px;">本提醒每 7 天最多发送一次，服务不会因此中断。</p>`,
     `检测到你的 Token（${token.id}）的接入位置在 ${timeDesc}内从 ${oldBaseline.locationKey} 跳变到 ${newKey}，超出正常出行可达速度。\n如非本人使用，请尽快登录管理页重新生成订阅链接（旧链接立即失效）：${manageUrl}\n本提醒每 7 天最多一封，服务不会因此中断。`
   );
-  const res = await sendMail(env, token.contact, subject, html, text, { kind: "account" });
-  if (res.ok) {
-    token.notify_log.travel_warn = now;
-    await mergeTokenSettlement(env, token.uuid, { notify_log: token.notify_log });
-  } else {
-    console.error(`[travel] warn mail failed ${token.id}: ${res.error}`);
-  }
+  const res = await sendMail(env, token.contact, subject, html, text, {
+    kind: "account",
+    dedup: { key: `travel_warn:${token.id}`, ttlMs: TRAVEL_WARN_COOLDOWN_MS },
+  });
+  if (!res.ok) console.error(`[travel] warn mail failed ${token.id}: ${res.error}`);
 }

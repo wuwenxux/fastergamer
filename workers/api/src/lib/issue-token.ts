@@ -13,6 +13,7 @@ import { recordContinuityPaid, settleYearlyStdRenewal } from "./continuity";
 import { currentMonthKey } from "./nodes";
 import { rewardReferrerOnPayment, consumeCredit } from "./referral";
 import { pushAuthRefresh } from "./authpush";
+import { releaseNotification } from "./notify-dedup";
 import { unlockShareSuspendedByContact } from "./share-guard";
 import { siteUrl } from "./site-url";
 import { track } from "./telemetry";
@@ -162,12 +163,12 @@ export const upgradeTokenForOrder = async (
   delete token.rate_window_bytes;
   delete token.traffic_exhausted_at;
   if (token.status !== "revoked") token.status = "active";
-  // 流量类提醒升级后可重新触发；traffic_80 提醒已下线，删键仅为清理存量旧数据
+  // 流量类提醒升级后可重新触发：traffic_spike 仍是 notify_log 业务状态，原地删键；
+  // exhausted 幂等键已迁到 ShareGuardDO 认领存储，释放后下轮可再发
   if (token.notify_log) {
-    delete token.notify_log.traffic_80;
-    delete token.notify_log.exhausted;
     delete token.notify_log.traffic_spike;
   }
+  await releaseNotification(env, `exhausted:${token.id}`);
   await saveToken(env, token);
 
   if (shouldSendEmail(order.contact)) {

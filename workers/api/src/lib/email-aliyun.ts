@@ -1,6 +1,7 @@
 import type { Env } from "../types";
 import { cfSenderFor, sendMailCf } from "./email-cf";
 import { maskEmail } from "./mask-email";
+import { claimNotification, releaseNotification } from "./notify-dedup";
 import { track } from "./telemetry";
 import { siteUrl } from "./site-url";
 
@@ -27,6 +28,9 @@ export interface MailMessage {
   text: string;
   /** 观测分类 + 通道选择：如 "ticket"（工单域，走 CF Email Service）/ "magic" / "notify" */
   kind?: string;
+  /** 一次性/节流通知的去重键：消费者发送前经 ShareGuardDO 原子认领（见 lib/notify-dedup.ts），
+   *  未认领成功直接丢弃不发送；ttlMs 供节流类键到期重领（一次性键不传） */
+  dedup?: { key: string; ttlMs?: number };
 }
 
 /** 与 wrangler.cf.toml 的 max_retries 对齐：判断最后一次投递用（attempts 含首次投递，耗尽 = attempts > max_retries） */
@@ -56,8 +60,11 @@ interface TokenEmailContext {
  * 队列的 batch_timeout 会多等几秒）。
  * 入队本身失败降级直发——队列不可用不能成为丢邮件的新途径。
  *
- * 幂等说明（为什么不做幂等键）：Queues 是 at-least-once，ack 前崩溃会重复发信。
- * 邮件重复无资金副作用，且 DM 返回 EnvId 才算成功、ack 紧随成功之后，窗口极小，可接受。
+ * 幂等：一次性/节流通知由发送方传 opts.dedup={key, ttlMs?}，经 ShareGuardDO 原子认领
+ * （见 lib/notify-dedup.ts）——队列路径由消费者（handleMailBatch）在发送前认领，Queues 是
+ * at-least-once，ack 前崩溃重投递时认领已存在直接跳过，不会重复发；直发路径（无队列绑定/
+ * 入队失败降级）在本函数内认领，语义相同。取舍：「认领后 dispatch 前崩溃」会丢这一封
+ * （概率极小，窗口是一次函数调用）；发送失败释放认领，重试可再发。
  */
 export async function sendMail(
   env: Env,
@@ -65,15 +72,23 @@ export async function sendMail(
   subject: string,
   html: string,
   text: string,
-  opts?: { sync?: boolean; kind?: string }
+  opts?: { sync?: boolean; kind?: string; dedup?: { key: string; ttlMs?: number } }
 ): Promise<{ ok: boolean; id?: string; error?: string; queued?: boolean }> {
   if (env.MAIL_QUEUE && !opts?.sync) {
     try {
-      await env.MAIL_QUEUE.send({ to, subject, html, text, kind: opts?.kind });
+      await env.MAIL_QUEUE.send({ to, subject, html, text, kind: opts?.kind, dedup: opts?.dedup });
       return { ok: true, queued: true };
     } catch (e) {
       console.error("[email] 入队失败，降级直发:", (e as Error).message);
     }
+  }
+  // 直发路径（无绑定/降级/sync）：dedup 在此认领，与消费者同语义；未认领 = 已发过，静默跳过
+  if (opts?.dedup) {
+    const claimed = await claimNotification(env, opts.dedup.key, opts.dedup.ttlMs);
+    if (!claimed) return { ok: true };
+    const res = await sendMailDispatch(env, { to, subject, html, text, kind: opts?.kind });
+    if (!res.ok) await releaseNotification(env, opts.dedup.key); // 发送失败释放认领，下次可重发
+    return res;
   }
   return sendMailDispatch(env, { to, subject, html, text, kind: opts?.kind });
 }
@@ -166,17 +181,30 @@ async function sendMailDirect(
  * （工单邮件优先 CF Email Service，其余阿里云 DM），失败 message.retry() 交给 Queues
  * 指数退避重试（max_retries=3，见 wrangler.cf.toml）；成功显式 ack（不写也是默认 ack，
  * 写明便于阅读）。
+ * 带 dedup 键的消息先在 ShareGuardDO 认领（全站通知幂等的唯一权威，见 lib/notify-dedup.ts）：
+ * 认领失败 = 同类通知已发过，ack 丢弃；发送失败先释放认领再 retry，重试可重新认领。
  * 最后一次投递仍失败（attempts > max_retries，之后 Queues 不再投递）：
  * 记日志（带 kind + 收件人脱敏 + 主题摘要）并写 mail_failed 遥测点，便于发现系统性故障。
  */
 export async function handleMailBatch(batch: MessageBatch<MailMessage>, env: Env): Promise<void> {
   for (const m of batch.messages) {
+    const { to, subject, kind, dedup } = m.body;
+    // 去重键认领：已认领过（含重投递撞上「首次认领成功但 ack 前已发出」）→ 直接 ack 丢弃
+    if (dedup) {
+      const claimed = await claimNotification(env, dedup.key, dedup.ttlMs);
+      if (!claimed) {
+        console.log(`[mail-queue] 重复通知跳过 kind=${kind ?? "-"} to=${maskEmail(to)} dedup=${dedup.key}`);
+        m.ack();
+        continue;
+      }
+    }
     const res = await sendMailDispatch(env, m.body);
-    const { to, subject, kind } = m.body;
     if (res.ok) {
       m.ack();
       continue;
     }
+    // 发送失败：先释放认领键再 retry，重试投递能重新认领（否则重试会被自己的认领挡掉）
+    if (dedup) await releaseNotification(env, dedup.key);
     console.error(`[mail-queue] 发送失败 kind=${kind ?? "-"} to=${maskEmail(to)} attempt=${m.attempts}: ${res.error}`);
     if (m.attempts > MAIL_MAX_RETRIES) {
       console.error(`[mail-queue] 重试耗尽，邮件丢失 kind=${kind ?? "-"} to=${maskEmail(to)} subject=${subject.slice(0, 60)}`);

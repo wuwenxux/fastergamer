@@ -14,8 +14,8 @@
  * 订阅制（opt-in）：未订阅用户最多收第一封样例（带订阅链接，写过 notify_nodes_sampled_at
  * 即不再发样例）；订阅用户持续收且每封带退订链接（routes/notify-pref.ts，HMAC 签名链接，
  * GET 确认页 + POST 生效防预取器误订阅）。交易/风控类邮件不受此机制影响。
- * 幂等：token.notify_log 键 `node_change.<eventId>`，同事件同用户只发一次；
- * 写回走 mergeTokenSettlement 键级合并，不覆盖结算路径的并发字段。
+ * 幂等：同事件同用户只发一次，由 ShareGuardDO 认领存储裁决（sendMail 的 dedup 选项，
+ * key=`node_change:{eventId}:{tokenId}`，发送消费者在发送前原子认领，并发/重试不重发）。
  * 安全：邮件不含订阅链接与其他用户任何信息，只写客户端操作步骤。
  */
 
@@ -89,7 +89,8 @@ type Ctx = { waitUntil: (p: Promise<unknown>) => void };
  * - notify_nodes_subscribed===true → 每封都发，邮件带退订链接；
  * - 未订阅且 notify_nodes_sampled_at 不存在 → 发第一封样例（带订阅链接）并写回 sampled_at；
  * - 未订阅且已发过样例 → 永远跳过。
- * 幂等双保险：notify_log 事件键防同事件重试重复发；sampled_at 防跨事件重复发样例。
+ * 幂等双保险：sendMail dedup（ShareGuardDO 认领）防同事件重试重复发；
+ * sampled_at 防跨事件重复发样例（样例标记仍是 token 业务字段，键级合并写回）。
  */
 const broadcast = (env: Env, ctx: Ctx, kind: NodeChangeKind, node: Node, eventId: string): void => {
   ctx.waitUntil(
@@ -109,8 +110,6 @@ const broadcast = (env: Env, ctx: Ctx, kind: NodeChangeKind, node: Node, eventId
         if (!shouldSendEmail(token.contact)) continue;
         const subscribed = token.notify_nodes_subscribed === true;
         if (!subscribed && token.notify_nodes_sampled_at) continue; // 样例已发过且未订阅
-        const logKey = `node_change.${eventId}`;
-        if (token.notify_log?.[logKey]) continue;
         const copy = buildCopy(env, kind, node);
         // 页脚按订阅状态分：样例带「订阅」入口，订阅用户带「退订」入口（链接 HMAC 签名防伪造）
         const prefAction = subscribed ? "unsub" : "sub";
@@ -127,13 +126,15 @@ const broadcast = (env: Env, ctx: Ctx, kind: NodeChangeKind, node: Node, eventId
           copy.html + footerHtml,
           `${copy.text}\n\n${footerText}`
         );
-        const res = await sendMail(env, token.contact, subject, html, text, { kind: "service" });
+        const res = await sendMail(env, token.contact, subject, html, text, {
+          kind: "service",
+          dedup: { key: `node_change:${eventId}:${token.id}` },
+        });
         if (res.ok) {
-          // 键级合并写回幂等键 + 样例标记，不碰结算路径并发更新的其他字段
-          await mergeTokenSettlement(env, token.uuid, {
-            notify_log: { [logKey]: Date.now() },
-            ...(subscribed ? {} : { notify_nodes_sampled_at: now }),
-          });
+          // 样例标记是业务字段，键级合并写回（幂等键已由 DO 认领，无需写 notify_log）
+          if (!subscribed) {
+            await mergeTokenSettlement(env, token.uuid, { notify_nodes_sampled_at: now });
+          }
           sent++;
         } else {
           console.error(`[node-change] notify failed ${token.id} event=${eventId}: ${res.error}`);

@@ -44,12 +44,11 @@ export interface ShareFieldsPatch {
   share_warned_at?: number | null;
   share_conn_strikes?: Token["share_conn_strikes"] | null;
   conn_observe?: Token["conn_observe"] | null;
-  notify_log?: Record<string, number>;
 }
 
 /**
  * 共享字段的「重读-合并」写：重新读取 token 最新副本，只覆盖补丁字段再写回，
- * 与结算路径（mergeTokenSettlement）并发时互不覆盖。notify_log 键级合并。
+ * 与结算路径（mergeTokenSettlement）并发时互不覆盖。
  */
 export const mergeShareFields = async (env: Env, uuid: string, patch: ShareFieldsPatch): Promise<void> => {
   const fresh = await getTokenByUuid(env, uuid);
@@ -57,9 +56,7 @@ export const mergeShareFields = async (env: Env, uuid: string, patch: ShareField
   const bag = fresh as unknown as Record<string, unknown>;
   for (const [k, v] of Object.entries(patch)) {
     if (v === undefined) continue;
-    if (k === "notify_log") {
-      fresh.notify_log = { ...fresh.notify_log, ...(v as Record<string, number>) };
-    } else if (v === null) {
+    if (v === null) {
       delete bag[k];
     } else {
       bag[k] = v;
@@ -68,7 +65,8 @@ export const mergeShareFields = async (env: Env, uuid: string, patch: ShareField
   await saveTokenValue(env, fresh);
 };
 
-/** 共享警告邮件：检测到异常并发连接，提醒重置订阅链接；7 天内再犯将暂停服务 */
+/** 共享警告邮件：检测到异常并发连接，提醒重置订阅链接；7 天内再犯将暂停服务。
+ *  7 天冷却是 dedup 键 ttlMs（消费者认领），与 share_warned_at 状态机同窗口 */
 export async function sendShareWarnEmail(
   env: Env,
   token: Token,
@@ -76,9 +74,6 @@ export async function sendShareWarnEmail(
   limit: number
 ): Promise<boolean> {
   if (!shouldSendEmail(token.contact)) return false;
-  token.notify_log = token.notify_log ?? {};
-  // 幂等：冷却期内不重复发（与 share_warned_at 同窗口，双保险防并发重复触达）
-  if (Date.now() - (token.notify_log.share_warn ?? 0) < SHARE_WARN_COOLDOWN_MS) return false;
   const manageUrl = `${siteUrl(env)}/tokens?id=${token.id}`;
   const res = await sendMail(
     env,
@@ -89,10 +84,9 @@ export async function sendShareWarnEmail(
      <p><strong>如非本人使用，请尽快登录管理页重置订阅链接</strong>（旧链接立即失效）。<strong>7 天内再次检测到异常并发，服务将被暂停。</strong></p>
      <p style="color:#64748b;font-size:13px;">管理页：<a href="${manageUrl}" style="color:#0ea5e9;">${manageUrl}</a></p>`,
     `检测到你的 Token（${token.id}）当前有 ${conns} 个并发连接，超出套餐允许的设备规模（${limit}）。\n如非本人使用，请尽快登录管理页重置订阅链接（旧链接立即失效）：${manageUrl}\n7 天内再次检测到异常并发，服务将被暂停。`,
-    { kind: "account" }
+    { kind: "account", dedup: { key: `share_warn:${token.id}`, ttlMs: SHARE_WARN_COOLDOWN_MS } }
   );
   if (res.ok) {
-    token.notify_log.share_warn = Date.now();
     console.log(`[share] warned ${token.id} conns=${conns}`);
   } else {
     console.error(`[share] warn mail failed ${token.id}: ${res.error}`);
@@ -100,12 +94,10 @@ export async function sendShareWarnEmail(
   return res.ok;
 }
 
-/** 暂停邮件：服务已暂停，续费任意套餐后自动恢复；如有疑问联系站长 */
+/** 暂停邮件：服务已暂停，续费任意套餐后自动恢复；如有疑问联系站长。
+ *  一次暂停只发一封（dedup 键一次性；已暂停 token 在判定入口被跳过，双保险） */
 export async function sendShareSuspendEmail(env: Env, token: Token): Promise<boolean> {
   if (!shouldSendEmail(token.contact)) return false;
-  token.notify_log = token.notify_log ?? {};
-  // 幂等：一次暂停只发一封（已暂停 token 在判定入口被跳过，这里防并发评估重复触达）
-  if (token.notify_log.share_suspended) return false;
   const site = siteUrl(env);
   const res = await sendMail(
     env,
@@ -115,10 +107,9 @@ export async function sendShareSuspendEmail(env: Env, token: Token): Promise<boo
      <p><strong>续费任意套餐后服务自动恢复</strong>，订阅链接与已配置的设备无需变动。如有疑问请联系站长。</p>
      <p style="color:#64748b;font-size:13px;">续费入口：<a href="${site}" style="color:#0ea5e9;">${site}</a></p>`,
     `你的 Token（${token.id}）因持续检测到异常并发连接（疑似订阅链接被多人共享），服务已暂停。\n续费任意套餐后服务自动恢复，订阅链接与设备无需变动。如有疑问请联系站长。\n续费入口：${site}`,
-    { kind: "account" }
+    { kind: "account", dedup: { key: `share_suspended:${token.id}` } }
   );
   if (res.ok) {
-    token.notify_log.share_suspended = Date.now();
     console.log(`[share] suspended ${token.id}`);
   } else {
     console.error(`[share] suspend mail failed ${token.id}: ${res.error}`);
@@ -165,16 +156,14 @@ export async function evaluateShareConns(
       patch.share_conn_strikes = { at: now, count };
     } else if (now - (token.share_warned_at ?? 0) > SHARE_WARN_COOLDOWN_MS) {
       // 首次连续超标：只警告不处置。无邮箱联系方式时也置 warned_at，让状态机继续推进
-      const sent = await sendShareWarnEmail(env, token, totalConns, limit);
+      await sendShareWarnEmail(env, token, totalConns, limit);
       patch.share_warned_at = now;
-      if (sent) patch.notify_log = { share_warn: now };
       patch.share_conn_strikes = { at: now, count };
     } else {
       // 警告后 7 天内再犯：暂停。快照生成侧剔除，推送节点刷新立即生效
-      const sent = await sendShareSuspendEmail(env, token);
+      await sendShareSuspendEmail(env, token);
       patch.share_suspended_at = now;
       patch.share_conn_strikes = null; // 暂停后连续计数无意义
-      if (sent) patch.notify_log = { share_suspended: now };
       authChanged = true;
     }
   } else if (token.share_conn_strikes) {

@@ -8,14 +8,15 @@ import type { Env } from "../types";
  * - 授权快照：当月触顶的 token 被摘除；账期翻转（未回写）自动恢复；重置后恢复
  * - POST /api/tokens/:id/reset-month：触顶才可重置（用量清零、months_borrowed+1、有效期 -30 天）；
  *   未触顶幂等返回 changed=false 不扣期；非月度套餐 400；非本人 401
- * - 触顶邮件 sendMonthCapEmail：幂等键 month_cap:<月>，同月只发一次
+ * - 触顶邮件 sendMonthCapEmail：认领键 month_cap:{tokenId}:<月>（DO 认领存储），同月只发一次
  * - subscription-userinfo：月度套餐 total/used 走月口径
- * KV 用内存假实现；邮件 mock 掉。
+ * KV 用内存假实现；邮件 mock 掉（dedup 感知，认领语义与队列消费者一致）。
  */
 
 vi.mock("../lib/email-aliyun", async (importOriginal) => {
   const orig = await importOriginal<typeof import("../lib/email-aliyun")>();
-  return { ...orig, sendMail: vi.fn(async () => ({ ok: true })) };
+  const { dedupAwareSendMailMock } = await import("./helpers");
+  return { ...orig, sendMail: dedupAwareSendMailMock() };
 });
 import { sendMail } from "../lib/email-aliyun";
 import { computeAuthSnapshot } from "../lib/authsnapshot";
@@ -115,10 +116,12 @@ describe("POST /api/tokens/:id/reset-month", () => {
       collectCtx().ctx
     );
 
-  it("触顶重置成功：用量清零、months_borrowed+1、有效期 -30 天、month_cap 幂等键清零", async () => {
-    const { env } = makeEnv({ plans: [MONTHLY_PLAN] });
-    const token = makeToken({ notify_log: { [`month_cap:${MK}`]: NOW } });
+  it("触顶重置成功：用量清零、months_borrowed+1、有效期 -30 天、month_cap 认领键释放", async () => {
+    const { env, shareGuard } = makeEnv({ plans: [MONTHLY_PLAN] });
+    const token = makeToken();
     seedToken(env, token);
+    // 同月触顶通知已发过：认领键被占用
+    shareGuard.claims.set(`month_cap:${token.id}:${MK}`, NOW);
     await seedSession(env);
     const res = await post(env, token.id, "sess-1");
     expect(res.status).toBe(200);
@@ -134,7 +137,8 @@ describe("POST /api/tokens/:id/reset-month", () => {
     expect(saved.month_used_bytes).toBe(0);
     expect(saved.month_key).toBe(MK); // 保持当前自然月
     expect(saved.months_borrowed).toBe(1);
-    expect(saved.notify_log?.[`month_cap:${MK}`]).toBeFalsy(); // 清零后同月再触顶可再发邮件
+    // 认领键已释放：清零后同月再触顶可再发邮件
+    expect(shareGuard.claims.has(`month_cap:${token.id}:${MK}`)).toBe(false);
     // 重置后快照恢复授权
     const snap = await computeAuthSnapshot(env);
     expect(snap.uuids).toContain(token.uuid);
@@ -191,19 +195,20 @@ describe("sendMonthCapEmail 触顶通知", () => {
   const sendMailMock = vi.mocked(sendMail);
 
   it("触顶发信（含两个恢复选项），同月幂等只发一次", async () => {
-    const { env } = makeEnv();
+    const { env, shareGuard } = makeEnv();
     const token = makeToken();
     expect(await sendMonthCapEmail(env, token, 20)).toBe(true);
     expect(sendMailMock).toHaveBeenCalledTimes(1);
     expect(String(sendMailMock.mock.calls[0][2])).toContain("本月额度已用完");
     expect(String(sendMailMock.mock.calls[0][3])).toContain("提前重置");
     expect(String(sendMailMock.mock.calls[0][3])).toContain("次月 1 日");
-    // 同月第二次（幂等键已记账）不发
-    expect(await sendMonthCapEmail(env, token, 20)).toBe(false);
-    expect(sendMailMock).toHaveBeenCalledTimes(1);
-    // 幂等键清零后（reset-month）可再发
-    token.notify_log![`month_cap:${MK}`] = 0;
+    // 同月第二次：认领键已占用，发送被认领层压掉（入队/直发接口仍返回 ok，去重对调用方透明）
     expect(await sendMonthCapEmail(env, token, 20)).toBe(true);
+    expect(sendMailMock).toHaveBeenCalledTimes(1);
+    // 认领键释放后（reset-month）可再发
+    shareGuard.claims.delete(`month_cap:${token.id}:${MK}`);
+    expect(await sendMonthCapEmail(env, token, 20)).toBe(true);
+    expect(sendMailMock).toHaveBeenCalledTimes(2);
   });
 
   it("无邮箱不发", async () => {

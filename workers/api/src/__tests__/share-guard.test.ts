@@ -27,7 +27,8 @@ import type { Env } from "../types";
 
 vi.mock("../lib/email-aliyun", async (importOriginal) => {
   const orig = await importOriginal<typeof import("../lib/email-aliyun")>();
-  return { ...orig, sendMail: vi.fn(async () => ({ ok: true })) };
+  const { dedupAwareSendMailMock } = await import("./helpers");
+  return { ...orig, sendMail: dedupAwareSendMailMock() };
 });
 import { sendMail } from "../lib/email-aliyun";
 import { stubCtx, makeEnv as baseEnv } from "./helpers";
@@ -215,7 +216,7 @@ describe("共享检测：判定与处置", () => {
   });
 
   it("首次超标只警告：连续 2 周期超标发警告邮件，不暂停", async () => {
-    const { env, tokens } = makeEnv();
+    const { env, tokens, shareGuard } = makeEnv();
     const t = seedToken(tokens.store);
 
     await reportConns(env, t.uuid, 6); // 第 1 周期超标：只记 strikes
@@ -227,7 +228,7 @@ describe("共享检测：判定与处置", () => {
     await reportConns(env, t.uuid, 6); // 第 2 周期连续超标：警告
     saved = readToken(tokens.store, t.uuid);
     expect(saved.share_warned_at).toBeGreaterThan(0);
-    expect(saved.notify_log?.share_warn).toBeGreaterThan(0);
+    expect(shareGuard.claims.get(`share_warn:${t.id}`)).toBeGreaterThan(0); // 冷却键已占用
     expect(saved.share_suspended_at).toBeUndefined(); // 只警告不暂停
     expect(saved.status).toBe("active");
     expect(sendMail).toHaveBeenCalledTimes(1);

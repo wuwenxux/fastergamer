@@ -8,13 +8,14 @@ import type { Env } from "../types";
  * - 触发：本周期该 token 出现 ≥2 个不同地点的接入 IP（含 30 分钟窗口内最近活跃的 IP）
  * - 单链接换城市（出差/漫游）：只更新 active_geo 基线，不发邮件
  * - 同城多 IP（本人新设备）：不发邮件
- * - 12h 限流 + notify_log.ip_change 幂等
+ * - 12h 限流：dedup 键 `ip_change:{tokenId}` 由认领存储裁决
  * 只拦截 ip-api.com 批量接口的 fetch，其余出站请求（节点 refresh 推送等）假成功，不触网。
  */
 
 vi.mock("../lib/email-aliyun", async (importOriginal) => {
   const orig = await importOriginal<typeof import("../lib/email-aliyun")>();
-  return { ...orig, sendMail: vi.fn(async () => ({ ok: true })) };
+  const { dedupAwareSendMailMock } = await import("./helpers");
+  return { ...orig, sendMail: dedupAwareSendMailMock() };
 });
 import { sendMail } from "../lib/email-aliyun";
 
@@ -201,12 +202,12 @@ describe("多地并发在线安全提醒（/api/agent/traffic 链路）", () => 
     expect(vi.mocked(sendMail).mock.calls[0][2]).toContain("多个地点同时在线");
   });
 
-  it("12 小时内已发过：限流不再发", async () => {
-    const { env, tokens } = makeEnv();
+  it("12 小时内已发过（认领键在窗口内）：限流不再发", async () => {
+    const { env, tokens, shareGuard } = makeEnv();
     stubGeoFetch(GEO);
-    const t = seedToken(tokens.store, {
-      notify_log: { ip_change: Date.now() - 60_000 },
-    });
+    const t = seedToken(tokens.store);
+    // ip_change 认领键 1 分钟前已占用（12h 窗口内）
+    shareGuard.claims.set(`ip_change:${t.id}`, Date.now() - 60_000);
 
     await report(env, t.uuid, 1e6, { [CD]: 2 });
     await report(env, t.uuid, 1e6, { [CD]: 1, [GZ]: 2 });

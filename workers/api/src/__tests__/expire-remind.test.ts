@@ -3,15 +3,16 @@ import { Hono } from "hono";
 import { KV, type Token } from "../../../../shared/types";
 import { adminRoutes } from "../routes/admin";
 import type { Env } from "../types";
-import { mockNs, noopCtx } from "./helpers";
+import { mockNs, noopCtx, fakeShareGuard } from "./helpers";
 
-
-const makeEnv = (tokens: KVNamespace, tickets: KVNamespace) =>
+// 认领存储（ShareGuardDO fake）：邮件幂等键的权威；同一测试内多次扫描要共享同一实例
+const makeEnv = (tokens: KVNamespace, tickets: KVNamespace, guard = fakeShareGuard()) =>
   ({
     TOKENS: tokens,
     TICKETS: tickets,
     NODES: mockNs().ns, // notify-scan 翻转过期后会 pushAuthRefresh，需要 NODES 命名空间
     ORDERS: mockNs().ns, // notify-scan 顺带自动取消超 3 天 pending 订单，需要 ORDERS 命名空间
+    SHARE_GUARD: guard.ns,
     ADMIN_KEY: "secret-key",
     ALIYUN_ACCESS_KEY_ID: "test-id",
     ALIYUN_ACCESS_KEY_SECRET: "test-secret",
@@ -56,13 +57,14 @@ describe("notify-scan 付费 token 到期前 24h 续费提醒", () => {
     return fetchMock;
   };
 
-  it("进入 24h 窗口的付费 token 发一次性续费提醒（含免登录链接），幂等键落库", async () => {
+  it("进入 24h 窗口的付费 token 发一次性续费提醒（含免登录链接），认领键落 DO 存储", async () => {
     const tokens = mockNs();
     const tickets = mockNs();
+    const guard = fakeShareGuard();
     seedToken(tokens.store, makePaid());
     const fetchMock = stubMailOk();
 
-    const res = await runScan(app, makeEnv(tokens.ns, tickets.ns));
+    const res = await runScan(app, makeEnv(tokens.ns, tickets.ns, guard));
     expect(res.status).toBe(200);
     const body = (await res.json()) as { data: { notified: number } };
     expect(body.data.notified).toBe(1);
@@ -73,17 +75,18 @@ describe("notify-scan 付费 token 到期前 24h 续费提醒", () => {
 
     const saved = JSON.parse(tokens.store.get(KV.TOKEN + "uuid-paid")!) as Token;
     expect(saved.status).toBe("active"); // 提醒不改变状态
-    expect(saved.notify_log?.expire_24h).toBeGreaterThan(0);
+    expect(guard.claims.get("expire_24h:tk_paid")).toBeGreaterThan(0);
   });
 
-  it("二次扫描不重复发（幂等键已存在）", async () => {
+  it("二次扫描不重复发（认领键已存在）", async () => {
     const tokens = mockNs();
     const tickets = mockNs();
+    const guard = fakeShareGuard();
     seedToken(tokens.store, makePaid());
     const fetchMock = stubMailOk();
 
-    await runScan(app, makeEnv(tokens.ns, tickets.ns));
-    await runScan(app, makeEnv(tokens.ns, tickets.ns));
+    await runScan(app, makeEnv(tokens.ns, tickets.ns, guard));
+    await runScan(app, makeEnv(tokens.ns, tickets.ns, guard));
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
@@ -106,10 +109,10 @@ describe("notify-scan 付费 token 到期前 24h 续费提醒", () => {
     await runScan(app, makeEnv(tokens.ns, tickets.ns));
     expect(fetchMock).not.toHaveBeenCalled();
     const saved = JSON.parse(tokens.store.get(KV.TOKEN + "uuid-paid")!) as Token;
-    expect(saved.notify_log?.expire_24h).toBeUndefined();
+    expect(saved.notify_log?.expire_24h).toBeUndefined(); // 未发送就不该有任何痕迹（认领键也不再写 token）
   });
 
-  it("联系方式非邮箱：不发邮件、不打幂等键（下轮窗口内还会重试）", async () => {
+  it("联系方式非邮箱：不发邮件、不占认领键（下轮窗口内还会重试）", async () => {
     const tokens = mockNs();
     const tickets = mockNs();
     seedToken(tokens.store, makePaid({ contact: "wechat_user" }));

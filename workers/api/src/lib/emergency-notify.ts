@@ -8,12 +8,14 @@
  * 与 node-change-notify 的差异：
  * - 收件人更宽：active 未过期、有邮箱即可，**试用用户也发**（灾备时试用用户是潜在付费用户）；
  * - 邮件含该用户自己的备用订阅链接（uuid 即连接凭证，但只发去本人邮箱，与发货邮件同口径）；
- * - 幂等键按天：notify_log.emergency_sub:<yyyymmdd>（UTC），同一天重复触发不重发，
+ * - 幂等键按天：`emergency_sub:{yyyymmdd}:{tokenId}`（UTC），由 ShareGuardDO 认领存储
+ *   在发送前同步裁决（claimNotification），同一天重复触发不重发，
  *   跨天可再发（灾备可能持续多日，防止误触轰炸的同时保留次日补发能力）。
  */
 import { KV, type Token } from "../../../../shared/types";
-import { listKeys, mapBatched, mergeTokenSettlement } from "./kv";
+import { listKeys, mapBatched } from "./kv";
 import { sendMail, shouldSendEmail } from "./email-aliyun";
+import { claimNotification } from "./notify-dedup";
 import { shell } from "./risk-notify";
 import type { Env } from "../types";
 
@@ -56,7 +58,7 @@ const buildCopy = (backupUrl: string) => ({
  */
 export const broadcastBackupSub = async (env: Env): Promise<{ sent: number; skipped: number }> => {
   const now = Date.now();
-  const logKey = `emergency_sub:${dayKey(now)}`;
+  const dedupPrefix = `emergency_sub:${dayKey(now)}`;
   const keys = await listKeys(env.TOKENS, KV.TOKEN);
   // 全表枚举一次批量并发读回（与 node-change-notify / notify-scan 同模式）；灾备低频，代价可接受
   const raws = await mapBatched(keys, (k) => env.TOKENS.get(k.name));
@@ -69,13 +71,13 @@ export const broadcastBackupSub = async (env: Env): Promise<{ sent: number; skip
     if (token.status !== "active") { skipped++; continue; }
     if (token.expires_at && token.expires_at <= now) { skipped++; continue; }
     if (!shouldSendEmail(token.contact)) { skipped++; continue; }
-    if (token.notify_log?.[logKey]) { skipped++; continue; } // 当天已发过
+    // 发送前同步认领（本函数要精确回 sent/skipped，不能等消费者异步裁决）；
+    // 已认领即当天已发过/正在发，计入 skipped
+    if (!(await claimNotification(env, `${dedupPrefix}:${token.id}`))) { skipped++; continue; }
     const copy = buildCopy(`${BACKUP_SUB_BASE}/api/sub?uuid=${encodeURIComponent(token.uuid)}`);
     const { subject, html, text } = shell(env, copy.title, copy.html, copy.text);
     const res = await sendMail(env, token.contact!, subject, html, text, { kind: "service" });
     if (res.ok) {
-      // 键级合并写回幂等键，不碰结算路径并发更新的其他字段
-      await mergeTokenSettlement(env, token.uuid, { notify_log: { [logKey]: now } });
       sent++;
     } else {
       console.error(`[emergency] backup-sub mail failed ${token.id}: ${res.error}`);

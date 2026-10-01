@@ -3,7 +3,8 @@ import { KV, type IpGeo, type Presence, type Token } from "../../../../shared/ty
 
 vi.mock("../lib/email-aliyun", async (importOriginal) => {
   const orig = await importOriginal<typeof import("../lib/email-aliyun")>();
-  return { ...orig, sendMail: vi.fn(async () => ({ ok: true })) };
+  const { dedupAwareSendMailMock } = await import("./helpers");
+  return { ...orig, sendMail: dedupAwareSendMailMock() };
 });
 
 import { sendMail } from "../lib/email-aliyun";
@@ -15,16 +16,18 @@ import {
   type ConcurrentGeoConflict,
 } from "../lib/risk-notify";
 import type { Env } from "../types";
-import { fakeNs } from "./helpers";
+import { fakeNs, fakeShareGuard } from "./helpers";
 
 /**
  * 归属地查询走 geo-stats 共享通道：geo:{ip} KV 缓存优先，miss 调 ip-api.com 批量接口并回写缓存。
  * 这里 mock ip-api 的批量 fetch（POST，body 为 IP 数组），KV 用内存假实现。
+ * 邮件限流（12h）由 sendMail dedup 认领键裁决，env 挂 fakeShareGuard。
  */
 
 
 const tokens = fakeNs();
-const env = { TOKENS: tokens.ns } as unknown as Env;
+const guard = fakeShareGuard();
+const env = { TOKENS: tokens.ns, SHARE_GUARD: guard.ns } as unknown as Env;
 
 const makeToken = (overrides: Partial<Token> = {}): Token => ({
   id: "tk_test",
@@ -105,6 +108,7 @@ const stubGeoFail = () => {
 beforeEach(() => {
   vi.clearAllMocks();
   tokens.store.clear();
+  guard.claims.clear();
 });
 afterEach(() => vi.unstubAllGlobals());
 
@@ -256,7 +260,7 @@ describe("notifyIpChange 多地并发在线邮件", () => {
     ],
   };
 
-  it("发送邮件：标题为多地同时在线，正文列出各 IP 与归属地，记入 notify_log", async () => {
+  it("发送邮件：标题为多地同时在线，正文列出各 IP 与归属地，占用认领键", async () => {
     const token = makeToken();
     await notifyIpChange(env, token, conflict);
     expect(sendMail).toHaveBeenCalledTimes(1);
@@ -268,7 +272,7 @@ describe("notifyIpChange 多地并发在线邮件", () => {
     expect(html).toContain("5.6.7.8");
     expect(html).toContain("中国 / 广东 / 广州 / 移动");
     expect(text).toContain("1.2.3.4（中国 / 四川 / 成都 / 电信）");
-    expect(token.notify_log?.["ip_change"]).toBeGreaterThan(0);
+    expect(guard.claims.get("ip_change:tk_test")).toBeGreaterThan(0);
   });
 
   it("conflict=false：不发", async () => {
@@ -277,8 +281,9 @@ describe("notifyIpChange 多地并发在线邮件", () => {
     expect(sendMail).not.toHaveBeenCalled();
   });
 
-  it("12 小时内已发过：限流不再发", async () => {
-    const token = makeToken({ notify_log: { ip_change: Date.now() - 60_000 } });
+  it("12 小时内已发过（认领键在窗口内）：限流不再发", async () => {
+    guard.claims.set("ip_change:tk_test", Date.now() - 60_000);
+    const token = makeToken();
     await notifyIpChange(env, token, conflict);
     expect(sendMail).not.toHaveBeenCalled();
   });

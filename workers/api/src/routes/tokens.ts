@@ -15,6 +15,7 @@ import { activatePaidToken } from "../lib/activate";
 import { fulfillOrder } from "../lib/issue-token";
 import { resetPenalty, sendPenaltyNoticeEmail } from "../lib/reset-penalty";
 import { currentMonthKey } from "../lib/nodes";
+import { releaseNotification } from "../lib/notify-dedup";
 import { allowGuardedIp, denyGuardedIp } from "../lib/device-guard";
 import { pushAuthRefresh } from "../lib/authpush";
 import { siteUrl } from "../lib/site-url";
@@ -591,15 +592,15 @@ tokensRoutes.post("/:id/reset-month", async (c) => {
   }
 
   const expiresAt = (token.expires_at ?? Date.now()) - 30 * 86_400_000;
-  // 重读-合并写：只覆盖月账期与有效期字段，不碰结算路径并发更新的其他字段；
-  // month_cap 幂等键清零——同月再次触顶时通知邮件可再发
+  // 重读-合并写：只覆盖月账期与有效期字段，不碰结算路径并发更新的其他字段
   await mergeTokenSettlement(c.env, token.uuid, {
     month_used_bytes: 0,
     month_key: mk,
     months_borrowed: (token.months_borrowed ?? 0) + 1,
     expires_at: expiresAt,
-    notify_log: { [`month_cap:${mk}`]: 0 },
   });
+  // 释放月触顶通知的认领键——同月再次触顶时通知邮件可再发（幂等权威在 ShareGuardDO）
+  await releaseNotification(c.env, `month_cap:${token.id}:${mk}`);
   c.executionCtx.waitUntil(pushAuthRefresh(c.env)); // 快照重新生成后该 uuid 立即恢复授权
 
   return c.json({

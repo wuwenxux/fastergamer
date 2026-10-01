@@ -13,7 +13,8 @@ import { KV, type IpGeo, type Token } from "../../../../shared/types";
 
 vi.mock("../lib/email-aliyun", async (importOriginal) => {
   const orig = await importOriginal<typeof import("../lib/email-aliyun")>();
-  return { ...orig, sendMail: vi.fn(async () => ({ ok: true })) };
+  const { dedupAwareSendMailMock } = await import("./helpers");
+  return { ...orig, sendMail: dedupAwareSendMailMock() };
 });
 import { sendMail } from "../lib/email-aliyun";
 import {
@@ -76,7 +77,7 @@ describe("不可能旅行检测", () => {
   });
 
   it("深圳→北京 1 分钟（~1900km，远超物理极限）：命中，写 strikes + 发节流邮件", async () => {
-    const { env, tokens } = makeEnv();
+    const { env, tokens, shareGuard } = makeEnv();
     const token = makeToken();
     seedToken(tokens.store, token);
     tokens.store.set(KV.GEO + OLD_IP, JSON.stringify(SZ));
@@ -86,7 +87,7 @@ describe("不可能旅行检测", () => {
 
     const saved = readToken(tokens.store, token.uuid);
     expect(saved.travel_strikes).toEqual({ at: now, count: 1 });
-    expect(saved.notify_log?.travel_warn).toBe(now);
+    expect(shareGuard.claims.get(`travel_warn:${token.id}`)).toBeGreaterThan(0);
     expect(sendMail).toHaveBeenCalledTimes(1);
     const [, to, subject, html] = vi.mocked(sendMail).mock.calls[0];
     expect(to).toBe("traveler@example.com");
@@ -176,12 +177,14 @@ describe("不可能旅行检测", () => {
     expect(readToken(tokens.store, t2.uuid).travel_strikes).toEqual({ at: now, count: 1 });
   });
 
-  it("邮件 7 天节流：节流期内命中只写 strikes 不发邮件，节流键不被刷新", async () => {
-    const { env, tokens } = makeEnv();
+  it("邮件 7 天节流：节流期内命中只写 strikes 不发邮件，认领键不被刷新", async () => {
+    const { env, tokens, shareGuard } = makeEnv();
     const lastWarn = Date.now() - 86_400_000; // 1 天前发过
-    const token = makeToken({ notify_log: { travel_warn: lastWarn } });
+    const token = makeToken();
     seedToken(tokens.store, token);
     tokens.store.set(KV.GEO + OLD_IP, JSON.stringify(SZ));
+    // travel_warn 认领键在 7 天冷却窗口内
+    shareGuard.claims.set(`travel_warn:${token.id}`, lastWarn);
     const now = Date.now();
 
     await evaluateTravel(env, token, baseline(now - 60_000), BJ, now);
@@ -189,7 +192,7 @@ describe("不可能旅行检测", () => {
     const saved = readToken(tokens.store, token.uuid);
     expect(saved.travel_strikes).toEqual({ at: now, count: 1 }); // strikes 照常累积
     expect(sendMail).not.toHaveBeenCalled();
-    expect(saved.notify_log?.travel_warn).toBe(lastWarn); // 节流键不刷新
+    expect(shareGuard.claims.get(`travel_warn:${token.id}`)).toBe(lastWarn); // 认领键不刷新
   });
 
   it("非邮箱联系方式：strikes 照写，不发邮件", async () => {

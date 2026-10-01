@@ -67,18 +67,18 @@ adminNotifyScanRoutes.post("/notify-scan", async (c) => {
     // 重读-合并写，只覆盖 status，不覆盖结算路径并发更新的其他字段
     if (token.status === "active" && token.expires_at && token.expires_at < now) {
       token.status = "expired";
-      // 试用到期：发一次性转化邮件（同 token 充值引导 + 转正激励），幂等键
-      // trial_convert 只在此翻转分支打——存量已 expired 的试用 token 不补发
+      // 试用到期：发一次性转化邮件（同 token 充值引导 + 转正激励），dedup 键
+      // trial_convert:{token.id} 只在此翻转分支发送——存量已 expired 的试用 token 不补发
       if (isTrialPlan(token.plan_id)) {
         await sendTrialConvertEmail(c.env, token);
       }
-      await mergeTokenSettlement(c.env, token.uuid, { status: "expired", notify_log: token.notify_log });
+      await mergeTokenSettlement(c.env, token.uuid, { status: "expired" });
       expiredNow++;
       continue;
     }
 
-    // 付费 token 进入到期前 24 小时窗口：发一次性续费提醒（幂等键 expire_24h 打在函数内）。
-    // 试用 token 不参与——它走 trial_convert 转化邮件；合并写只回写 notify_log
+    // 付费 token 进入到期前 24 小时窗口：发一次性续费提醒（dedup 键 expire_24h:{token.id}）。
+    // 试用 token 不参与——它走 trial_convert 转化邮件
     if (
       token.status === "active" &&
       !isTrialPlan(token.plan_id) &&
@@ -88,7 +88,6 @@ adminNotifyScanRoutes.post("/notify-scan", async (c) => {
     ) {
       if (await sendExpire24hEmail(c.env, token)) {
         notified++;
-        await mergeTokenSettlement(c.env, token.uuid, { notify_log: token.notify_log });
       }
     }
 

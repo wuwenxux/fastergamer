@@ -7,6 +7,7 @@
 import type { Token } from "../../../../shared/types";
 import { saveToken } from "./kv";
 import { sendMail, shouldSendEmail } from "./email-aliyun";
+import { releaseNotification } from "./notify-dedup";
 import type { Env } from "../types";
 
 export const resetPenalty = async (
@@ -35,12 +36,13 @@ export const resetPenalty = async (
     token.status = (token.expires_at ?? Infinity) > now ? "active" : "expired";
     if (!token.activated_at) token.activated_at = now;
   }
-  // 流量类提醒重置后可重新触发；traffic_80 提醒已下线，删键仅为清理存量旧数据
+  // 流量类提醒重置后可重新触发：释放邮件认领键（幂等权威在 ShareGuardDO，见 lib/notify-dedup.ts）。
+  // traffic_80 提醒已下线，存量 notify_log 旧键不再清理（随 token 90 天清理自然消失）；
+  // traffic_spike 保留——它是暴增处置的业务状态（24h 处置窗口），不是纯邮件幂等
   if (token.notify_log) {
-    delete token.notify_log.traffic_80;
-    delete token.notify_log.exhausted;
     delete token.notify_log.traffic_spike;
   }
+  await releaseNotification(env, `exhausted:${token.id}`);
 
   await saveToken(env, token);
   return token;

@@ -89,7 +89,8 @@ adminRoutes.post("/notify-user", async (c) => {
 /**
  * POST /api/admin/emergency/backup-sub —— 灾备群发：主站域名被 DNS 污染时，
  * 向全部 active 未过期且有邮箱的用户（含试用）邮件下发各自的备用订阅地址
- * （uluw.kdns.fr）。幂等键 notify_log.emergency_sub:<UTC日期>，同日重复触发不重发。
+ * （uluw.kdns.fr）。幂等键 emergency_sub:<UTC日期>:<tokenId> 由 ShareGuardDO 认领存储裁决，
+ * 同日重复触发不重发。
  * 同步跑完返回计数；鉴权走 adminAuth（x-admin-key + ADMIN_IPS 白名单，随 adminRoutes 全局挂载）。
  */
 adminRoutes.post("/emergency/backup-sub", async (c) => {
