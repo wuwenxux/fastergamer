@@ -3,10 +3,26 @@ import { isTrialPlan, KV } from "../../../../../shared/types";
 import type { Order, Presence, Token } from "../../../../../shared/types";
 import { deleteTokenCascade, getTokenPresence, listKeys, listTickets, mapBatched, mergeTokenSettlement, saveOrder, savePresenceIfChanged } from "../../lib/kv";
 import { sendExpire24hEmail, sendTrialConvertEmail } from "../../lib/risk-notify";
+import { claimNotification, releaseNotification } from "../../lib/notify-dedup";
 import { pushAuthRefresh } from "../../lib/authpush";
 import type { Env } from "../../types";
 
 export const adminNotifyScanRoutes = new Hono<{ Bindings: Env }>();
+
+/**
+ * POST /api/admin/notify-claim —— 运维工具：手动认领/释放通知幂等键。
+ * 用途：notify_log → DO 认领的一次性迁移、人工压制某类通知（body: {key, release?}）。
+ */
+adminNotifyScanRoutes.post("/notify-claim", async (c) => {
+  const body = (await c.req.json().catch(() => null)) as { key?: string; release?: boolean } | null;
+  if (!body?.key) return c.json({ ok: false, error: "missing key" }, 400);
+  if (body.release) {
+    await releaseNotification(c.env, body.key);
+    return c.json({ ok: true, data: { released: body.key } });
+  }
+  const claimed = await claimNotification(c.env, body.key);
+  return c.json({ ok: true, data: { key: body.key, claimed } });
+});
 
 /**
  * POST /api/admin/notify-scan —— 定时风险扫描（cron 每 15 分钟调用）
