@@ -2,9 +2,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import worker from "../index";
 import { KV, type Device, type Plan, type Token } from "../../../../shared/types";
 import {
+  ALARM_INTERVAL_MS,
   EVAL_PACE_MS,
+  NODE_SILENT_MS,
   NODE_STALE_MS,
   SHARE_CANDIDATE_MIN_CONNS,
+  SCAN_UUID_THRESHOLD,
   ShareGuardDO,
   applyDgBaseline,
   evaluateGlobalConns,
@@ -13,6 +16,7 @@ import {
   type NodeEntry,
 } from "../do/share-guard";
 import { DG_CONFIRM_MS } from "../lib/device-guard";
+import { invalidateNodesCache } from "../lib/nodes";
 import { CONN_SUSPEND_THRESHOLD, SHARE_WARN_COOLDOWN_MS } from "../lib/share-guard";
 import { makeEnv as baseEnv } from "./helpers";
 import type { Env } from "../types";
@@ -23,6 +27,9 @@ import type { Env } from "../types";
  *   基线收养/首见不判/可疑离线重记、allowed_ips/transition_ips 剔除、plan_biz 跳过、同 token 去重
  * - ShareGuardDO 类：心跳 prune/快照替换、节拍限制、裁决执行落 KV（blocked_ips 台账 /
  *   share_suspended_at）、authpush 触发
+ * - alarm 巡检：节点失联告警/恢复（注册表 active 闸门、认领存储重建、1h 恢复节流）、
+ *   扫号检测（10min 窗口 ≥5 uuid、24h 节流、窗口过期清理）、闹钟 arm/re-arm
+ * - GET /stats 实时在线聚合；GET /api/admin/online-live 注册表合并/neverBeat 补列/未绑定 501
  * - /api/agent/presence 端点：鉴权、nodeId 注入（不信 agent 自报）、无绑定时 ack 降级
  * fetch 全部假成功（geo 查询/节点 refresh 推送），sendMail mock 掉。
  */
@@ -90,6 +97,8 @@ beforeEach(() => {
   vi.clearAllMocks();
   vi.useFakeTimers();
   vi.setSystemTime(T0);
+  // getNodes 有 60s isolate 内存缓存（模块级），测试间假时钟回拨会让陈旧注册表残留命中
+  invalidateNodesCache();
   // geo 查询（ip-api）与节点 refresh 推送一律假成功，不触网
   vi.stubGlobal("fetch", vi.fn(async () => new Response("ok")));
 });
@@ -280,25 +289,41 @@ describe("evaluateGlobalConns 纯函数：device-guard 实时版", () => {
   });
 });
 
-describe("ShareGuardDO 类：心跳与裁决执行", () => {
-  const makeDo = (env: Env) => {
-    const pending: Promise<unknown>[] = [];
-    const store = new Map<string, number>();
-    const ctx = {
-      waitUntil: (p: Promise<unknown>) => void pending.push(Promise.resolve(p).catch(() => {})),
-      // /notify-claim /notify-release 与 device-guard 行动的 ip_change 抑制都走 ctx.storage
-      storage: {
-        get: async (k: string) => store.get(k),
-        put: async (k: string, v: number) => void store.set(k, v),
-        delete: async (k: string) => void store.delete(k),
-      },
-    } as unknown as DurableObjectState;
-    return { do: new ShareGuardDO(ctx, env), pending, store };
-  };
-  const beat = (d: ShareGuardDO, nodeId: string, conns: Record<string, number>, ips: Record<string, string[]>) =>
-    d.fetch(new Request("https://share-guard.do/heartbeat", { method: "POST", body: JSON.stringify({ nodeId, conns, ips }) }));
+/**
+ * ShareGuardDO 实例夹具：内存版 ctx.storage（认领键/告警键断言用）+ 收集 waitUntil 副作用
+ * + setAlarm 记录（alarm 巡检的 arm/re-arm 断言用）
+ */
+const makeDo = (env: Env) => {
+  const pending: Promise<unknown>[] = [];
+  const store = new Map<string, number>();
+  let alarmAt: number | null = null;
+  const ctx = {
+    waitUntil: (p: Promise<unknown>) => void pending.push(Promise.resolve(p).catch(() => {})),
+    // /notify-claim /notify-release、device-guard 行动的 ip_change 抑制、失联/扫号告警都走 ctx.storage
+    storage: {
+      get: async (k: string) => store.get(k),
+      put: async (k: string, v: number) => void store.set(k, v),
+      delete: async (k: string) => void store.delete(k),
+      list: async ({ prefix }: { prefix?: string } = {}) =>
+        new Map([...store].filter(([k]) => !prefix || k.startsWith(prefix))),
+      setAlarm: async (t: number) => void (alarmAt = t),
+      getAlarm: async () => alarmAt,
+    },
+  } as unknown as DurableObjectState;
+  return { do: new ShareGuardDO(ctx, env), pending, store, getAlarmAt: () => alarmAt };
+};
+const beat = (d: ShareGuardDO, nodeId: string, conns: Record<string, number>, ips: Record<string, string[]>) =>
+  d.fetch(new Request("https://share-guard.do/heartbeat", { method: "POST", body: JSON.stringify({ nodeId, conns, ips }) }));
 
-  const makeDoEnv = () => baseEnv({ nodes: [NODE], defaultPlans: PLANS, extra: { SITE_URL: "https://fastergamer.click" } });
+const makeDoEnv = () =>
+  baseEnv({
+    nodes: [NODE],
+    defaultPlans: PLANS,
+    // 失联/扫号告警走 notifyAdmin，未配置 ADMIN_NOTIFY_EMAIL 只记日志不发信
+    extra: { SITE_URL: "https://fastergamer.click", ADMIN_NOTIFY_EMAIL: "admin@test.com" },
+  });
+
+describe("ShareGuardDO 类：心跳与裁决执行", () => {
 
   it("端点形状：非 POST 405；缺 nodeId 400；正常心跳 200", async () => {
     const { env } = makeDoEnv();
@@ -465,6 +490,214 @@ describe("ShareGuardDO 类：心跳与裁决执行", () => {
   });
 });
 
+describe("ShareGuardDO 类：alarm 巡检（节点失联 + 扫号）", () => {
+  /** sendMail 的标题参数（args[2]）匹配记录 */
+  const mailsMatching = (needle: string) =>
+    vi.mocked(sendMail).mock.calls.filter((args) => String(args[2]).includes(needle));
+
+  it("首次心跳 arm 巡检闹钟；alarm 末尾无条件 re-arm", async () => {
+    const { env } = makeDoEnv();
+    const { do: d, pending, getAlarmAt } = makeDo(env);
+    expect(getAlarmAt()).toBeNull();
+    await beat(d, "node-hk-01", {}, {});
+    await Promise.all(pending);
+    expect(getAlarmAt()).toBe(T0 + ALARM_INTERVAL_MS); // 首心跳 arm
+    await d.alarm();
+    expect(getAlarmAt()).toBe(T0 + ALARM_INTERVAL_MS); // 同一时刻 re-arm 到 +2min
+    vi.setSystemTime(T0 + ALARM_INTERVAL_MS);
+    await d.alarm();
+    expect(getAlarmAt()).toBe(T0 + 2 * ALARM_INTERVAL_MS); // 断档恢复：每轮都续
+  });
+
+  it("节点失联全链路：沉默 5min 告警一次 → 重复 alarm 不重发 → 心跳恢复后发恢复邮件", async () => {
+    const { env } = makeDoEnv();
+    const { do: d, pending, store } = makeDo(env);
+    await beat(d, "node-hk-01", {}, {});
+    await Promise.all(pending);
+
+    // 沉默 4 分钟（< 5min 阈值）：不告警
+    vi.setSystemTime(T0 + 4 * 60_000);
+    await d.alarm();
+    expect(mailsMatching("节点失联")).toHaveLength(0);
+
+    // 沉默 6 分钟：告警一封，认领键落 storage
+    vi.setSystemTime(T0 + 6 * 60_000);
+    await d.alarm();
+    expect(mailsMatching("节点失联：香港 01")).toHaveLength(1);
+    expect(store.get("notify:node_silent:node-hk-01")).toBe(T0 + 6 * 60_000);
+
+    // 持续沉默：重复 alarm 不重发（内存 alertedSilent + 认领键双重幂等）
+    vi.setSystemTime(T0 + 12 * 60_000);
+    await d.alarm();
+    expect(mailsMatching("节点失联")).toHaveLength(1);
+
+    // 心跳恢复：释放失联认领键 + 发恢复邮件（1h 节流键落 storage）
+    const tBack = T0 + 13 * 60_000;
+    vi.setSystemTime(tBack);
+    await beat(d, "node-hk-01", {}, {});
+    await Promise.all(pending);
+    await d.alarm();
+    expect(mailsMatching("节点恢复")).toHaveLength(1);
+    expect(store.get("notify:node_silent:node-hk-01")).toBeUndefined();
+    expect(store.get("notify:node_silent_back:node-hk-01")).toBe(tBack);
+  });
+
+  it("注册表 active=false 的下线节点沉默不告警（正常退役）；从未心跳的注册表节点也不告警", async () => {
+    const { env, nodes } = makeDoEnv();
+    const { do: d, pending } = makeDo(env);
+    await beat(d, "node-hk-01", {}, {});
+    await Promise.all(pending);
+    // 心跳之后节点被管理端下线：沉默是预期行为；另注册一个从未上报过的 active 节点
+    // （不在 lastBeat 里，失联告警天然不覆盖——老 agent 未升级的情形）
+    nodes.store.set(
+      KV.NODES,
+      JSON.stringify([{ ...NODE, active: false }, { ...NODE, id: "node-jp-02", key: "node-key-2", name: "日本 02" }])
+    );
+    invalidateNodesCache(); // getNodes 有 60s isolate 缓存，测试里改注册表需手动失效
+
+    vi.setSystemTime(T0 + 6 * 60_000);
+    await d.alarm();
+    expect(mailsMatching("节点失联")).toHaveLength(0);
+  });
+
+  it("DO 重启（内存丢失）后从认领存储重建告警状态：恢复路径照常触发且不重复失联告警", async () => {
+    const { env } = makeDoEnv();
+    const { do: d1, pending, store } = makeDo(env);
+    await beat(d1, "node-hk-01", {}, {});
+    await Promise.all(pending);
+    vi.setSystemTime(T0 + 6 * 60_000);
+    await d1.alarm();
+    expect(mailsMatching("节点失联")).toHaveLength(1);
+
+    // 模拟 DO 被逐出重建：新实例 alertedSilent 为空，但共享同一 ctx.storage
+    const d2 = new ShareGuardDO(
+      {
+        waitUntil: () => {},
+        storage: {
+          get: async (k: string) => store.get(k),
+          put: async (k: string, v: number) => void store.set(k, v),
+          delete: async (k: string) => void store.delete(k),
+          list: async ({ prefix }: { prefix?: string } = {}) =>
+            new Map([...store].filter(([k]) => !prefix || k.startsWith(prefix))),
+          setAlarm: async () => {},
+          getAlarm: async () => null,
+        },
+      } as unknown as DurableObjectState,
+      env
+    );
+    // 节点其实一直活着：心跳进来后 lastBeat 回新鲜 → 重建的 alertedSilent（从 storage
+    // list 恢复）命中恢复路径：释放失联键 + 发恢复邮件，而不是再发一次失联告警
+    const tBack = T0 + 7 * 60_000;
+    vi.setSystemTime(tBack);
+    await beat(d2, "node-hk-01", {}, {});
+    await d2.alarm();
+    expect(mailsMatching("节点失联")).toHaveLength(1); // 未重发
+    expect(mailsMatching("节点恢复")).toHaveLength(1);
+    expect(store.get("notify:node_silent:node-hk-01")).toBeUndefined();
+  });
+
+  it("扫号检测：同一来源 IP 10 分钟内触碰 ≥5 个 uuid 告警一次；4 个不报", async () => {
+    const { env } = makeDoEnv();
+    const { do: d, pending, store } = makeDo(env);
+
+    // 4 个不同 uuid 共用一 IP：低于阈值不告警
+    const conns4: Record<string, number> = {};
+    const ips4: Record<string, string[]> = {};
+    for (let i = 1; i <= 4; i++) {
+      conns4[`u${i}`] = 1; // count=1：不进裁决候选（SHARE_CANDIDATE_MIN_CONNS=2），只喂扫号窗口
+      ips4[`u${i}`] = ["6.6.6.5"];
+    }
+    await beat(d, "node-hk-01", conns4, ips4);
+    await Promise.all(pending);
+    await d.alarm();
+    expect(mailsMatching("扫号")).toHaveLength(0);
+
+    // 另一 IP 触碰 5 个 uuid：达阈值告警一封（geo 查询被全局 fetch stub 兜底为「归属地未知」）
+    const conns5: Record<string, number> = {};
+    const ips5: Record<string, string[]> = {};
+    for (let i = 1; i <= SCAN_UUID_THRESHOLD; i++) {
+      conns5[`u${i}`] = 1;
+      ips5[`u${i}`] = ["6.6.6.6"];
+    }
+    await beat(d, "node-hk-01", conns5, ips5);
+    await Promise.all(pending);
+    await d.alarm();
+    expect(mailsMatching("疑似扫号来源 IP：6.6.6.6")).toHaveLength(1);
+    expect(store.get("notify:scan_ip:6.6.6.6")).toBeDefined();
+
+    // 24h 节流：窗口内再 alarm 不重发
+    vi.setSystemTime(T0 + 60_000);
+    await beat(d, "node-hk-01", conns5, ips5);
+    await Promise.all(pending);
+    await d.alarm();
+    expect(mailsMatching("扫号")).toHaveLength(1);
+  });
+
+  it("扫号窗口过期清理：10 分钟前的触碰不计入阈值", async () => {
+    const { env } = makeDoEnv();
+    const { do: d, pending } = makeDo(env);
+    // 分两批：第 1 批 3 个 uuid 在 T0，第 2 批 3 个在 11 分钟后（第 1 批已出窗）
+    const mk = (from: number, to: number, ip: string) => {
+      const conns: Record<string, number> = {};
+      const ips: Record<string, string[]> = {};
+      for (let i = from; i <= to; i++) {
+        conns[`u${i}`] = 1;
+        ips[`u${i}`] = [ip];
+      }
+      return { conns, ips };
+    };
+    const b1 = mk(1, 3, "7.7.7.7");
+    await beat(d, "node-hk-01", b1.conns, b1.ips);
+    await Promise.all(pending);
+    vi.setSystemTime(T0 + 11 * 60_000);
+    const b2 = mk(4, 6, "7.7.7.7");
+    await beat(d, "node-hk-01", b2.conns, b2.ips);
+    await Promise.all(pending);
+    await d.alarm();
+    expect(mailsMatching("扫号")).toHaveLength(0); // 窗口内只剩 3 个 uuid
+  });
+});
+
+describe("ShareGuardDO 类：GET /stats 实时在线聚合", () => {
+  const stats = async (d: ShareGuardDO) =>
+    (await (
+      await d.fetch(new Request("https://share-guard.do/stats"))
+    ).json()) as {
+      ok: boolean;
+      now: number;
+      totals: { onlineUuids: number; totalConns: number };
+      nodes: { nodeId: string; lastBeatAgoSec: number; onlineUuids: number; conns: number; stale: boolean }[];
+    };
+
+  it("跨节点聚合：同一 uuid 去重计在线人数，连接数求和；count=0 的凭证不算在线", async () => {
+    const { env } = makeDoEnv();
+    const { do: d, pending } = makeDo(env);
+    await beat(d, "n1", { a: 2, b: 0 }, {});
+    await beat(d, "n2", { a: 1, c: 3 }, {});
+    await Promise.all(pending);
+
+    const s = await stats(d);
+    expect(s.ok).toBe(true);
+    expect(s.totals).toEqual({ onlineUuids: 2, totalConns: 6 }); // a 跨节点去重
+    const n1 = s.nodes.find((n) => n.nodeId === "n1")!;
+    const n2 = s.nodes.find((n) => n.nodeId === "n2")!;
+    expect(n1).toMatchObject({ onlineUuids: 1, conns: 2, stale: false, lastBeatAgoSec: 0 });
+    expect(n2).toMatchObject({ onlineUuids: 2, conns: 4, stale: false });
+  });
+
+  it("沉默节点标 stale 但仍列出（清单取 lastBeat 不随 prune）；从未心跳的节点不出现", async () => {
+    const { env } = makeDoEnv();
+    const { do: d, pending } = makeDo(env);
+    await beat(d, "n1", { a: 1 }, {});
+    await Promise.all(pending);
+    vi.setSystemTime(T0 + NODE_SILENT_MS + 60_000);
+    const s = await stats(d);
+    expect(s.nodes).toHaveLength(1);
+    expect(s.nodes[0]).toMatchObject({ nodeId: "n1", stale: true, lastBeatAgoSec: (NODE_SILENT_MS + 60_000) / 1000 });
+    // prune 只在心跳时跑，stats 直读内存：条目还在，在线计数反映最后一次心跳快照
+  });
+});
+
 describe("POST /api/agent/presence 端点", () => {
   const fakeShareGuard = () => {
     const fetchMock = vi.fn(async () => Response.json({ ok: true }));
@@ -512,5 +745,78 @@ describe("POST /api/agent/presence 端点", () => {
     const res = await call(env, "node-key-1");
     expect(res.status).toBe(200);
     expect(((await res.json()) as { data: { forwarded: boolean } }).data.forwarded).toBe(false);
+  });
+});
+
+describe("GET /api/admin/online-live 端点", () => {
+  const NODE2 = { ...NODE, id: "node-jp-02", key: "node-key-2", name: "日本 02", region: "JP" };
+  /** DO /stats 的固定应答：node-hk-01 有心跳数据，node-jp-02 从未上报 */
+  const cannedShareGuard = (stats: unknown) =>
+    ({
+      idFromName: vi.fn(() => "id-global"),
+      get: vi.fn(() => ({ fetch: vi.fn(async () => Response.json(stats)) })),
+    }) as unknown as DurableObjectNamespace;
+  const cannedStats = {
+    ok: true,
+    now: T0,
+    totals: { onlineUuids: 3, totalConns: 7 },
+    nodes: [{ nodeId: "node-hk-01", lastBeatAgoSec: 30, onlineUuids: 3, conns: 7, stale: false }],
+  };
+  const call = (env: Env, key = "test-admin-key") =>
+    worker.fetch(
+      new Request("https://api.test/api/admin/online-live", { headers: { "x-admin-key": key } }),
+      env,
+      { waitUntil: () => {}, passThroughOnException: () => {} } as unknown as ExecutionContext
+    );
+
+  it("合并注册表名称/地区/active；注册表里未上报过的节点补列 neverBeat；totals 透传", async () => {
+    const { env } = baseEnv({
+      nodes: [NODE, NODE2],
+      adminKey: "test-admin-key",
+      extra: { SHARE_GUARD: cannedShareGuard(cannedStats) },
+    });
+    const res = await call(env);
+    expect(res.status).toBe(200);
+    const data = ((await res.json()) as { data: { totals: unknown; nodes: Record<string, unknown>[] } }).data;
+    expect(data.totals).toEqual({ onlineUuids: 3, totalConns: 7 });
+    expect(data.nodes).toHaveLength(2);
+    expect(data.nodes[0]).toMatchObject({
+      nodeId: "node-hk-01",
+      name: "香港 01",
+      region: "HK",
+      active: true,
+      onlineUuids: 3,
+      conns: 7,
+      neverBeat: false,
+    });
+    expect(data.nodes[1]).toMatchObject({
+      nodeId: "node-jp-02",
+      name: "日本 02",
+      region: "JP",
+      lastBeatAgoSec: -1,
+      onlineUuids: 0,
+      conns: 0,
+      neverBeat: true,
+    });
+  });
+
+  it("SHARE_GUARD 未绑定：501 明确报错而非静默空数据", async () => {
+    const { env } = baseEnv({ nodes: [NODE], adminKey: "test-admin-key", extra: { SHARE_GUARD: undefined } });
+    const res = await call(env);
+    expect(res.status).toBe(501);
+    expect(((await res.json()) as { ok: boolean }).ok).toBe(false);
+  });
+
+  it("未带 x-admin-key 401（adminAuth 全局挂载）", async () => {
+    const { env } = baseEnv({
+      nodes: [NODE],
+      adminKey: "test-admin-key",
+      extra: { SHARE_GUARD: cannedShareGuard(cannedStats) },
+    });
+    const res = await worker.fetch(new Request("https://api.test/api/admin/online-live"), env, {
+      waitUntil: () => {},
+      passThroughOnException: () => {},
+    } as unknown as ExecutionContext);
+    expect(res.status).toBe(401);
   });
 });

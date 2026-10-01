@@ -10,6 +10,7 @@ import { buildGeoStats } from "../lib/geo-stats";
 import { generateTicketDraftVerbose } from "../lib/ticket-ai";
 import { escapeHtml } from "../lib/escape-html";
 import { broadcastBackupSub } from "../lib/emergency-notify";
+import { getNodes } from "../lib/nodes";
 import type { Env } from "../types";
 import { adminPlansRoutes } from "./admin/plans";
 import { adminTokensRoutes } from "./admin/tokens";
@@ -33,6 +34,56 @@ adminRoutes.route("/", adminNotifyScanRoutes); // POST /notify-scan（cron 巡�
 adminRoutes.get("/geo-stats", async (c) => {
   const stats = await buildGeoStats(c.env);
   return c.json({ ok: true, data: stats });
+});
+
+/** ShareGuardDO /stats 的节点行（DO 侧只知道 nodeId 与心跳时间） */
+interface LiveStatsNode {
+  nodeId: string;
+  lastBeatAgoSec: number;
+  onlineUuids: number;
+  conns: number;
+  stale: boolean;
+}
+
+/**
+ * GET /api/admin/online-live —— 实时在线看板：转发 ShareGuardDO /stats（agent 60s 心跳的
+ * 内存聚合，分钟级新鲜度），合并注册表的节点名/地区/active。注册表里从未上报过心跳的
+ * 节点也补列（neverBeat，实时 0/0），看板才完整。SHARE_GUARD 未绑定（本地 dev/老部署）
+ * 明确返回错误而不是静默给空数据。
+ */
+adminRoutes.get("/online-live", async (c) => {
+  if (!c.env.SHARE_GUARD) return c.json({ ok: false, error: "SHARE_GUARD 未绑定，实时在线数据不可用" }, 501);
+  const stub = c.env.SHARE_GUARD.get(c.env.SHARE_GUARD.idFromName("global"));
+  const res = await stub.fetch("https://share-guard.do/stats");
+  if (!res.ok) return c.json({ ok: false, error: `DO /stats 返回 ${res.status}` }, 502);
+  const stats = (await res.json()) as {
+    now: number;
+    totals: { onlineUuids: number; totalConns: number };
+    nodes: LiveStatsNode[];
+  };
+  const registry = await getNodes(c.env);
+  const byId = new Map(registry.map((n) => [n.id, n]));
+  const seen = new Set<string>();
+  const nodes = stats.nodes.map((s) => {
+    seen.add(s.nodeId);
+    const n = byId.get(s.nodeId);
+    return { ...s, name: n?.name ?? s.nodeId, region: n?.region ?? "", active: n?.active ?? false, neverBeat: false };
+  });
+  for (const n of registry) {
+    if (seen.has(n.id)) continue;
+    nodes.push({
+      nodeId: n.id,
+      name: n.name,
+      region: n.region,
+      active: n.active,
+      lastBeatAgoSec: -1, // -1 = 从未上报（前端展示「从未」）
+      onlineUuids: 0,
+      conns: 0,
+      stale: false,
+      neverBeat: true,
+    });
+  }
+  return c.json({ ok: true, data: { now: stats.now, totals: stats.totals, nodes } });
 });
 
 /** GET /api/admin/registrations —— 导出全部防失联登记（批量通知用） */

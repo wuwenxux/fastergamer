@@ -90,6 +90,26 @@ export type AdminToken = Token & { presence?: Presence };
 /** 管理接口返回的节点：默认隐藏 key，额外带实时 online 判定 */
 export type AdminNode = Omit<Node, "key"> & { online?: boolean };
 
+/** 实时在线看板（/api/admin/online-live，ShareGuardDO 心跳内存聚合）的单节点行 */
+export type OnlineLiveNode = {
+  nodeId: string;
+  name: string;
+  region: string;
+  active: boolean;
+  /** 距最近心跳的秒数；-1 = 从未上报（neverBeat） */
+  lastBeatAgoSec: number;
+  onlineUuids: number;
+  conns: number;
+  stale: boolean;
+  neverBeat: boolean;
+};
+
+export type OnlineLive = {
+  now: number;
+  totals: { onlineUuids: number; totalConns: number };
+  nodes: OnlineLiveNode[];
+};
+
 /**
  * 套餐列表模块级缓存：同页多个组件（TokenStatus/DeviceManager/OrderStatus/Purchase/Admin）
  * 都会拉 plans，Promise 缓存 + 5 分钟 TTL 去重，避免重复请求与兜底值闪烁；失败不缓存，下次调用重试
@@ -258,6 +278,12 @@ export const api = {
   /** 管理接口：节点列表（不含 key，带实时 online 判定）；需 x-admin-key */
   adminNodes: (key: string) =>
     request<AdminNode[]>("/api/admin/nodes", {
+      headers: { "x-admin-key": key },
+    }),
+
+  /** 管理接口：实时在线看板（DO 心跳聚合，节点 tab 30s 轮询）；需 x-admin-key */
+  adminOnlineLive: (key: string) =>
+    request<OnlineLive>("/api/admin/online-live", {
       headers: { "x-admin-key": key },
     }),
 

@@ -1,7 +1,7 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import { isTrialPlan, TEST_CONTACT_RE, type GeoStats, type Order, type Ticket } from "../../../shared/types";
 import { STATUS_COLOR, STATUS_LABEL } from "../lib/status";
-import { api, ApiError, type AdminNode, type AdminToken } from "../services/api";
+import { api, ApiError, type AdminNode, type AdminToken, type OnlineLive } from "../services/api";
 
 // echarts 体积较大（按需注册后仍有数百 KB），只在「分布」tab 首次渲染时才拉取对应 chunk
 const GeoMap = lazy(() => import("../components/GeoMap"));
@@ -87,7 +87,7 @@ export default function Admin() {
   const [tokens, setTokens] = useState<AdminToken[]>([]);
   const [nodes, setNodes] = useState<AdminNode[]>([]);
   const [orders, setOrders] = useState<Order[]>([]);
-  const [tab, setTab] = useState<"overview" | "orders" | "geo" | "tickets">("overview");
+  const [tab, setTab] = useState<"overview" | "nodes" | "orders" | "geo" | "tickets">("overview");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [days, setDays] = useState<14 | 30>(14);
@@ -280,6 +280,7 @@ export default function Admin() {
         {(
           [
             ["overview", "概览"],
+            ["nodes", "节点"],
             ["orders", `订单${orders.some((o) => o.status === "pending" && !isTestOrder(o)) ? `（${orders.filter((o) => o.status === "pending" && !isTestOrder(o)).length} 待支付）` : ""}`],
             ["tickets", `工单${tickets?.some((t) => t.status === "open") ? `（${tickets.filter((t) => t.status === "open").length} 待处理）` : ""}`],
             ["geo", "分布"],
@@ -305,6 +306,8 @@ export default function Admin() {
       {tab === "orders" && (
         <OrdersSection adminKey={key} orders={orders} onChanged={() => void load(key)} />
       )}
+
+      {tab === "nodes" && <NodesSection adminKey={key} nodes={nodes} />}
 
       {tab === "tickets" && (
         <TicketsSection
@@ -494,6 +497,107 @@ function OverviewCard({ label, value, accent }: { label: string; value: string; 
       <div className="text-sm sm:text-xs text-slate-500">{label}</div>
       <div className={`mt-1 text-2xl sm:text-xl font-bold ${accent ?? "text-slate-100"}`}>{value}</div>
     </div>
+  );
+}
+
+/**
+ * 「节点」tab：注册表节点列表 + 实时在线（ShareGuardDO 心跳聚合，30s 轮询）。
+ * 轮询只在本 tab 激活（组件挂载）期间进行，切走即停。SHARE_GUARD 未绑定/接口失败时
+ * 实时列降级为「—」，注册表列（名称/地区/探测在线）不受影响。
+ */
+function NodesSection({ adminKey, nodes }: { adminKey: string; nodes: AdminNode[] }) {
+  const [live, setLive] = useState<OnlineLive | null>(null);
+  const [liveError, setLiveError] = useState("");
+
+  useEffect(() => {
+    let stopped = false;
+    const tick = async () => {
+      try {
+        const d = await api.adminOnlineLive(adminKey);
+        if (stopped) return;
+        setLive(d);
+        setLiveError("");
+      } catch (e) {
+        if (!stopped) setLiveError((e as Error).message);
+      }
+    };
+    void tick();
+    const timer = setInterval(() => void tick(), 30_000);
+    return () => {
+      stopped = true;
+      clearInterval(timer);
+    };
+  }, [adminKey]);
+
+  const liveById = new Map(live?.nodes.map((n) => [n.nodeId, n]));
+
+  return (
+    <section className="space-y-3">
+      <div className="flex items-center justify-between flex-wrap gap-2">
+        <h3 className="font-semibold text-slate-300">节点实时在线</h3>
+        {live && (
+          <span className="text-[15px] sm:text-sm text-slate-400">
+            实时在线 {live.totals.onlineUuids} 凭证 / {live.totals.totalConns} 连接 · 30 秒自动刷新
+          </span>
+        )}
+      </div>
+      {liveError && <p className="text-[15px] sm:text-sm text-amber-400/80">实时数据不可用：{liveError}</p>}
+      <div className="overflow-x-auto rounded-xl border border-slate-700 bg-slate-900">
+        <table className="w-full text-[15px] sm:text-sm">
+          <thead>
+            <tr className="text-left text-sm sm:text-xs text-slate-500 border-b border-slate-800">
+              <th className="px-4 py-2.5 font-medium">节点</th>
+              <th className="px-4 py-2.5 font-medium">地区</th>
+              <th className="px-4 py-2.5 font-medium">探测在线</th>
+              <th className="px-4 py-2.5 font-medium">实时</th>
+              <th className="px-4 py-2.5 font-medium">心跳</th>
+            </tr>
+          </thead>
+          <tbody>
+            {nodes.map((n) => {
+              const l = liveById.get(n.id);
+              return (
+                <tr key={n.id} className="border-b border-slate-800/60 last:border-0">
+                  <td className="px-4 py-2.5 text-slate-300 whitespace-nowrap">
+                    {n.name}
+                    {!n.active && <span className="ml-2 text-xs text-slate-500">（已下线）</span>}
+                  </td>
+                  <td className="px-4 py-2.5 text-slate-400">{n.region}</td>
+                  <td className="px-4 py-2.5">
+                    <span className={n.online ? "text-emerald-400" : "text-slate-500"}>{n.online ? "在线" : "离线"}</span>
+                  </td>
+                  <td className="px-4 py-2.5 whitespace-nowrap">
+                    {l ? (
+                      <span className={l.stale ? "text-slate-500" : "text-sky-300"}>
+                        {l.onlineUuids} 人 / {l.conns} 连接
+                      </span>
+                    ) : (
+                      <span className="text-slate-600">—</span>
+                    )}
+                  </td>
+                  <td className="px-4 py-2.5 text-sm sm:text-xs whitespace-nowrap">
+                    {!l || l.neverBeat ? (
+                      <span className="text-slate-600">从未上报</span>
+                    ) : l.stale ? (
+                      <span className="text-amber-400">{Math.round(l.lastBeatAgoSec / 60)} 分钟前（失联）</span>
+                    ) : (
+                      <span className="text-slate-500">{l.lastBeatAgoSec} 秒前</span>
+                    )}
+                  </td>
+                </tr>
+              );
+            })}
+            {nodes.length === 0 && (
+              <tr>
+                <td className="px-4 py-6 text-center text-slate-500" colSpan={5}>
+                  暂无节点
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    </section>
   );
 }
 
